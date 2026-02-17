@@ -5,6 +5,9 @@
 /.next
 /out
 /.agentkit-ref
+.next/
+out/
+.vercel/
 
 # production
 /build
@@ -21,6 +24,8 @@ pnpm-debug.log*
 
 # env files
 .env*
+.env.local
+.env.*.local
 
 # typescript
 *.tsbuildinfo
@@ -28,5 +33,3 @@ next-env.d.ts
 
 # local wallet cache
 wallet_data.txt
-
-.vercel
