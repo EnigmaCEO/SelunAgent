@@ -1,0 +1,514 @@
+.page {
+  position: relative;
+  min-height: 100vh;
+  overflow: hidden;
+  padding: 22px clamp(12px, 4vw, 52px) 44px;
+}
+
+.bgGlow {
+  position: absolute;
+  inset: -28% -10% auto -10%;
+  height: 74vh;
+  background:
+    radial-gradient(circle at 50% 0%, rgba(85, 228, 255, 0.24), transparent 54%),
+    radial-gradient(circle at 15% 20%, rgba(43, 111, 255, 0.17), transparent 48%),
+    radial-gradient(circle at 85% 20%, rgba(90, 72, 255, 0.12), transparent 48%);
+  filter: blur(40px);
+  pointer-events: none;
+}
+
+.grid {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(
+      30deg,
+      rgba(120, 163, 229, 0.12) 12%,
+      transparent 12.5%,
+      transparent 87%,
+      rgba(120, 163, 229, 0.12) 87.5%,
+      rgba(120, 163, 229, 0.12)
+    ),
+    linear-gradient(
+      150deg,
+      rgba(120, 163, 229, 0.12) 12%,
+      transparent 12.5%,
+      transparent 87%,
+      rgba(120, 163, 229, 0.12) 87.5%,
+      rgba(120, 163, 229, 0.12)
+    ),
+    linear-gradient(
+      30deg,
+      rgba(120, 163, 229, 0.12) 12%,
+      transparent 12.5%,
+      transparent 87%,
+      rgba(120, 163, 229, 0.12) 87.5%,
+      rgba(120, 163, 229, 0.12)
+    ),
+    linear-gradient(
+      150deg,
+      rgba(120, 163, 229, 0.12) 12%,
+      transparent 12.5%,
+      transparent 87%,
+      rgba(120, 163, 229, 0.12) 87.5%,
+      rgba(120, 163, 229, 0.12)
+    ),
+    linear-gradient(
+      60deg,
+      rgba(120, 163, 229, 0.09) 25%,
+      transparent 25.5%,
+      transparent 75%,
+      rgba(120, 163, 229, 0.09) 75%,
+      rgba(120, 163, 229, 0.09)
+    ),
+    linear-gradient(
+      60deg,
+      rgba(120, 163, 229, 0.09) 25%,
+      transparent 25.5%,
+      transparent 75%,
+      rgba(120, 163, 229, 0.09) 75%,
+      rgba(120, 163, 229, 0.09)
+    );
+  background-size: 64px 112px;
+  background-position:
+    0 0,
+    0 0,
+    32px 56px,
+    32px 56px,
+    0 0,
+    32px 56px;
+  mask-image: radial-gradient(circle at 50% 24%, black, transparent 80%);
+  pointer-events: none;
+}
+
+.shell {
+  position: relative;
+  z-index: 1;
+  max-width: 1000px;
+  margin: 0 auto;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: rgba(255, 255, 255, 0.36);
+  backdrop-filter: blur(6px);
+  border: 1px solid rgba(44, 95, 145, 0.16);
+  border-radius: 16px;
+  padding: 10px 14px;
+}
+
+.backLink {
+  font-size: 13px;
+  font-weight: 600;
+  color: #20527d;
+}
+
+.badge {
+  border-radius: 999px;
+  border: 1px solid rgba(53, 114, 168, 0.34);
+  background: rgba(241, 250, 255, 0.82);
+  color: #1d4d78;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 6px 10px;
+}
+
+.hero {
+  margin-top: 18px;
+}
+
+.eyebrow {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: #0f77af;
+  font-weight: 700;
+}
+
+.hero h1 {
+  margin: 8px 0 0;
+  font-family: var(--font-display), "Space Grotesk", "Avenir Next", sans-serif;
+  font-size: clamp(28px, 5vw, 52px);
+  line-height: 0.96;
+  letter-spacing: -0.03em;
+}
+
+.subhead {
+  margin: 10px 0 0;
+  font-size: clamp(14px, 2.1vw, 20px);
+  color: #2f557a;
+}
+
+.stepRail {
+  margin-top: 18px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.stepChip {
+  border: 1px solid rgba(49, 97, 145, 0.36);
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: rgba(245, 250, 255, 0.66);
+  color: #24527c;
+  cursor: pointer;
+}
+
+.stepChipActive {
+  border-color: rgba(47, 162, 231, 0.8);
+  background: linear-gradient(95deg, #a4f0ff, #4dc4ff 55%, #6ea8ff);
+  color: #021d33;
+}
+
+.panel {
+  margin-top: 14px;
+  border-radius: 20px;
+  border: 1px solid rgba(58, 108, 157, 0.22);
+  background: rgba(246, 251, 255, 0.78);
+  backdrop-filter: blur(8px);
+  padding: clamp(16px, 3vw, 24px);
+}
+
+.stepContent h2 {
+  margin: 0;
+  font-size: clamp(22px, 3.6vw, 30px);
+  font-family: var(--font-display), "Space Grotesk", "Avenir Next", sans-serif;
+  color: #0e2f50;
+}
+
+.stepIntro {
+  margin: 8px 0 0;
+  color: #31597f;
+  font-size: 15px;
+}
+
+.stepContent label {
+  display: block;
+  margin-top: 14px;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #275178;
+}
+
+.instrumentGrid {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.instrumentCard {
+  border: 1px solid rgba(56, 108, 158, 0.26);
+  border-radius: 16px;
+  background:
+    radial-gradient(circle at 12% 12%, rgba(164, 238, 255, 0.24), transparent 45%),
+    linear-gradient(170deg, rgba(236, 247, 255, 0.8), rgba(221, 237, 252, 0.74));
+  padding: 12px 12px 14px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+
+.instrumentHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.instrumentHeader h3 {
+  margin: 0;
+  font-size: 13px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #1e4f78;
+}
+
+.instrumentHeader span {
+  font-size: 13px;
+  font-weight: 700;
+  color: #1b6ca8;
+}
+
+.instrumentOptionRow {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.instrumentOption {
+  padding: 6px 4px;
+  border-radius: 999px;
+  border: 1px solid rgba(63, 118, 167, 0.2);
+  background: rgba(255, 255, 255, 0.54);
+  color: #3a6185;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+}
+
+.instrumentOptionActive {
+  color: #ecf8ff;
+  border-color: rgba(145, 219, 255, 0.9);
+  background: linear-gradient(100deg, #2e5f89 0%, #23517a 52%, #1a456a 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(210, 242, 255, 0.25),
+    0 0 0 1px rgba(36, 103, 156, 0.2);
+}
+
+.instrumentTrack {
+  margin-top: 12px;
+  position: relative;
+  height: 34px;
+}
+
+.instrumentTrackBase,
+.instrumentTrackActive {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 6px;
+  border-radius: 999px;
+}
+
+.instrumentTrackBase {
+  border: 1px solid rgba(76, 130, 178, 0.3);
+  background: linear-gradient(90deg, rgba(203, 221, 239, 0.72), rgba(173, 202, 233, 0.58));
+}
+
+.instrumentTrackActive {
+  right: auto;
+  background: linear-gradient(90deg, rgba(128, 226, 255, 0.9), rgba(82, 188, 240, 0.88));
+  box-shadow: 0 0 14px rgba(86, 197, 252, 0.32);
+}
+
+.instrumentStop {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 22px;
+  height: 22px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+
+.instrumentStopCore {
+  width: 12px;
+  height: 12px;
+  background: rgba(61, 95, 129, 0.66);
+  border: 1px solid rgba(43, 79, 114, 0.58);
+  transform: rotate(45deg);
+  transition: transform 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+}
+
+.instrumentStopActive .instrumentStopCore {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  transform: rotate(0deg);
+  border: 2px solid rgba(111, 198, 244, 0.95);
+  background: radial-gradient(circle at 34% 28%, rgba(236, 250, 255, 0.95), rgba(113, 204, 246, 0.92));
+  box-shadow:
+    inset 0 -4px 8px rgba(44, 132, 185, 0.32),
+    0 0 16px rgba(94, 203, 250, 0.5);
+}
+
+.stepContent select,
+.stepContent textarea,
+.followUpForm input {
+  width: 100%;
+  border: 1px solid rgba(58, 108, 157, 0.34);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.86);
+  color: #11385c;
+  font-family: var(--font-body), "Manrope", sans-serif;
+  font-size: 14px;
+  line-height: 1.4;
+  padding: 11px 12px;
+}
+
+.stepContent textarea {
+  resize: vertical;
+  min-height: 140px;
+}
+
+.walletBox {
+  margin-top: 12px;
+  border: 1px solid rgba(58, 108, 157, 0.24);
+  border-radius: 14px;
+  background: rgba(235, 248, 255, 0.64);
+  padding: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.walletBox p {
+  margin: 0;
+  color: #24527a;
+  font-size: 13px;
+}
+
+.actions {
+  margin-top: 16px;
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.primaryButton,
+.secondaryButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 10px 16px;
+  font-size: 13px;
+  font-weight: 700;
+  border: 0;
+  cursor: pointer;
+  transition: transform 0.2s ease, opacity 0.2s ease;
+}
+
+.primaryButton {
+  background: linear-gradient(95deg, #a4f0ff, #4dc4ff 55%, #6ea8ff);
+  color: #001122;
+  box-shadow: 0 8px 20px rgba(72, 185, 255, 0.28);
+}
+
+.secondaryButton {
+  border: 1px solid rgba(58, 108, 157, 0.55);
+  background: linear-gradient(95deg, #f5fbff, #e6f4ff);
+  color: #17466c;
+}
+
+.primaryButton:hover,
+.secondaryButton:hover {
+  transform: translateY(-1px);
+}
+
+.primaryButton:disabled,
+.secondaryButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.chat {
+  margin-top: 14px;
+  display: grid;
+  gap: 10px;
+}
+
+.empty {
+  margin: 0;
+  padding: 10px;
+  border-radius: 12px;
+  border: 1px dashed rgba(58, 108, 157, 0.34);
+  color: #3a5f81;
+  font-size: 13px;
+}
+
+.message {
+  border-radius: 14px;
+  padding: 10px 12px;
+}
+
+.userMessage {
+  margin-left: auto;
+  max-width: 92%;
+  background: rgba(212, 241, 255, 0.8);
+  border: 1px solid rgba(72, 162, 214, 0.34);
+}
+
+.agentMessage {
+  margin-right: auto;
+  max-width: 94%;
+  background: rgba(248, 252, 255, 0.9);
+  border: 1px solid rgba(58, 108, 157, 0.24);
+}
+
+.messageRole {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #2a557d;
+  margin-bottom: 4px;
+  font-weight: 700;
+}
+
+.message p {
+  margin: 0;
+  white-space: pre-wrap;
+  font-size: 14px;
+  color: #103b61;
+  line-height: 1.5;
+}
+
+.thinking {
+  margin: 0;
+  font-size: 13px;
+  color: #285d88;
+  font-style: italic;
+}
+
+.followUpForm {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+}
+
+.errorText {
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: #a82e4f;
+  font-weight: 600;
+}
+
+@media (max-width: 780px) {
+  .page {
+    padding: 12px 10px 30px;
+  }
+
+  .instrumentGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .instrumentOption {
+    font-size: 11px;
+  }
+
+  .followUpForm {
+    grid-template-columns: 1fr;
+  }
+
+  .actions {
+    justify-content: flex-start;
+  }
+
+  .walletBox {
+    align-items: flex-start;
+  }
+}

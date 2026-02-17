@@ -1,0 +1,30 @@
+# dependencies
+/node_modules
+
+# next.js
+/.next
+/out
+/.agentkit-ref
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# env files
+.env*
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# local wallet cache
+wallet_data.txt

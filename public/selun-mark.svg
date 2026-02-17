@@ -1,0 +1,42 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="selunOrbitA" x1="80" y1="90" x2="425" y2="420" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8CE6FF" />
+      <stop offset="1" stop-color="#267AD9" />
+    </linearGradient>
+    <linearGradient id="selunOrbitB" x1="430" y1="120" x2="120" y2="420" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#95E8FF" />
+      <stop offset="1" stop-color="#2C89E5" />
+    </linearGradient>
+    <radialGradient id="selunCore" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(256 232) rotate(90) scale(120)">
+      <stop offset="0" stop-color="#E9FBFF" />
+      <stop offset="0.4" stop-color="#90E1FF" />
+      <stop offset="0.8" stop-color="#49ADEE" />
+      <stop offset="1" stop-color="#247DD7" />
+    </radialGradient>
+    <radialGradient id="selunNode" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(0 0) rotate(90) scale(8)">
+      <stop stop-color="#E8FBFF" />
+      <stop offset="1" stop-color="#49B8EC" />
+    </radialGradient>
+    <filter id="selunGlow" x="118" y="116" width="276" height="276" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix" />
+      <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape" />
+      <feGaussianBlur stdDeviation="6" result="effect1_foregroundBlur" />
+    </filter>
+  </defs>
+
+  <g fill="none" stroke-linecap="round">
+    <ellipse cx="256" cy="256" rx="176" ry="90" transform="rotate(-27 256 256)" stroke="url(#selunOrbitA)" stroke-width="14" />
+    <ellipse cx="256" cy="256" rx="176" ry="90" transform="rotate(27 256 256)" stroke="url(#selunOrbitB)" stroke-width="14" />
+  </g>
+
+  <circle cx="256" cy="232" r="104" fill="url(#selunCore)" />
+  <g filter="url(#selunGlow)">
+    <circle cx="256" cy="232" r="103" stroke="#66C9F7" stroke-opacity="0.65" stroke-width="2" />
+  </g>
+
+  <circle cx="352" cy="148" r="10" fill="url(#selunNode)" />
+  <circle cx="392" cy="194" r="9" fill="url(#selunNode)" />
+  <circle cx="154" cy="186" r="8" fill="url(#selunNode)" />
+  <circle cx="162" cy="266" r="8" fill="url(#selunNode)" />
+</svg>
