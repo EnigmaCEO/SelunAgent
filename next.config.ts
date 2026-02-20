@@ -3,7 +3,6 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   serverExternalPackages: [
     "@coinbase/agentkit",
-    "@coinbase/agentkit-vercel-ai-sdk",
     "@coinbase/cdp-sdk",
     "@coinbase/coinbase-sdk",
     "@solana/web3.js",

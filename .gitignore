@@ -33,3 +33,5 @@ next-env.d.ts
 
 # local wallet cache
 wallet_data.txt
+backend/dist/
+backend/data/

@@ -1,58 +1,35 @@
-import { generateText } from "ai";
 import { NextResponse } from "next/server";
-import { createAgent } from "../create-agent";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 type AgentPaymentRequest = {
   walletAddress?: string;
-  totalPriceUsdc?: number;
   includeCertifiedDecisionRecord?: boolean;
   riskMode?: string;
   investmentHorizon?: string;
 };
 
-type AgentPaymentResponse = {
-  success: boolean;
-  status?: "paid";
-  transactionId?: string;
-  decisionId?: string;
-  agentNote?: string;
+type BackendAgentResponse = {
+  success?: boolean;
   error?: string;
+  data?: {
+    status?: "paid";
+    transactionId?: string;
+    decisionId?: string;
+    agentNote?: string;
+    chargedAmountUsdc?: string;
+    certifiedDecisionRecordPurchased?: boolean;
+  };
 };
 
 const isHexAddress = (value: string) => /^0x[a-fA-F0-9]{40}$/.test(value);
 
-function buildTransactionId() {
-  const body = crypto.randomUUID().replace(/-/g, "").padEnd(64, "0").slice(0, 64);
-  return `0x${body}`;
+function getBackendBaseUrl() {
+  return process.env.SELUN_BACKEND_URL?.trim() || "http://localhost:8787";
 }
 
-async function generateAgentPaymentNote(payload: AgentPaymentRequest): Promise<string> {
-  if (!process.env.OPENAI_API_KEY) {
-    return "Selun agent approved payment via fallback policy check for this allocation run.";
-  }
-
-  const agent = await createAgent();
-  const { text } = await generateText({
-    model: agent.model,
-    system: `${agent.system}
-You are approving a wizard payment checkpoint. Do not request additional tools.
-Keep response to one concise sentence.`,
-    prompt: `Confirm payment approval:
-- Wallet: ${payload.walletAddress}
-- Amount: ${payload.totalPriceUsdc} USDC
-- Certified decision record: ${payload.includeCertifiedDecisionRecord ? "Enabled" : "Disabled"}
-- Risk mode: ${payload.riskMode || "N/A"}
-- Horizon: ${payload.investmentHorizon || "N/A"}`,
-    maxSteps: 1,
-  });
-
-  return text.trim();
-}
-
-export async function POST(req: Request): Promise<NextResponse<AgentPaymentResponse>> {
+export async function POST(req: Request): Promise<NextResponse> {
   let payload: AgentPaymentRequest;
 
   try {
@@ -77,35 +54,46 @@ export async function POST(req: Request): Promise<NextResponse<AgentPaymentRespo
     );
   }
 
-  if (!payload.totalPriceUsdc || payload.totalPriceUsdc <= 0) {
-    return NextResponse.json(
-      {
-        success: false,
-        error: "totalPriceUsdc must be greater than zero.",
-      },
-      { status: 400 },
-    );
-  }
-
   try {
-    const agentNote = await generateAgentPaymentNote(payload);
-    await new Promise((resolve) => setTimeout(resolve, 900));
+    const response = await fetch(`${getBackendBaseUrl()}/agent/pay`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        walletAddress: payload.walletAddress,
+        includeCertifiedDecisionRecord: payload.includeCertifiedDecisionRecord,
+        riskMode: payload.riskMode,
+        investmentHorizon: payload.investmentHorizon,
+      }),
+      cache: "no-store",
+    });
+
+    const backendResult = (await response.json()) as BackendAgentResponse;
+    if (!response.ok || !backendResult.success || !backendResult.data) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: backendResult.error || "Agent payment failed.",
+        },
+        { status: response.status || 500 },
+      );
+    }
 
     return NextResponse.json({
       success: true,
-      status: "paid",
-      transactionId: buildTransactionId(),
-      decisionId: `SELUN-DEC-${Date.now()}`,
-      agentNote,
+      status: backendResult.data.status || "paid",
+      transactionId: backendResult.data.transactionId,
+      decisionId: backendResult.data.decisionId,
+      agentNote: backendResult.data.agentNote,
+      chargedAmountUsdc: backendResult.data.chargedAmountUsdc,
+      certifiedDecisionRecordPurchased: Boolean(backendResult.data.certifiedDecisionRecordPurchased),
     });
   } catch (error) {
-    console.error("Selun agent payment error:", error);
     return NextResponse.json(
       {
         success: false,
         error: error instanceof Error ? error.message : "Agent payment failed.",
       },
-      { status: 500 },
+      { status: 502 },
     );
   }
 }

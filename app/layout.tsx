@@ -19,9 +19,9 @@ export const metadata: Metadata = {
   description:
     "Selun is an autonomous agent built on top of the AAA API to help retail investors make calmer, structured portfolio decisions.",
   icons: {
-    icon: [{ url: "/selun-mark.svg", type: "image/svg+xml" }],
-    shortcut: [{ url: "/selun-mark.svg", type: "image/svg+xml" }],
-    apple: [{ url: "/selun-mark.svg", type: "image/svg+xml" }],
+    icon: [{ url: "/selun-mark.svg?v=2", type: "image/svg+xml" }],
+    shortcut: [{ url: "/selun-mark.svg?v=2", type: "image/svg+xml" }],
+    apple: [{ url: "/selun-mark.svg?v=2", type: "image/svg+xml" }],
   },
 };
 

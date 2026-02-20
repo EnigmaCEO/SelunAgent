@@ -6,26 +6,33 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "backend:dev": "tsx backend/src/server.ts",
+    "backend:build": "tsc -p backend/tsconfig.json",
+    "backend:start": "node backend/dist/server.js"
   },
   "dependencies": {
+    "@coinbase/agentkit": "latest",
+    "decimal.js": "10.6.0",
+    "dotenv": "17.3.1",
+    "express": "5.2.1",
     "next": "^16.0.0",
+    "pdf-lib": "1.17.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "viem": "^2.21.0",
-    "@coinbase/agentkit": "latest",
-    "ai": "^4.1.0",
-    "@ai-sdk/openai": "^1.1.0",
-    "@coinbase/agentkit-vercel-ai-sdk": "latest"
+    "zod": "3.25.76"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.1.18",
+    "@types/express": "5.0.6",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "^16.0.0",
     "tailwindcss": "^4.1.18",
+    "tsx": "4.21.0",
     "typescript": "^5"
   }
 }

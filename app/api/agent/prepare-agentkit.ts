@@ -61,7 +61,7 @@ export async function prepareAgentkitAndWalletProvider(): Promise<{
     storePrivateKey(privateKey);
   }
 
-  const networkId = process.env.NETWORK_ID ?? "base-sepolia";
+  const networkId = process.env.NETWORK_ID ?? "base-mainnet";
   const chain = NETWORK_ID_TO_VIEM_CHAIN[networkId];
 
   if (!chain) {
