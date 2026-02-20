@@ -129,7 +129,7 @@ const coreTitle =
 
         <section id="access" className={`${styles.ctaBand} ${styles.reveal} ${styles.delay3}`}>
           <p>In and out in seconds.</p>
-          <a className={styles.secondaryCta} href="mailto:hello@sagitta.systems?subject=Selun%20Early%20Access">
+          <a className={styles.secondaryCta} href="mailto:selun@sagitta.systems?subject=Selun%20Team%20Inquiry">
             Contact Team
           </a>
         </section>
@@ -145,9 +145,9 @@ const coreTitle =
               Privacy Policy
             </Link>
             <span aria-hidden>|</span>
-            <a className={styles.footerLink} href="mailto:hello@sagitta.systems?subject=Selun%20Support">
+            <Link className={styles.footerLink} href="/support">
               Support
-            </a>
+            </Link>
           </nav>
         </footer>
       </div>

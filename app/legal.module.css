@@ -1,0 +1,142 @@
+.page {
+  min-height: 100vh;
+  padding: 56px 20px 40px;
+}
+
+.shell {
+  max-width: 920px;
+  margin: 0 auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  box-shadow: 0 24px 60px rgba(16, 42, 75, 0.12);
+  overflow: hidden;
+}
+
+.header {
+  padding: 26px 28px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  font-weight: 700;
+  color: var(--ink-main);
+}
+
+.brandMark {
+  width: 32px;
+  height: 32px;
+}
+
+.homeLink {
+  color: var(--ink-soft);
+  font-weight: 600;
+  font-size: 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 8px 14px;
+}
+
+.homeLink:hover,
+.homeLink:focus-visible {
+  border-color: var(--line-strong);
+  color: var(--ink-main);
+}
+
+.content {
+  padding: 30px 28px 28px;
+  color: var(--ink-main);
+}
+
+.title {
+  margin: 0 0 10px;
+  font-size: clamp(28px, 4vw, 36px);
+  line-height: 1.12;
+}
+
+.subtitle {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 15px;
+}
+
+.section {
+  margin-top: 28px;
+}
+
+.section h2 {
+  margin: 0 0 10px;
+  font-size: 20px;
+}
+
+.section p {
+  margin: 0;
+  color: #1c4068;
+  line-height: 1.6;
+}
+
+.section ul {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  color: #1c4068;
+  line-height: 1.6;
+}
+
+.section li + li {
+  margin-top: 6px;
+}
+
+.emailLink {
+  color: #0b5d94;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.footer {
+  margin-top: 34px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+  color: var(--ink-soft);
+  font-size: 13px;
+}
+
+.footerNav {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.footerNav a {
+  color: #2f638d;
+  font-weight: 600;
+}
+
+.footerNav a:hover,
+.footerNav a:focus-visible {
+  color: #114d7c;
+}
+
+@media (max-width: 640px) {
+  .page {
+    padding: 24px 12px 18px;
+  }
+
+  .header {
+    padding: 16px;
+  }
+
+  .content {
+    padding: 20px 16px;
+  }
+}
