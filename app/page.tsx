@@ -75,11 +75,11 @@ const coreTitle =
             <Image src="/selun-logo.svg" alt="Selun" width={154} height={48} className={styles.brandLogo} priority />
           </Link>
 
-          <div className={styles.contractPill} title={TOKEN_CONTRACT}>
+          {/* <div className={styles.contractPill} title={TOKEN_CONTRACT}>
             <span className={styles.tokenTicker}>{TOKEN_TICKER}</span>
             <span className={styles.contractDivider} aria-hidden />
             <span className={styles.contractLabel}>Contract: {tokenLabel}</span>
-          </div>
+          </div> */}
         </header>
 
         <section className={`${styles.hero} ${styles.reveal} ${styles.delay1}`}>
