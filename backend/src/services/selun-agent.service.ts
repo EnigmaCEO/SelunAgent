@@ -17,6 +17,7 @@ import { getConfig } from "../config";
 import { emitExecutionLog } from "../logging/execution-logs";
 
 const USDC_DECIMALS = 6;
+const RPC_READ_TIMEOUT_MS = 12_000;
 const IDENTITY_PATH = path.join(process.cwd(), "backend", "data", "agent-identity.json");
 const TRANSFER_EVENT = parseAbiItem("event Transfer(address indexed from, address indexed to, uint256 value)");
 const ERC20_BALANCE_OF_ABI = [
@@ -395,29 +396,22 @@ export async function getUSDCBalanceForAddress(walletAddress: string): Promise<{
     transactionHash: null,
   });
 
-  let balance: bigint;
-  let network: string = config.networkId;
+  const network = config.networkId;
+  const networkFallbackRpc = network === "base-mainnet"
+    ? "https://mainnet.base.org"
+    : "https://sepolia.base.org";
+  const rpcCandidates = Array.from(new Set([config.baseRpc, networkFallbackRpc]));
 
-  try {
-    const runtime = await getRuntimeContext();
-    network = runtime.identity.network;
+  let balance: bigint | null = null;
+  let lastError: unknown = null;
 
-    balance = await runtime.walletProvider.readContract({
-      address: config.usdcContractAddress,
-      abi: ERC20_BALANCE_OF_ABI,
-      functionName: "balanceOf",
-      args: [parsedWalletAddress],
-    });
-  } catch (error) {
-    emitExecutionLog({
-      phase: "WALLET",
-      action: "read_usdc_balance_for_address_fallback_rpc",
-      status: "pending",
-      transactionHash: null,
-    });
-
+  for (let index = 0; index < rpcCandidates.length; index += 1) {
+    const rpcUrl = rpcCandidates[index];
     const publicClient = createPublicClient({
-      transport: http(config.baseRpc),
+      transport: http(rpcUrl, {
+        timeout: RPC_READ_TIMEOUT_MS,
+        retryCount: 1,
+      }),
     });
 
     try {
@@ -427,10 +421,21 @@ export async function getUSDCBalanceForAddress(walletAddress: string): Promise<{
         functionName: "balanceOf",
         args: [parsedWalletAddress],
       });
-    } catch {
-      const message = error instanceof Error ? error.message : "Unknown AgentKit initialization error.";
-      throw new Error(`Unable to read USDC balance via AgentKit or RPC fallback. ${message}`);
+      break;
+    } catch (error) {
+      lastError = error;
+      emitExecutionLog({
+        phase: "WALLET",
+        action: index === 0 ? "read_usdc_balance_primary_rpc_failed" : "read_usdc_balance_fallback_rpc_failed",
+        status: "pending",
+        transactionHash: null,
+      });
     }
+  }
+
+  if (balance === null) {
+    const message = lastError instanceof Error ? lastError.message : "Unknown RPC error.";
+    throw new Error(`Unable to read USDC balance from configured Base RPC endpoints. ${message}`);
   }
 
   emitExecutionLog({
