@@ -21,9 +21,7 @@ ENV NODE_ENV=production
 COPY --from=prod-deps /app/backend/node_modules ./backend/node_modules
 COPY backend/package.json backend/package-lock.json ./backend/
 COPY --from=build /app/backend/dist ./backend/dist
-COPY backend/data ./backend/data
-COPY backend/env.example ./backend/env.example
-COPY backend/README.md ./backend/README.md
+RUN mkdir -p ./backend/data
 
 EXPOSE 8787
 CMD ["node", "backend/dist/server.js"]

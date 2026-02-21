@@ -2,7 +2,7 @@ app = "selunagent"
 primary_region = "sin"
 
 [build]
-  dockerfile = "/backend/Dockerfile"
+  dockerfile = "backend/Dockerfile"
 
 [env]
   PORT = "8787"
