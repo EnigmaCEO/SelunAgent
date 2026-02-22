@@ -15,10 +15,12 @@ import {
 } from "viem";
 import { getConfig } from "../config";
 import { emitExecutionLog } from "../logging/execution-logs";
+import { resolveBackendDataFilePath } from "../runtime-paths";
 
 const USDC_DECIMALS = 6;
 const RPC_READ_TIMEOUT_MS = 12_000;
-const IDENTITY_PATH = path.join(process.cwd(), "backend", "data", "agent-identity.json");
+const IDENTITY_PATH = resolveBackendDataFilePath("agent-identity.json");
+const PROMO_CODE_REDEMPTIONS_PATH = resolveBackendDataFilePath("free-code-redemptions.json");
 const TRANSFER_EVENT = parseAbiItem("event Transfer(address indexed from, address indexed to, uint256 value)");
 const ERC20_BALANCE_OF_ABI = [
   {
@@ -48,10 +50,38 @@ type AgentRuntimeContext = {
   identity: AgentIdentity;
 };
 
+type PromoCodeKind = "free" | "percent_discount";
+
+type PromoCodeRule = {
+  code: string;
+  maxUses: number;
+  includeCertifiedDecisionRecord: boolean;
+  discountPercent: number;
+  expiresAt?: string;
+};
+
+type PromoCodeRedemption = {
+  code: string;
+  promoKind: PromoCodeKind;
+  discountPercent: number;
+  walletAddress: Address;
+  decisionId: string;
+  transactionId: string;
+  redeemedAt: string;
+  includeCertifiedDecisionRecord: boolean;
+  amountBeforeDiscountUsdc: string;
+  chargedAmountUsdc: string;
+};
+
+type PromoCodeRedemptionStore = {
+  redemptions: PromoCodeRedemption[];
+};
+
 export type PaymentVerificationInput = {
   fromAddress: string;
   expectedAmountUSDC: number | string;
   transactionHash?: string;
+  decisionId?: string;
 };
 
 export type PaymentReceipt = {
@@ -71,6 +101,13 @@ export type AuthorizeWizardPaymentInput = {
   includeCertifiedDecisionRecord?: boolean;
   riskMode?: string;
   investmentHorizon?: string;
+  promoCode?: string;
+};
+
+export type QuoteWizardPaymentInput = {
+  walletAddress: string;
+  includeCertifiedDecisionRecord?: boolean;
+  promoCode?: string;
 };
 
 export type WizardPricing = {
@@ -85,12 +122,353 @@ export type AuthorizeWizardPaymentResult = {
   agentNote: string;
   chargedAmountUsdc: string;
   certifiedDecisionRecordPurchased: boolean;
+  paymentMethod?: "onchain" | "free_code";
+  freeCodeApplied?: boolean;
+};
+
+export type QuoteWizardPaymentResult = {
+  totalBeforeDiscountUsdc: string;
+  chargedAmountUsdc: string;
+  discountAmountUsdc: string;
+  discountPercent: number;
+  promoCodeApplied: boolean;
+  promoCode?: string;
+  certifiedDecisionRecordPurchased: boolean;
+  paymentMethod: "onchain" | "free_code";
+  message: string;
 };
 
 let cachedRuntime: AgentRuntimeContext | null = null;
 
 function ensureIdentityDir() {
   fs.mkdirSync(path.dirname(IDENTITY_PATH), { recursive: true });
+}
+
+function ensurePromoCodeRedemptionsDir() {
+  fs.mkdirSync(path.dirname(PROMO_CODE_REDEMPTIONS_PATH), { recursive: true });
+}
+
+function isPromoCodeKind(value: unknown): value is PromoCodeKind {
+  return value === "free" || value === "percent_discount";
+}
+
+function parseDiscountPercent(value: unknown, fallback = 100): number {
+  const parsed =
+    typeof value === "number"
+      ? value
+      : typeof value === "string"
+        ? Number.parseFloat(value.trim())
+        : Number.NaN;
+
+  if (!Number.isFinite(parsed)) return fallback;
+  if (parsed <= 0 || parsed > 100) return fallback;
+  return Number(parsed.toFixed(2));
+}
+
+function readPromoCodeRedemptions(): PromoCodeRedemption[] {
+  if (!fs.existsSync(PROMO_CODE_REDEMPTIONS_PATH)) return [];
+  try {
+    const parsed = JSON.parse(fs.readFileSync(PROMO_CODE_REDEMPTIONS_PATH, "utf8")) as PromoCodeRedemptionStore;
+    if (!Array.isArray(parsed?.redemptions)) return [];
+    return parsed.redemptions.filter((entry) =>
+      typeof entry?.code === "string" &&
+      isAddress(entry?.walletAddress as string) &&
+      typeof entry?.decisionId === "string" &&
+      typeof entry?.transactionId === "string" &&
+      typeof entry?.redeemedAt === "string"
+    ).map((entry) => {
+      const normalizedCode = normalizeCode(entry.code);
+      const normalizedKind: PromoCodeKind = isPromoCodeKind(entry.promoKind)
+        ? entry.promoKind
+        : entry.transactionId.startsWith("FREE-")
+          ? "free"
+          : "percent_discount";
+      const amountBeforeDiscountUsdc =
+        typeof entry.amountBeforeDiscountUsdc === "string" && entry.amountBeforeDiscountUsdc.trim()
+          ? entry.amountBeforeDiscountUsdc.trim()
+          : "0";
+      const chargedAmountUsdc =
+        typeof entry.chargedAmountUsdc === "string" && entry.chargedAmountUsdc.trim()
+          ? entry.chargedAmountUsdc.trim()
+          : normalizedKind === "free"
+            ? "0"
+            : amountBeforeDiscountUsdc;
+      let fallbackDiscountPercent = normalizedKind === "free" ? 100 : 0;
+      if (normalizedKind === "percent_discount") {
+        const before = Number.parseFloat(amountBeforeDiscountUsdc);
+        const charged = Number.parseFloat(chargedAmountUsdc);
+        if (Number.isFinite(before) && before > 0 && Number.isFinite(charged) && charged >= 0 && charged <= before) {
+          fallbackDiscountPercent = Number((((before - charged) / before) * 100).toFixed(2));
+        }
+      }
+      const discountPercent = parseDiscountPercent(entry.discountPercent, fallbackDiscountPercent);
+      return {
+        code: normalizedCode,
+        promoKind: normalizedKind,
+        discountPercent,
+        walletAddress: entry.walletAddress,
+        decisionId: entry.decisionId,
+        transactionId: entry.transactionId,
+        redeemedAt: entry.redeemedAt,
+        includeCertifiedDecisionRecord: Boolean(entry.includeCertifiedDecisionRecord),
+        amountBeforeDiscountUsdc,
+        chargedAmountUsdc,
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
+function writePromoCodeRedemptions(redemptions: PromoCodeRedemption[]) {
+  ensurePromoCodeRedemptionsDir();
+  const payload: PromoCodeRedemptionStore = { redemptions };
+  fs.writeFileSync(PROMO_CODE_REDEMPTIONS_PATH, JSON.stringify(payload, null, 2), "utf8");
+}
+
+function normalizeCode(value: string): string {
+  return value.trim().toUpperCase();
+}
+
+function parsePositiveIntOrDefault(value: unknown, fallback: number): number {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) return Math.floor(value);
+  if (typeof value === "string") {
+    const parsed = Number.parseInt(value.trim(), 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return fallback;
+}
+
+function parseBooleanOrDefault(value: unknown, fallback: boolean): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true" || normalized === "1" || normalized === "yes") return true;
+    if (normalized === "false" || normalized === "0" || normalized === "no") return false;
+  }
+  return fallback;
+}
+
+function parsePromoCodeRules(): PromoCodeRule[] {
+  const rules: PromoCodeRule[] = [];
+  const rawJson = process.env.SELUN_FREE_CODES_JSON?.trim();
+
+  if (rawJson) {
+    try {
+      const parsed = JSON.parse(rawJson) as unknown;
+      if (Array.isArray(parsed)) {
+        for (const entry of parsed) {
+          if (typeof entry !== "object" || entry === null) continue;
+          const record = entry as Record<string, unknown>;
+          const codeValue = typeof record.code === "string" ? normalizeCode(record.code) : "";
+          if (!codeValue) continue;
+          const hasExplicitDiscount =
+            record.discountPercent !== undefined &&
+            record.discountPercent !== null &&
+            String(record.discountPercent).trim() !== "";
+          const discountPercent = hasExplicitDiscount
+            ? parseDiscountPercent(record.discountPercent, Number.NaN)
+            : 100;
+          if (!Number.isFinite(discountPercent) || discountPercent <= 0 || discountPercent > 100) continue;
+          rules.push({
+            code: codeValue,
+            maxUses: parsePositiveIntOrDefault(record.maxUses, 1),
+            includeCertifiedDecisionRecord: parseBooleanOrDefault(record.includeCertifiedDecisionRecord, true),
+            discountPercent,
+            expiresAt: typeof record.expiresAt === "string" ? record.expiresAt : undefined,
+          });
+        }
+      }
+    } catch {
+      // Ignore invalid JSON; fallback parsing still applies.
+    }
+  }
+
+  if (rules.length > 0) return rules;
+
+  const csv = process.env.SELUN_FREE_CODES?.trim();
+  if (!csv) return [];
+
+  return csv
+    .split(",")
+    .map((token) => normalizeCode(token))
+    .filter(Boolean)
+    .map((code) => ({
+      code,
+      maxUses: 1,
+      includeCertifiedDecisionRecord: true,
+      discountPercent: 100,
+    }));
+}
+
+function createFreeCodeTransactionId(code: string): Hex {
+  const suffix = randomUUID().replace(/-/g, "").slice(0, 20).toUpperCase();
+  return `FREE-${normalizeCode(code)}-${suffix}` as Hex;
+}
+
+function validatePromoCodeRule(rule: PromoCodeRule, now = Date.now()) {
+  if (!rule.expiresAt) return;
+  const expiresAtMs = Date.parse(rule.expiresAt);
+  if (!Number.isFinite(expiresAtMs)) {
+    throw new Error(`Free code ${rule.code} has invalid expiresAt format.`);
+  }
+  if (expiresAtMs < now) {
+    throw new Error("Promo code has expired.");
+  }
+}
+
+function findPromoCodeRedemption(input: { walletAddress: Address; decisionId?: string; transactionId?: string }): PromoCodeRedemption | null {
+  const wallet = input.walletAddress.toLowerCase();
+  const decision = input.decisionId?.trim();
+  const transaction = input.transactionId?.trim();
+  const redemptions = readPromoCodeRedemptions();
+
+  for (const entry of redemptions) {
+    if (entry.walletAddress.toLowerCase() !== wallet) continue;
+    if (decision) {
+      if (entry.decisionId !== decision) continue;
+      if (transaction && entry.promoKind === "free" && entry.transactionId !== transaction) continue;
+      return entry;
+    }
+    if (transaction) {
+      if (entry.transactionId !== transaction) continue;
+      return entry;
+    }
+  }
+
+  return null;
+}
+
+type ResolvedPromoCodeGrant = {
+  normalizedCode: string;
+  rule: PromoCodeRule;
+  amountBeforeDiscountUsdc: string;
+  chargedAmountUsdc: string;
+  discountAmountUsdc: string;
+  chargedAmountUsdcBaseUnits: bigint;
+  promoKind: PromoCodeKind;
+};
+
+function applyDiscountPercent(amountBaseUnits: bigint, discountPercent: number): bigint {
+  const discountBps = Math.max(0, Math.min(10000, Math.round(discountPercent * 100)));
+  const chargeBps = 10000 - discountBps;
+  if (chargeBps <= 0) return 0n;
+  return (amountBaseUnits * BigInt(chargeBps)) / 10000n;
+}
+
+function resolvePromoCodeGrant(input: {
+  walletAddress: Address;
+  code: string;
+  includeCertifiedDecisionRecord: boolean;
+  totalPriceUsdcBaseUnits: bigint;
+}): ResolvedPromoCodeGrant {
+  const normalizedCode = normalizeCode(input.code);
+  if (!normalizedCode) {
+    throw new Error("Promo code is empty.");
+  }
+
+  const rules = parsePromoCodeRules();
+  const rule = rules.find((candidate) => candidate.code === normalizedCode);
+  if (!rule) {
+    throw new Error("Invalid promo code.");
+  }
+
+  validatePromoCodeRule(rule);
+
+  if (input.includeCertifiedDecisionRecord && !rule.includeCertifiedDecisionRecord) {
+    throw new Error("This promo code does not include a certified decision report.");
+  }
+
+  const redemptions = readPromoCodeRedemptions();
+  const redemptionsForCode = redemptions.filter((entry) => normalizeCode(entry.code) === normalizedCode);
+  if (redemptionsForCode.length >= rule.maxUses) {
+    throw new Error("Promo code usage limit reached.");
+  }
+
+  const alreadyRedeemedByWallet = redemptionsForCode.find(
+    (entry) => entry.walletAddress.toLowerCase() === input.walletAddress.toLowerCase(),
+  );
+  if (alreadyRedeemedByWallet) {
+    throw new Error("Promo code already redeemed by this wallet.");
+  }
+
+  const amountBeforeDiscountUsdc = formatUnits(input.totalPriceUsdcBaseUnits, USDC_DECIMALS);
+  const chargedAmountUsdcBaseUnits = applyDiscountPercent(input.totalPriceUsdcBaseUnits, rule.discountPercent);
+  const chargedAmountUsdc = formatUnits(chargedAmountUsdcBaseUnits, USDC_DECIMALS);
+  const discountAmountUsdc = formatUnits(input.totalPriceUsdcBaseUnits - chargedAmountUsdcBaseUnits, USDC_DECIMALS);
+  const promoKind: PromoCodeKind = chargedAmountUsdcBaseUnits === 0n ? "free" : "percent_discount";
+
+  return {
+    normalizedCode,
+    rule,
+    amountBeforeDiscountUsdc,
+    chargedAmountUsdc,
+    discountAmountUsdc,
+    chargedAmountUsdcBaseUnits,
+    promoKind,
+  };
+}
+
+function redeemPromoCodeGrant(input: {
+  walletAddress: Address;
+  code: string;
+  includeCertifiedDecisionRecord: boolean;
+  totalPriceUsdcBaseUnits: bigint;
+  riskMode?: string;
+  investmentHorizon?: string;
+}): AuthorizeWizardPaymentResult {
+  const resolvedPromo = resolvePromoCodeGrant({
+    walletAddress: input.walletAddress,
+    code: input.code,
+    includeCertifiedDecisionRecord: input.includeCertifiedDecisionRecord,
+    totalPriceUsdcBaseUnits: input.totalPriceUsdcBaseUnits,
+  });
+
+  const decisionId = `SELUN-DEC-${Date.now()}`;
+  const mode = input.riskMode?.trim() || "unspecified risk mode";
+  const horizon = input.investmentHorizon?.trim() || "unspecified horizon";
+  const includeCert = input.includeCertifiedDecisionRecord && resolvedPromo.rule.includeCertifiedDecisionRecord;
+  const transactionId = resolvedPromo.promoKind === "free"
+    ? createFreeCodeTransactionId(resolvedPromo.normalizedCode)
+    : buildTransactionId();
+
+  const redemptions = readPromoCodeRedemptions();
+  redemptions.push({
+    code: resolvedPromo.normalizedCode,
+    promoKind: resolvedPromo.promoKind,
+    discountPercent: resolvedPromo.rule.discountPercent,
+    walletAddress: input.walletAddress,
+    decisionId,
+    transactionId,
+    redeemedAt: new Date().toISOString(),
+    includeCertifiedDecisionRecord: includeCert,
+    amountBeforeDiscountUsdc: resolvedPromo.amountBeforeDiscountUsdc,
+    chargedAmountUsdc: resolvedPromo.chargedAmountUsdc,
+  });
+  writePromoCodeRedemptions(redemptions);
+
+  const promoSummary =
+    resolvedPromo.promoKind === "free"
+      ? "100% discount (free grant)"
+      : `${resolvedPromo.rule.discountPercent}% discount`;
+
+  emitExecutionLog({
+    phase: "PAYMENT_AUTH",
+    action: "authorize_wizard_payment_promo_code",
+    status: "success",
+    transactionHash: transactionId,
+  });
+
+  return {
+    status: "paid",
+    transactionId,
+    decisionId,
+    agentNote: `Selun agent applied promo code ${resolvedPromo.normalizedCode} (${promoSummary}) for ${mode} / ${horizon}.`,
+    chargedAmountUsdc: resolvedPromo.chargedAmountUsdc,
+    certifiedDecisionRecordPurchased: includeCert,
+    paymentMethod: resolvedPromo.promoKind === "free" ? "free_code" : "onchain",
+    freeCodeApplied: resolvedPromo.promoKind === "free",
+  };
 }
 
 function readPersistedIdentity(): PersistedIdentity | null {
@@ -332,9 +710,21 @@ export async function authorizeWizardPayment(
     throw new Error("walletAddress must be a valid EVM address.");
   }
 
+  const walletAddress = input.walletAddress as Address;
   const includeDecisionRecord = Boolean(input.includeCertifiedDecisionRecord);
   const totalPriceUsdcBaseUnits = calculateTotalPriceUsdcBaseUnits(includeDecisionRecord);
   const totalPriceDisplay = formatUnits(totalPriceUsdcBaseUnits, USDC_DECIMALS);
+  const promoCode = input.promoCode?.trim();
+  if (promoCode) {
+    return redeemPromoCodeGrant({
+      walletAddress,
+      code: promoCode,
+      includeCertifiedDecisionRecord: includeDecisionRecord,
+      totalPriceUsdcBaseUnits,
+      riskMode: input.riskMode,
+      investmentHorizon: input.investmentHorizon,
+    });
+  }
 
   emitExecutionLog({
     phase: "PAYMENT_AUTH",
@@ -363,6 +753,8 @@ export async function authorizeWizardPayment(
     agentNote,
     chargedAmountUsdc: totalPriceDisplay,
     certifiedDecisionRecordPurchased: includeDecisionRecord,
+    paymentMethod: "onchain",
+    freeCodeApplied: false,
   };
 }
 
@@ -371,6 +763,58 @@ export function getWizardPricing(): WizardPricing {
   return {
     structuredAllocationPriceUsdc: config.structuredAllocationPriceUsdc,
     certifiedDecisionRecordFeeUsdc: config.certifiedDecisionRecordFeeUsdc,
+  };
+}
+
+export async function quoteWizardPayment(
+  input: QuoteWizardPaymentInput,
+): Promise<QuoteWizardPaymentResult> {
+  if (!isAddress(input.walletAddress)) {
+    throw new Error("walletAddress must be a valid EVM address.");
+  }
+
+  const walletAddress = input.walletAddress as Address;
+  const includeDecisionRecord = Boolean(input.includeCertifiedDecisionRecord);
+  const totalPriceUsdcBaseUnits = calculateTotalPriceUsdcBaseUnits(includeDecisionRecord);
+  const totalPriceDisplay = formatUnits(totalPriceUsdcBaseUnits, USDC_DECIMALS);
+  const promoCode = input.promoCode?.trim();
+
+  if (!promoCode) {
+    return {
+      totalBeforeDiscountUsdc: totalPriceDisplay,
+      chargedAmountUsdc: totalPriceDisplay,
+      discountAmountUsdc: "0",
+      discountPercent: 0,
+      promoCodeApplied: false,
+      promoCode: undefined,
+      certifiedDecisionRecordPurchased: includeDecisionRecord,
+      paymentMethod: "onchain",
+      message: "No promo code applied.",
+    };
+  }
+
+  const resolvedPromo = resolvePromoCodeGrant({
+    walletAddress,
+    code: promoCode,
+    includeCertifiedDecisionRecord: includeDecisionRecord,
+    totalPriceUsdcBaseUnits,
+  });
+
+  const promoSummary =
+    resolvedPromo.promoKind === "free"
+      ? "100% discount (free grant)"
+      : `${resolvedPromo.rule.discountPercent}% discount`;
+
+  return {
+    totalBeforeDiscountUsdc: resolvedPromo.amountBeforeDiscountUsdc,
+    chargedAmountUsdc: resolvedPromo.chargedAmountUsdc,
+    discountAmountUsdc: resolvedPromo.discountAmountUsdc,
+    discountPercent: resolvedPromo.rule.discountPercent,
+    promoCodeApplied: true,
+    promoCode: resolvedPromo.normalizedCode,
+    certifiedDecisionRecordPurchased: includeDecisionRecord,
+    paymentMethod: resolvedPromo.promoKind === "free" ? "free_code" : "onchain",
+    message: `Promo code ${resolvedPromo.normalizedCode} valid: ${promoSummary}.`,
   };
 }
 
@@ -461,11 +905,35 @@ export async function verifyIncomingPayment(input: PaymentVerificationInput): Pr
     throw new Error("fromAddress must be a valid EVM address.");
   }
 
-  const expectedAmount = normalizeExpectedUsdc(input.expectedAmountUSDC);
   const fromAddress = input.fromAddress as Address;
+  const decisionId = input.decisionId?.trim();
+  const providedTransactionHash = input.transactionHash?.trim();
+  const promoGrant = findPromoCodeRedemption({
+    walletAddress: fromAddress,
+    decisionId,
+    transactionId: providedTransactionHash,
+  });
+
+  if (promoGrant?.promoKind === "free") {
+    emitExecutionLog({
+      phase: "PAYMENT_VERIFY",
+      action: "verify_free_code_grant",
+      status: "success",
+      transactionHash: promoGrant.transactionId,
+    });
+    return {
+      transactionHash: promoGrant.transactionId as Hex,
+      amount: "0",
+      confirmed: true,
+      blockNumber: 0,
+    };
+  }
+
+  const expectedAmount = promoGrant?.promoKind === "percent_discount"
+    ? normalizeExpectedUsdc(promoGrant.chargedAmountUsdc)
+    : normalizeExpectedUsdc(input.expectedAmountUSDC);
   const identity = await getAgentAddress();
   const toAddress = identity.walletAddress;
-  const providedTransactionHash = input.transactionHash?.trim();
 
   emitExecutionLog({
     phase: "PAYMENT_VERIFY",

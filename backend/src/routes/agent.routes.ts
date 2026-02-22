@@ -8,6 +8,7 @@ import {
   getUSDCBalanceForAddress,
   getWizardPricing,
   initializeAgent,
+  quoteWizardPayment,
   storeDecisionHashOnChain,
   verifyIncomingPayment,
 } from "../services/selun-agent.service";
@@ -101,6 +102,7 @@ router.post("/verify-payment", async (req: Request, res: Response) => {
   const fromAddress = req.body?.fromAddress;
   const expectedAmountUSDC = req.body?.expectedAmountUSDC;
   const transactionHash = req.body?.transactionHash;
+  const decisionId = req.body?.decisionId;
 
   if (typeof fromAddress !== "string") {
     return failure(res, new Error("fromAddress is required."), 400);
@@ -111,12 +113,16 @@ router.post("/verify-payment", async (req: Request, res: Response) => {
   if (transactionHash !== undefined && typeof transactionHash !== "string") {
     return failure(res, new Error("transactionHash must be a string when provided."), 400);
   }
+  if (decisionId !== undefined && typeof decisionId !== "string") {
+    return failure(res, new Error("decisionId must be a string when provided."), 400);
+  }
 
   try {
     const receipt = await verifyIncomingPayment({
       fromAddress,
       expectedAmountUSDC,
       transactionHash,
+      decisionId,
     });
     return success(res, receipt);
   } catch (error) {
@@ -137,8 +143,28 @@ router.post("/pay", async (req: Request, res: Response) => {
       includeCertifiedDecisionRecord: req.body?.includeCertifiedDecisionRecord,
       riskMode: req.body?.riskMode,
       investmentHorizon: req.body?.investmentHorizon,
+      promoCode: req.body?.promoCode,
     });
     return success(res, receipt);
+  } catch (error) {
+    return failure(res, error, 400);
+  }
+});
+
+router.post("/pay-quote", async (req: Request, res: Response) => {
+  const walletAddress = req.body?.walletAddress;
+
+  if (typeof walletAddress !== "string") {
+    return failure(res, new Error("walletAddress is required."), 400);
+  }
+
+  try {
+    const quote = await quoteWizardPayment({
+      walletAddress,
+      includeCertifiedDecisionRecord: req.body?.includeCertifiedDecisionRecord,
+      promoCode: req.body?.promoCode,
+    });
+    return success(res, quote);
   } catch (error) {
     return failure(res, error, 400);
   }

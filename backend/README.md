@@ -24,6 +24,8 @@ Optional:
 - `PAYMENT_POLL_INTERVAL_MS` (default `4000`)
 - `PAYMENT_TIMEOUT_MS` (default `120000`)
 - `PORT` (default `8787`)
+- `SELUN_FREE_CODES_JSON` (JSON array of promo code rules; supports `discountPercent` from `0 < x <= 100`)
+- `SELUN_FREE_CODES` (CSV fallback of one-use free codes at 100% discount)
 
 ## Commands
 
@@ -36,6 +38,7 @@ Optional:
 - `POST /agent/init`
 - `GET /agent/wallet`
 - `GET /agent/pricing`
+- `POST /agent/pay-quote`
 - `POST /agent/usdc-balance`
 - `POST /agent/pay`
 - `POST /agent/verify-payment`

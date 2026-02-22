@@ -3,26 +3,25 @@ import { NextResponse } from "next/server";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-type AgentPaymentRequest = {
+type PaymentQuoteRequest = {
   walletAddress?: string;
   includeCertifiedDecisionRecord?: boolean;
-  riskMode?: string;
-  investmentHorizon?: string;
   promoCode?: string;
 };
 
-type BackendAgentResponse = {
+type BackendQuoteResponse = {
   success?: boolean;
   error?: string;
   data?: {
-    status?: "paid";
-    transactionId?: string;
-    decisionId?: string;
-    agentNote?: string;
+    totalBeforeDiscountUsdc?: string;
     chargedAmountUsdc?: string;
+    discountAmountUsdc?: string;
+    discountPercent?: number;
+    promoCodeApplied?: boolean;
+    promoCode?: string;
     certifiedDecisionRecordPurchased?: boolean;
     paymentMethod?: "onchain" | "free_code";
-    freeCodeApplied?: boolean;
+    message?: string;
   };
 };
 
@@ -33,15 +32,15 @@ function getBackendBaseUrl() {
 }
 
 export async function POST(req: Request): Promise<NextResponse> {
-  let payload: AgentPaymentRequest;
+  let payload: PaymentQuoteRequest;
 
   try {
-    payload = (await req.json()) as AgentPaymentRequest;
+    payload = (await req.json()) as PaymentQuoteRequest;
   } catch {
     return NextResponse.json(
       {
         success: false,
-        error: "Invalid payment payload.",
+        error: "Invalid pay-quote payload.",
       },
       { status: 400 },
     );
@@ -51,53 +50,59 @@ export async function POST(req: Request): Promise<NextResponse> {
     return NextResponse.json(
       {
         success: false,
-        error: "Valid walletAddress is required before payment.",
+        error: "Valid walletAddress is required before promo quote.",
       },
       { status: 400 },
     );
   }
 
   try {
-    const response = await fetch(`${getBackendBaseUrl()}/agent/pay`, {
+    const response = await fetch(`${getBackendBaseUrl()}/agent/pay-quote`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         walletAddress: payload.walletAddress,
         includeCertifiedDecisionRecord: payload.includeCertifiedDecisionRecord,
-        riskMode: payload.riskMode,
-        investmentHorizon: payload.investmentHorizon,
         promoCode: payload.promoCode,
       }),
       cache: "no-store",
     });
 
-    const backendResult = (await response.json()) as BackendAgentResponse;
-    if (!response.ok || !backendResult.success || !backendResult.data) {
+    const rawText = await response.text();
+    let backendResult: BackendQuoteResponse | null = null;
+    try {
+      backendResult = rawText ? (JSON.parse(rawText) as BackendQuoteResponse) : null;
+    } catch {
+      backendResult = null;
+    }
+
+    if (!response.ok || !backendResult?.success || !backendResult.data) {
+      const trimmed = rawText.trim();
+      const looksLikeHtml =
+        trimmed.startsWith("<!DOCTYPE") ||
+        trimmed.startsWith("<html") ||
+        (response.headers.get("content-type") || "").includes("text/html");
+      const fallbackError = looksLikeHtml
+        ? "Backend promo quote returned HTML instead of JSON. Verify SELUN_BACKEND_URL and backend deployment."
+        : `Promo quote failed (HTTP ${response.status}).`;
       return NextResponse.json(
         {
           success: false,
-          error: backendResult.error || "Agent payment failed.",
+          error: backendResult?.error || fallbackError,
         },
-        { status: response.status || 500 },
+        { status: response.status >= 400 ? response.status : 502 },
       );
     }
 
     return NextResponse.json({
       success: true,
-      status: backendResult.data.status || "paid",
-      transactionId: backendResult.data.transactionId,
-      decisionId: backendResult.data.decisionId,
-      agentNote: backendResult.data.agentNote,
-      chargedAmountUsdc: backendResult.data.chargedAmountUsdc,
-      certifiedDecisionRecordPurchased: Boolean(backendResult.data.certifiedDecisionRecordPurchased),
-      paymentMethod: backendResult.data.paymentMethod || "onchain",
-      freeCodeApplied: Boolean(backendResult.data.freeCodeApplied),
+      ...backendResult.data,
     });
   } catch (error) {
     return NextResponse.json(
       {
         success: false,
-        error: error instanceof Error ? error.message : "Agent payment failed.",
+        error: error instanceof Error ? error.message : "Promo quote failed.",
       },
       { status: 502 },
     );

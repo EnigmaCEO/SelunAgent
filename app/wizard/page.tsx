@@ -38,6 +38,8 @@ type AgentPaymentReceipt = {
   agentNote: string;
   chargedAmountUsdc: number;
   certifiedDecisionRecordPurchased: boolean;
+  paymentMethod: "onchain" | "free_code";
+  freeCodeApplied: boolean;
 };
 
 type AgentPaymentResponse = {
@@ -48,7 +50,35 @@ type AgentPaymentResponse = {
   agentNote?: string;
   chargedAmountUsdc?: string;
   certifiedDecisionRecordPurchased?: boolean;
+  paymentMethod?: "onchain" | "free_code";
+  freeCodeApplied?: boolean;
   error?: string;
+};
+
+type PaymentQuoteResponse = {
+  success: boolean;
+  totalBeforeDiscountUsdc?: string;
+  chargedAmountUsdc?: string;
+  discountAmountUsdc?: string;
+  discountPercent?: number;
+  promoCodeApplied?: boolean;
+  promoCode?: string;
+  certifiedDecisionRecordPurchased?: boolean;
+  paymentMethod?: "onchain" | "free_code";
+  message?: string;
+  error?: string;
+};
+
+type PromoQuoteResult = {
+  totalBeforeDiscountUsdc: number;
+  chargedAmountUsdc: number;
+  discountAmountUsdc: number;
+  discountPercent: number;
+  promoCodeApplied: boolean;
+  promoCode?: string;
+  certifiedDecisionRecordPurchased: boolean;
+  paymentMethod: "onchain" | "free_code";
+  message: string;
 };
 
 type UsdcBalanceResponse = {
@@ -1028,6 +1058,73 @@ async function queryPricing(): Promise<{
   };
 }
 
+async function queryPaymentQuote(params: {
+  walletAddress: string;
+  includeCertifiedDecisionRecord: boolean;
+  promoCode: string;
+}): Promise<PromoQuoteResult> {
+  const response = await fetch("/api/agent/pay-quote", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+
+  const rawText = await response.text();
+  let payload: PaymentQuoteResponse | null = null;
+  try {
+    payload = rawText ? (JSON.parse(rawText) as PaymentQuoteResponse) : null;
+  } catch {
+    payload = null;
+  }
+
+  if (!response.ok || !payload?.success) {
+    if (payload?.error) {
+      throw new Error(payload.error);
+    }
+
+    const trimmed = rawText.trim();
+    const looksLikeHtml =
+      trimmed.startsWith("<!DOCTYPE") ||
+      trimmed.startsWith("<html") ||
+      (response.headers.get("content-type") || "").includes("text/html");
+    if (looksLikeHtml) {
+      throw new Error("Promo quote endpoint returned HTML instead of JSON. Redeploy latest frontend/backend and try again.");
+    }
+
+    throw new Error(`Unable to validate promo code (HTTP ${response.status}).`);
+  }
+
+  const totalBeforeDiscountUsdc = Number.parseFloat(payload.totalBeforeDiscountUsdc ?? "");
+  const chargedAmountUsdc = Number.parseFloat(payload.chargedAmountUsdc ?? "");
+  const discountAmountUsdc = Number.parseFloat(payload.discountAmountUsdc ?? "");
+  const discountPercent = Number(payload.discountPercent ?? 0);
+  if (
+    !Number.isFinite(totalBeforeDiscountUsdc) ||
+    totalBeforeDiscountUsdc < 0 ||
+    !Number.isFinite(chargedAmountUsdc) ||
+    chargedAmountUsdc < 0 ||
+    !Number.isFinite(discountAmountUsdc) ||
+    discountAmountUsdc < 0 ||
+    !Number.isFinite(discountPercent) ||
+    discountPercent < 0 ||
+    discountPercent > 100
+  ) {
+    throw new Error("Backend returned invalid promo quote.");
+  }
+
+  return {
+    totalBeforeDiscountUsdc,
+    chargedAmountUsdc,
+    discountAmountUsdc,
+    discountPercent,
+    promoCodeApplied: Boolean(payload.promoCodeApplied),
+    promoCode: payload.promoCode,
+    certifiedDecisionRecordPurchased: Boolean(payload.certifiedDecisionRecordPurchased),
+    paymentMethod: payload.paymentMethod ?? "onchain",
+    message: payload.message || "Promo code applied.",
+  };
+}
+
 async function queryAgentWallet(): Promise<{
   walletAddress: string;
   networkId: string;
@@ -1068,6 +1165,7 @@ async function verifyPaymentOnBackend(params: {
   fromAddress: string;
   expectedAmountUSDC: number | string;
   transactionHash?: string;
+  decisionId?: string;
 }, options?: {
   timeoutMs?: number;
 }): Promise<{
@@ -1438,6 +1536,7 @@ async function hasPendingTransactionsOnRpc(networkId: string, walletAddress: str
 async function tryRecoverExistingPayment(params: {
   fromAddress: string;
   expectedAmountUSDC: string;
+  decisionId?: string;
 }, timeoutMs: number): Promise<Awaited<ReturnType<typeof verifyPaymentOnBackend>> | null> {
   try {
     return await verifyPaymentOnBackend(
@@ -1610,6 +1709,12 @@ type ReviewStepProps = {
   basePriceUsdc: number;
   certifiedDecisionRecordFeeUsdc: number;
   includeCertifiedDecisionRecord: boolean;
+  promoCode: string;
+  promoQuote: PromoQuoteResult | null;
+  promoQuoteError: string | null;
+  isApplyingPromoCode: boolean;
+  requiresPromoApply: boolean;
+  requiredAmountUsdc: number;
   totalPriceUsdc: number;
   isLoadingPricing: boolean;
   pricingError: string | null;
@@ -1623,6 +1728,8 @@ type ReviewStepProps = {
   paymentError: string | null;
   isPaying: boolean;
   onToggleCertifiedDecisionRecord: (nextValue: boolean) => void;
+  onPromoCodeChange: (value: string) => void;
+  onApplyPromoCode: () => Promise<void>;
   onConnectWallet: () => Promise<void>;
   onRefreshUsdcBalance: () => void;
   onRefreshPricing: () => Promise<void>;
@@ -1636,6 +1743,12 @@ function ReviewStep({
   basePriceUsdc,
   certifiedDecisionRecordFeeUsdc,
   includeCertifiedDecisionRecord,
+  promoCode,
+  promoQuote,
+  promoQuoteError,
+  isApplyingPromoCode,
+  requiresPromoApply,
+  requiredAmountUsdc,
   totalPriceUsdc,
   isLoadingPricing,
   pricingError,
@@ -1649,21 +1762,33 @@ function ReviewStep({
   paymentError,
   isPaying,
   onToggleCertifiedDecisionRecord,
+  onPromoCodeChange,
+  onApplyPromoCode,
   onConnectWallet,
   onRefreshUsdcBalance,
   onRefreshPricing,
   onBack,
   onGenerate,
 }: ReviewStepProps) {
+  const hasPromoCode = promoCode.trim().length > 0;
+  const promoApplied = Boolean(promoQuote?.promoCodeApplied);
+  const requiresUsdcBalance = requiredAmountUsdc > 0;
   const canGenerate =
-    !isLoadingPricing &&
-    !pricingError &&
     Boolean(walletAddress) &&
     !isPaying &&
-    !isLoadingUsdcBalance &&
-    !usdcBalanceError &&
-    usdcBalance !== null &&
-    usdcBalance >= totalPriceUsdc;
+    !isApplyingPromoCode &&
+    !requiresPromoApply &&
+    (
+      !requiresUsdcBalance ||
+      (
+        !isLoadingUsdcBalance &&
+        !usdcBalanceError &&
+        !isLoadingPricing &&
+        !pricingError &&
+        usdcBalance !== null &&
+        usdcBalance >= requiredAmountUsdc
+      )
+    );
 
   const shouldLeadWithConnect = !walletAddress;
 
@@ -1673,11 +1798,15 @@ function ReviewStep({
       ? "Loading pricing..."
     : pricingError
       ? "Pricing unavailable. Refresh required."
-    : isLoadingUsdcBalance && walletAddress
+    : requiresUsdcBalance && isLoadingUsdcBalance && walletAddress
       ? "Checking USDC balance..."
-      : isBalanceLow
-        ? "Insufficient USDC balance"
-        : `Authorize ${formatUsdcValue(totalPriceUsdc)} USDC & Generate Allocation`;
+    : requiresPromoApply
+      ? "Apply promo code to confirm final price"
+    : isBalanceLow
+      ? "Insufficient USDC balance"
+    : !requiresUsdcBalance
+      ? "Generate Allocation"
+      : `Authorize ${formatUsdcValue(requiredAmountUsdc)} USDC & Generate Allocation`;
 
   return (
     <section className="rounded-2xl border border-slate-300/70 bg-white/70 p-6 backdrop-blur">
@@ -1730,10 +1859,24 @@ function ReviewStep({
             {includeCertifiedDecisionRecord ? `$${formatUsdcValue(certifiedDecisionRecordFeeUsdc)} USDC` : "$0 USDC"}
           </span>
         </div>
+        {promoApplied && promoQuote && (
+          <div className="mt-1 flex items-center justify-between text-sm text-emerald-700">
+            <span>Promo Discount ({formatUsdcValue(promoQuote.discountPercent)}%)</span>
+            <span>- ${formatUsdcValue(promoQuote.discountAmountUsdc)} USDC</span>
+          </div>
+        )}
         <div className="mt-3 flex items-center justify-between border-t border-slate-200 pt-3 text-base font-bold text-slate-950">
-          <span>Total</span>
-          <span>${formatUsdcValue(totalPriceUsdc)} USDC</span>
+          <span>Final Total</span>
+          <span>${formatUsdcValue(requiredAmountUsdc)} USDC</span>
         </div>
+        {requiresPromoApply && (
+          <p className="mt-2 text-xs font-medium text-amber-700">
+            Apply your code to confirm the final checkout price before purchase.
+          </p>
+        )}
+        {promoApplied && promoQuote?.message && (
+          <p className="mt-2 text-xs font-medium text-emerald-700">{promoQuote.message}</p>
+        )}
         <p className="mt-2 text-xs font-medium text-slate-500">
           Allocation executed using Sagitta AAA v4 market-aware allocator.
         </p>
@@ -1806,7 +1949,7 @@ function ReviewStep({
                   : "Unavailable"
               : "Connect wallet to check"}
           </p>
-          <p className="text-xs text-slate-600">Required: {formatUsdcValue(totalPriceUsdc)} USDC</p>
+          <p className="text-xs text-slate-600">Required: {formatUsdcValue(requiredAmountUsdc)} USDC</p>
         </div>
 
         {usdcBalanceError && (
@@ -1815,9 +1958,47 @@ function ReviewStep({
           </p>
         )}
 
-        {walletAddress && isBalanceLow && !usdcBalanceError && (
+        {walletAddress && requiresUsdcBalance && isBalanceLow && !usdcBalanceError && !requiresPromoApply && (
           <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-700">
             Low USDC balance on {usdcNetworkLabel}. Add funds before continuing.
+          </p>
+        )}
+      </div>
+
+      <div className="mt-4 rounded-xl border border-slate-300/60 bg-slate-50/70 p-4">
+        <label className="block text-xs font-bold uppercase tracking-[0.16em] text-slate-500" htmlFor="promo-code-input">
+          Promo Code (Optional)
+        </label>
+        <div className="mt-2 grid gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
+          <input
+            id="promo-code-input"
+            type="text"
+            value={promoCode}
+            onChange={(event) => onPromoCodeChange(event.target.value)}
+            placeholder="Enter promo code"
+            disabled={isPaying || isApplyingPromoCode}
+            className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-800 outline-none ring-cyan-500/30 transition placeholder:text-slate-400 focus:border-cyan-400 focus:ring-4 disabled:cursor-not-allowed disabled:bg-slate-100"
+          />
+          <button
+            type="button"
+            onClick={() => void onApplyPromoCode()}
+            disabled={!walletAddress || !hasPromoCode || isPaying || isApplyingPromoCode}
+            className="rounded-full border border-cyan-500 bg-cyan-50 px-4 py-2 text-sm font-semibold text-cyan-800 transition hover:bg-cyan-100 disabled:cursor-not-allowed disabled:border-slate-300 disabled:bg-slate-100 disabled:text-slate-400"
+          >
+            {isApplyingPromoCode ? "Applying..." : promoApplied ? "Code Applied" : "Apply Code"}
+          </button>
+        </div>
+        {!walletAddress && (
+          <p className="mt-2 text-xs font-medium text-amber-700">Connect wallet first, then apply promo code.</p>
+        )}
+        {walletAddress && (
+          <p className="mt-2 text-xs text-slate-600">
+            Apply code first to lock preview pricing before purchase.
+          </p>
+        )}
+        {promoQuoteError && (
+          <p className="mt-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-medium text-rose-700">
+            {promoQuoteError}
           </p>
         )}
       </div>
@@ -2833,6 +3014,10 @@ function SelunAllocationWizard() {
   const [riskMode, setRiskMode] = useState<RiskMode | null>(DEFAULT_RISK_MODE);
   const [investmentHorizon, setInvestmentHorizon] = useState<InvestmentHorizon | null>(DEFAULT_HORIZON);
   const [includeCertifiedDecisionRecord, setIncludeCertifiedDecisionRecord] = useState(false);
+  const [promoCode, setPromoCode] = useState("");
+  const [promoQuote, setPromoQuote] = useState<PromoQuoteResult | null>(null);
+  const [promoQuoteError, setPromoQuoteError] = useState<string | null>(null);
+  const [isApplyingPromoCode, setIsApplyingPromoCode] = useState(false);
   const [basePriceUsdc, setBasePriceUsdc] = useState<number>(FALLBACK_BASE_PRICE_USDC);
   const [certifiedDecisionRecordFeeUsdc, setCertifiedDecisionRecordFeeUsdc] = useState<number>(
     FALLBACK_CERTIFIED_DECISION_RECORD_FEE_USDC,
@@ -2883,6 +3068,8 @@ function SelunAllocationWizard() {
   const [isDownloading, setIsDownloading] = useState(false);
   const totalPriceUsdc =
     basePriceUsdc + (includeCertifiedDecisionRecord ? certifiedDecisionRecordFeeUsdc : 0);
+  const requiredAmountUsdc = promoQuote?.chargedAmountUsdc ?? totalPriceUsdc;
+  const requiresPromoApply = promoCode.trim().length > 0 && !promoQuote;
   const regimeDetected = formatMarketRegimeLabel(phase1Output);
   const allocationRows = toAllocationRows(phase5Output, phase6Output, phase6AaaAllocate);
   const phase7Enabled = Boolean(agentPaymentReceipt?.certifiedDecisionRecordPurchased);
@@ -2894,7 +3081,7 @@ function SelunAllocationWizard() {
       !pricingError &&
       walletAddress &&
       usdcBalance !== null &&
-      usdcBalance < totalPriceUsdc,
+      usdcBalance < requiredAmountUsdc,
   );
 
   useEffect(() => {
@@ -2909,6 +3096,8 @@ function SelunAllocationWizard() {
       const pricing = await queryPricing();
       setBasePriceUsdc(pricing.structuredAllocationPriceUsdc);
       setCertifiedDecisionRecordFeeUsdc(pricing.certifiedDecisionRecordFeeUsdc);
+      setPromoQuote(null);
+      setPromoQuoteError(null);
     } catch (error: unknown) {
       setPricingError(error instanceof Error ? error.message : "Unable to load pricing from backend.");
     } finally {
@@ -2919,6 +3108,58 @@ function SelunAllocationWizard() {
   useEffect(() => {
     void refreshPricing();
   }, [refreshPricing]);
+
+  const handleToggleCertifiedDecisionRecord = useCallback((nextValue: boolean) => {
+    setIncludeCertifiedDecisionRecord(nextValue);
+    setPromoQuote(null);
+    setPromoQuoteError(null);
+  }, []);
+
+  const handlePromoCodeChange = useCallback((value: string) => {
+    setPromoCode(value);
+    setPromoQuote(null);
+    setPromoQuoteError(null);
+  }, []);
+
+  const handleApplyPromoCode = useCallback(async () => {
+    const normalizedCode = promoCode.trim();
+    if (!normalizedCode) {
+      setPromoQuote(null);
+      setPromoQuoteError("Enter a promo code first.");
+      return;
+    }
+    if (!walletAddress) {
+      setPromoQuote(null);
+      setPromoQuoteError("Connect wallet first to validate promo code pricing.");
+      return;
+    }
+    if (isLoadingPricing) {
+      setPromoQuote(null);
+      setPromoQuoteError("Pricing is still loading. Please wait and retry.");
+      return;
+    }
+    if (pricingError) {
+      setPromoQuote(null);
+      setPromoQuoteError("Pricing is unavailable. Refresh pricing before applying a code.");
+      return;
+    }
+
+    setIsApplyingPromoCode(true);
+    setPromoQuoteError(null);
+    try {
+      const quote = await queryPaymentQuote({
+        walletAddress,
+        includeCertifiedDecisionRecord,
+        promoCode: normalizedCode,
+      });
+      setPromoQuote(quote);
+    } catch (error) {
+      setPromoQuote(null);
+      setPromoQuoteError(error instanceof Error ? error.message : "Unable to apply promo code.");
+    } finally {
+      setIsApplyingPromoCode(false);
+    }
+  }, [promoCode, walletAddress, includeCertifiedDecisionRecord, isLoadingPricing, pricingError]);
 
   useEffect(() => {
     if (wizardState !== "PROCESSING") return;
@@ -3125,6 +3366,8 @@ function SelunAllocationWizard() {
 
       setWalletAddress(accountsResult[0]);
       setAgentPaymentReceipt(null);
+      setPromoQuote(null);
+      setPromoQuoteError(null);
     } catch (error) {
       setPaymentError(error instanceof Error ? error.message : "Wallet connection failed.");
     } finally {
@@ -3386,6 +3629,7 @@ function SelunAllocationWizard() {
 
   const handleGenerateAllocation = async () => {
     if (!riskMode || !investmentHorizon || isPaying) return;
+    const requiresUsdcBalance = requiredAmountUsdc > 0;
     if (isLoadingPricing) {
       setPaymentError("Loading backend pricing. Please wait.");
       return;
@@ -3398,17 +3642,26 @@ function SelunAllocationWizard() {
       setPaymentError("Connect wallet to authorize Selun agent payment.");
       return;
     }
-    if (isLoadingUsdcBalance) {
+    if (isApplyingPromoCode) {
+      setPaymentError("Applying promo code. Please wait.");
+      return;
+    }
+    if (requiresPromoApply) {
+      setPaymentError("Apply promo code first to confirm final price before purchase.");
+      return;
+    }
+    if (requiresUsdcBalance && isLoadingUsdcBalance) {
       setPaymentError("Checking USDC balance. Please wait.");
       return;
     }
-    if (usdcBalanceError || usdcBalance === null) {
+    if (requiresUsdcBalance && (usdcBalanceError || usdcBalance === null)) {
       setPaymentError("USDC balance unavailable. Refresh balance and try again.");
       return;
     }
-    if (usdcBalance < totalPriceUsdc) {
+    const availableUsdc = usdcBalance ?? 0;
+    if (requiresUsdcBalance && availableUsdc < requiredAmountUsdc) {
       setPaymentError(
-        `Insufficient USDC on ${usdcNetworkLabel}. Required ${formatUsdcValue(totalPriceUsdc)} USDC.`,
+        `Insufficient USDC on ${usdcNetworkLabel}. Required ${formatUsdcValue(requiredAmountUsdc)} USDC.`,
       );
       return;
     }
@@ -3429,6 +3682,7 @@ function SelunAllocationWizard() {
           includeCertifiedDecisionRecord,
           riskMode,
           investmentHorizon,
+          promoCode: promoCode.trim() || undefined,
         }),
       });
 
@@ -3447,8 +3701,34 @@ function SelunAllocationWizard() {
       }
       const chargedAmountUsdcString = paymentResult.chargedAmountUsdc?.trim() ?? "";
       const chargedAmountUsdc = Number.parseFloat(chargedAmountUsdcString);
-      if (!Number.isFinite(chargedAmountUsdc) || chargedAmountUsdc <= 0) {
+      if (!Number.isFinite(chargedAmountUsdc) || chargedAmountUsdc < 0) {
         throw new Error("Invalid charged amount received from backend.");
+      }
+
+      const paymentMethod = paymentResult.paymentMethod ?? "onchain";
+      const freeCodeApplied = Boolean(paymentResult.freeCodeApplied);
+      const isFreeCodeCheckout = paymentMethod === "free_code" || freeCodeApplied || chargedAmountUsdc === 0;
+
+      if (!isFreeCodeCheckout && availableUsdc < chargedAmountUsdc) {
+        throw new Error(
+          `Insufficient USDC on ${usdcNetworkLabel}. Required ${formatUsdcValue(chargedAmountUsdc)} USDC.`,
+        );
+      }
+
+      if (isFreeCodeCheckout) {
+        setAgentPaymentReceipt({
+          transactionId: paymentResult.transactionId,
+          decisionId: paymentResult.decisionId,
+          agentNote: paymentResult.agentNote,
+          chargedAmountUsdc,
+          certifiedDecisionRecordPurchased: paymentResult.certifiedDecisionRecordPurchased,
+          paymentMethod: "free_code",
+          freeCodeApplied: true,
+        });
+
+        const phase1JobId = `selun-phase1-${paymentResult.decisionId}-${Date.now()}`.replace(/[^a-zA-Z0-9-_]/g, "-");
+        await startPhase1Flow(phase1JobId);
+        return;
       }
 
       const provider = window.ethereum;
@@ -3500,6 +3780,7 @@ function SelunAllocationWizard() {
                 {
                   fromAddress: walletAddress,
                   expectedAmountUSDC: chargedAmountUsdcString,
+                  decisionId: paymentResult.decisionId,
                 },
                 { timeoutMs: 120_000 },
               );
@@ -3520,6 +3801,7 @@ function SelunAllocationWizard() {
             fromAddress: walletAddress,
             expectedAmountUSDC: chargedAmountUsdcString,
             transactionHash: transferHash,
+            decisionId: paymentResult.decisionId,
           }));
       }
 
@@ -3529,6 +3811,8 @@ function SelunAllocationWizard() {
         agentNote: paymentResult.agentNote,
         chargedAmountUsdc,
         certifiedDecisionRecordPurchased: paymentResult.certifiedDecisionRecordPurchased,
+        paymentMethod: "onchain",
+        freeCodeApplied: false,
       });
 
       const phase1JobId = `selun-phase1-${paymentResult.decisionId}-${Date.now()}`.replace(/[^a-zA-Z0-9-_]/g, "-");
@@ -3575,6 +3859,8 @@ function SelunAllocationWizard() {
                 amountUsdc: agentPaymentReceipt.chargedAmountUsdc,
                 agentNote: agentPaymentReceipt.agentNote,
                 certifiedDecisionRecordPurchased: agentPaymentReceipt.certifiedDecisionRecordPurchased,
+                paymentMethod: agentPaymentReceipt.paymentMethod,
+                freeCodeApplied: agentPaymentReceipt.freeCodeApplied,
               }
             : null,
           regimeDetected,
@@ -3639,6 +3925,10 @@ function SelunAllocationWizard() {
     setRiskMode(DEFAULT_RISK_MODE);
     setInvestmentHorizon(DEFAULT_HORIZON);
     setIncludeCertifiedDecisionRecord(false);
+    setPromoCode("");
+    setPromoQuote(null);
+    setPromoQuoteError(null);
+    setIsApplyingPromoCode(false);
     setWalletAddress(null);
     setUsdcNetworkId("backend-configured");
     setUsdcNetworkLabel("Configured in backend");
@@ -3770,6 +4060,12 @@ function SelunAllocationWizard() {
           basePriceUsdc={basePriceUsdc}
           certifiedDecisionRecordFeeUsdc={certifiedDecisionRecordFeeUsdc}
           includeCertifiedDecisionRecord={includeCertifiedDecisionRecord}
+          promoCode={promoCode}
+          promoQuote={promoQuote}
+          promoQuoteError={promoQuoteError}
+          isApplyingPromoCode={isApplyingPromoCode}
+          requiresPromoApply={requiresPromoApply}
+          requiredAmountUsdc={requiredAmountUsdc}
           totalPriceUsdc={totalPriceUsdc}
           isLoadingPricing={isLoadingPricing}
           pricingError={pricingError}
@@ -3782,7 +4078,9 @@ function SelunAllocationWizard() {
           isConnectingWallet={isConnectingWallet}
           paymentError={paymentError}
           isPaying={isPaying}
-          onToggleCertifiedDecisionRecord={setIncludeCertifiedDecisionRecord}
+          onToggleCertifiedDecisionRecord={handleToggleCertifiedDecisionRecord}
+          onPromoCodeChange={handlePromoCodeChange}
+          onApplyPromoCode={handleApplyPromoCode}
           onConnectWallet={handleConnectWallet}
           onRefreshUsdcBalance={handleRefreshUsdcBalance}
           onRefreshPricing={refreshPricing}

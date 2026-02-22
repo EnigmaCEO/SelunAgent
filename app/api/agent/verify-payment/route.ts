@@ -7,6 +7,7 @@ type VerifyPaymentRequest = {
   fromAddress?: string;
   expectedAmountUSDC?: number | string;
   transactionHash?: string;
+  decisionId?: string;
 };
 
 const isHexAddress = (value: string) => /^0x[a-fA-F0-9]{40}$/.test(value);
@@ -45,21 +46,32 @@ export async function POST(req: Request) {
     typeof payload.expectedAmountUSDC === "number"
       ? payload.expectedAmountUSDC
       : Number.parseFloat(payload.expectedAmountUSDC ?? "");
-  if (!Number.isFinite(expectedAmount) || expectedAmount <= 0) {
+  if (!Number.isFinite(expectedAmount) || expectedAmount < 0) {
     return NextResponse.json(
       {
         success: false,
-        error: "expectedAmountUSDC must be greater than zero.",
+        error: "expectedAmountUSDC must be greater than or equal to zero.",
       },
       { status: 400 },
     );
   }
 
-  if (payload.transactionHash && !isTransactionHash(payload.transactionHash)) {
+  const isFreeCodeTransaction = payload.transactionHash?.startsWith("FREE-") ?? false;
+  if (payload.transactionHash && !isTransactionHash(payload.transactionHash) && !isFreeCodeTransaction) {
     return NextResponse.json(
       {
         success: false,
         error: "transactionHash must be a valid transaction hash.",
+      },
+      { status: 400 },
+    );
+  }
+
+  if (payload.decisionId !== undefined && typeof payload.decisionId !== "string") {
+    return NextResponse.json(
+      {
+        success: false,
+        error: "decisionId must be a string when provided.",
       },
       { status: 400 },
     );
@@ -73,6 +85,7 @@ export async function POST(req: Request) {
         fromAddress: payload.fromAddress,
         expectedAmountUSDC: expectedAmount,
         transactionHash: payload.transactionHash,
+        decisionId: payload.decisionId,
       }),
       cache: "no-store",
     });

@@ -28,6 +28,8 @@ type DownloadRequestPayload = {
     chargedAmountUsdc?: number | string;
     agentNote?: string;
     certifiedDecisionRecordPurchased?: boolean;
+    paymentMethod?: "onchain" | "free_code";
+    freeCodeApplied?: boolean;
   } | null;
   allocations?: AllocationRow[];
   phase1Artifact?: unknown;
@@ -431,6 +433,7 @@ async function verifyPurchaseOnBackend(
   walletAddress: string,
   expectedAmountUsdc: number,
   transactionHash: string,
+  decisionId: string,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const backendBase = process.env.SELUN_BACKEND_URL?.trim() || "http://localhost:8787";
 
@@ -442,6 +445,7 @@ async function verifyPurchaseOnBackend(
         fromAddress: walletAddress,
         expectedAmountUSDC: expectedAmountUsdc,
         transactionHash,
+        decisionId,
       }),
       cache: "no-store",
     });
@@ -1705,6 +1709,8 @@ export async function POST(req: Request): Promise<Response> {
   const paymentStatus = toText(payment?.status, "").toLowerCase();
   const decisionId = toText(payment?.decisionId, "");
   const transactionId = toText(payment?.transactionId, "");
+  const paymentMethod = toText(payment?.paymentMethod, "onchain").toLowerCase();
+  const chargedAmountUsdc = toFiniteNumber(payment?.chargedAmountUsdc ?? payment?.amountUsdc);
 
   if (paymentStatus !== "paid" || !decisionId || !transactionId) {
     return NextResponse.json(
@@ -1727,15 +1733,29 @@ export async function POST(req: Request): Promise<Response> {
     return NextResponse.json({ error: "Valid paid wallet address is required before report download." }, { status: 400 });
   }
 
-  const pricing = await fetchBackendPricing();
-  if (!pricing.ok) {
-    return NextResponse.json(
-      { error: `Pricing lookup required for certified report: ${pricing.error}` },
-      { status: 502 },
-    );
+  const isFreeCodePayment =
+    paymentMethod === "free_code" ||
+    transactionId.startsWith("FREE-") ||
+    (chargedAmountUsdc !== null && chargedAmountUsdc <= 0);
+
+  let expectedVerificationAmount = 0;
+  if (!isFreeCodePayment) {
+    const pricing = await fetchBackendPricing();
+    if (!pricing.ok) {
+      return NextResponse.json(
+        { error: `Pricing lookup required for certified report: ${pricing.error}` },
+        { status: 502 },
+      );
+    }
+    expectedVerificationAmount = pricing.requiredCertifiedPriceUsdc;
   }
 
-  const verifiedPayment = await verifyPurchaseOnBackend(walletAddress, pricing.requiredCertifiedPriceUsdc, transactionId);
+  const verifiedPayment = await verifyPurchaseOnBackend(
+    walletAddress,
+    expectedVerificationAmount,
+    transactionId,
+    decisionId,
+  );
   if (!verifiedPayment.ok) {
     return NextResponse.json(
       { error: `Payment verification required: ${verifiedPayment.error}` },

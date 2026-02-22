@@ -1,9 +1,9 @@
 import fs from "node:fs";
-import path from "node:path";
 import dotenv from "dotenv";
 import express from "express";
 import { createAgentRouter } from "./routes/agent.routes";
 import { EXECUTION_MODEL_VERSION, getConfig } from "./config";
+import { resolveBackendPath } from "./runtime-paths";
 import { getExecutionStatus, getExecutionStatusByWallet } from "./services/phase1-execution.service";
 
 type JsonRecord = Record<string, unknown>;
@@ -50,8 +50,8 @@ function sanitizeExecutionStatusForAllocator<T>(payload: T): T {
   }
 }
 
-const backendEnvPath = path.join(process.cwd(), "backend", ".env");
-const backendEnvLocalPath = path.join(process.cwd(), "backend", ".env.local");
+const backendEnvPath = resolveBackendPath(".env");
+const backendEnvLocalPath = resolveBackendPath(".env.local");
 
 dotenv.config();
 

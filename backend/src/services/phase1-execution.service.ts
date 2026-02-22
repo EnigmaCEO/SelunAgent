@@ -5,6 +5,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
 import { EXECUTION_MODEL_VERSION } from "../config";
 import { emitExecutionLog } from "../logging/execution-logs";
+import { resolveBackendDataFilePath } from "../runtime-paths";
 import { initializeAgent } from "./selun-agent.service";
 
 export const REVIEW_MARKET_CONDITIONS_PHASE = "review_market_conditions" as const;
@@ -80,8 +81,8 @@ const DEFAULT_PHASE1_SNAPSHOT_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_PHASE1_VOLATILITY_SOURCE_TARGET = 2;
 const DEFAULT_PHASE1_GLOBAL_METRICS_SOURCE_TARGET = 2;
 const DEFAULT_PHASE1_SENTIMENT_SOURCE_TARGET = 3;
-const PHASE1_SNAPSHOT_PATH = path.join(process.cwd(), "backend", "data", "phase1-market-snapshot.json");
-const PHASE1_SOURCE_INTELLIGENCE_PATH = path.join(process.cwd(), "backend", "data", "source-intelligence.json");
+const PHASE1_SNAPSHOT_PATH = resolveBackendDataFilePath("phase1-market-snapshot.json");
+const PHASE1_SOURCE_INTELLIGENCE_PATH = resolveBackendDataFilePath("source-intelligence.json");
 const DEFAULT_VOLATILITY_SOURCE_ORDER = ["coingecko", "coinbase"] as const;
 const DEFAULT_GLOBAL_METRICS_SOURCE_ORDER = ["coingecko", "coinpaprika"] as const;
 const DEFAULT_SENTIMENT_SOURCE_ORDER = ["cryptocompare", "alternative_me"] as const;
