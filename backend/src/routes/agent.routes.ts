@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import { createHash } from "node:crypto";
+import { declareDiscoveryExtension } from "@x402/extensions/bazaar";
 import { isAddress } from "viem";
 import { EXECUTION_MODEL_VERSION, getConfig } from "../config";
 import { getExecutionLogs } from "../logging/execution-logs";
@@ -59,6 +60,31 @@ type X402AllocateRecord = {
     fromAddress: string;
     transactionHash: string;
     verifiedAt: string;
+  };
+};
+type X402AllocateAccept = {
+  optionId: "allocation_only" | "allocation_with_report";
+  scheme: "exact";
+  amountUsdc: string;
+  price: string;
+  withReport: boolean;
+  network: string;
+  caip2Network: string;
+  usdcContractAddress: string;
+  payToAddress: string;
+  requiredHeaders: readonly ["x402-from-address", "x402-transaction-hash"];
+};
+type X402PaymentRequirementV2 = {
+  scheme: "exact";
+  network: string;
+  amount: string;
+  asset: string;
+  payTo: string;
+  maxTimeoutSeconds: number;
+  extra: {
+    optionId: "allocation_only" | "allocation_with_report";
+    withReport: boolean;
+    requiredHeaders: readonly ["x402-from-address", "x402-transaction-hash"];
   };
 };
 
@@ -330,6 +356,121 @@ function computePriceContract() {
   };
 }
 
+function toUsdPrice(amountUsdc: string): string {
+  const amount = Number.parseFloat(amountUsdc);
+  if (!Number.isFinite(amount)) return `$${amountUsdc}`;
+  return `$${amount.toFixed(2)}`;
+}
+
+function toCaip2Network(networkId: string): string {
+  if (networkId === "base-mainnet") return "eip155:8453";
+  if (networkId === "base-sepolia") return "eip155:84532";
+  return networkId;
+}
+
+function buildAllocateAccepts(payToAddress: string): X402AllocateAccept[] {
+  const config = getConfig();
+  const pricing = computePriceContract();
+  const common = {
+    scheme: "exact" as const,
+    network: config.networkId,
+    caip2Network: toCaip2Network(config.networkId),
+    usdcContractAddress: config.usdcContractAddress,
+    payToAddress,
+    requiredHeaders: ["x402-from-address", "x402-transaction-hash"] as const,
+  };
+
+  return [
+    {
+      optionId: "allocation_only",
+      amountUsdc: pricing.allocationOnlyUsdc,
+      price: toUsdPrice(pricing.allocationOnlyUsdc),
+      withReport: false,
+      ...common,
+    },
+    {
+      optionId: "allocation_with_report",
+      amountUsdc: pricing.allocationWithReportUsdc,
+      price: toUsdPrice(pricing.allocationWithReportUsdc),
+      withReport: true,
+      ...common,
+    },
+  ];
+}
+
+function buildPaymentRequirementsV2(accepts: X402AllocateAccept[]): X402PaymentRequirementV2[] {
+  const maxTimeoutSeconds = Math.max(30, Math.ceil(getConfig().paymentTimeoutMs / 1000));
+  return accepts.map((option) => ({
+    scheme: "exact",
+    network: option.caip2Network,
+    amount: option.amountUsdc,
+    asset: option.usdcContractAddress,
+    payTo: option.payToAddress,
+    maxTimeoutSeconds,
+    extra: {
+      optionId: option.optionId,
+      withReport: option.withReport,
+      requiredHeaders: option.requiredHeaders,
+    },
+  }));
+}
+
+function buildAllocateDiscoveryExtension() {
+  return declareDiscoveryExtension({
+    description:
+      "Selun performs deterministic crypto allocation construction with optional certified decision record, payable via x402 (USDC) on Base.",
+    bodyType: "json",
+    input: {
+      decisionId: "agent-run-001",
+      riskTolerance: "Balanced",
+      timeframe: "1-3_years",
+      withReport: true,
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        decisionId: { type: "string" },
+        riskTolerance: { enum: ["Conservative", "Balanced", "Growth", "Aggressive"] },
+        timeframe: { enum: ["<1_year", "1-3_years", "3+_years"] },
+        withReport: { type: "boolean" },
+      },
+      required: ["decisionId", "riskTolerance", "timeframe", "withReport"],
+    },
+    output: {
+      example: {
+        success: true,
+        executionModelVersion: EXECUTION_MODEL_VERSION,
+        data: {
+          status: "accepted",
+          jobId: "selun-allocate-agent-run-001-1700000000000",
+          decisionId: "agent-run-001",
+          statusPath: "/execution-status/selun-allocate-agent-run-001-1700000000000",
+        },
+      },
+    },
+  });
+}
+
+// NEW: attach discovery extension as a response header (does not alter JSON bodies)
+function attachBazaarDiscovery(res: Response) {
+  try {
+    const ext = buildAllocateDiscoveryExtension();
+    // Header name is intentionally prefixed; consumers treat it as opaque JSON.
+    res.setHeader("X-X402-Bazaar-Discovery", JSON.stringify(ext));
+  } catch {
+    // best-effort; do not break endpoint if metadata fails
+  }
+}
+
+function buildAbsoluteResourceUrl(req: Request, routePath: string): string {
+  const forwardedProto = req.header("x-forwarded-proto")?.split(",")[0]?.trim();
+  const forwardedHost = req.header("x-forwarded-host")?.split(",")[0]?.trim();
+  const proto = forwardedProto || req.protocol || "https";
+  const host = forwardedHost || req.get("host");
+  if (!host) return routePath;
+  return `${proto}://${host}${routePath}`;
+}
+
 function sendRateLimited(
   res: Response,
   reason: "ip_burst_limit" | "from_address_daily_cap" | "global_concurrency_cap",
@@ -437,9 +578,11 @@ async function sendAllocatePaymentRequired(
     decisionId: string;
     quoteExpiresAt: string;
     deprecationWarning?: string;
+    persistQuote?: boolean;
   },
 ) {
-  const existing = x402AllocateByDecisionId.get(params.decisionId);
+  const shouldPersistQuote = params.persistQuote ?? true;
+  const existing = shouldPersistQuote ? x402AllocateByDecisionId.get(params.decisionId) : undefined;
   const inputFingerprint = computeAllocateInputFingerprint(params.inputs);
   const timestamp = nowIso();
   const record: X402AllocateRecord = existing
@@ -464,7 +607,9 @@ async function sendAllocatePaymentRequired(
       createdAt: timestamp,
       updatedAt: timestamp,
     };
-  x402AllocateByDecisionId.set(params.decisionId, record);
+  if (shouldPersistQuote) {
+    x402AllocateByDecisionId.set(params.decisionId, record);
+  }
 
   if (params.deprecationWarning) {
     res.setHeader("X-Deprecation-Notice", params.deprecationWarning);
@@ -476,12 +621,16 @@ async function sendAllocatePaymentRequired(
 
   const identity = await getAgentAddress();
   const config = getConfig();
+  const accepts = buildAllocateAccepts(identity.walletAddress);
+  const selectedAccept = accepts.find((option) => option.withReport === params.withReport) ?? accepts[0];
 
   res.setHeader("WWW-Authenticate", "x402");
   res.setHeader("X-X402-Network", config.networkId);
   res.setHeader("X-X402-Asset", config.usdcContractAddress);
-  res.setHeader("X-X402-Amount", params.chargeAmountUsdc);
+  res.setHeader("X-X402-Amount", selectedAccept.amountUsdc);
   res.setHeader("X-X402-Payee", identity.walletAddress);
+
+  attachBazaarDiscovery(res);
 
   return res.status(402).json({
     success: false,
@@ -490,7 +639,10 @@ async function sendAllocatePaymentRequired(
     x402: {
       endpoint: "/agent/x402/allocate",
       amountUsdc: params.chargeAmountUsdc,
+      accepts,
+      selectedAccept,
       network: config.networkId,
+      caip2Network: toCaip2Network(config.networkId),
       usdcContractAddress: config.usdcContractAddress,
       payToAddress: identity.walletAddress,
       decisionId: params.decisionId,
@@ -565,47 +717,114 @@ router.get("/pricing", (_req: Request, res: Response) => {
   }
 });
 
-router.get("/x402/capabilities", (_req: Request, res: Response) => {
-  return res.status(200).json({
-    success: true,
-    executionModelVersion: EXECUTION_MODEL_VERSION,
-    data: {
-      endpoint: "/agent/x402/allocate",
-      versions: {
-        executionModelVersion: EXECUTION_MODEL_VERSION,
-      },
-      supportedInputs: {
-        riskTolerance: ["Conservative", "Balanced", "Growth", "Aggressive"],
-        timeframe: ["<1_year", "1-3_years", "3+_years"],
-        withReport: "boolean",
-      },
-      pricing: computePriceContract(),
-      paymentProof: {
-        canonical: {
-          headers: ["x402-from-address", "x402-transaction-hash"],
+router.get("/x402/capabilities", async (_req: Request, res: Response) => {
+  try {
+    attachBazaarDiscovery(res);
+    const identity = await getAgentAddress();
+    const config = getConfig();
+    const accepts = buildAllocateAccepts(identity.walletAddress);
+    return res.status(200).json({
+      success: true,
+      executionModelVersion: EXECUTION_MODEL_VERSION,
+      data: {
+        endpoint: "/agent/x402/allocate",
+        method: "POST",
+        discoverable: true,
+        versions: {
+          executionModelVersion: EXECUTION_MODEL_VERSION,
         },
-        deprecatedBodyFields: [
-          "payment.fromAddress",
-          "payment.transactionHash",
-          "fromAddress",
-          "transactionHash",
-        ],
-      },
-      limits: {
-        ipBurstLimit: {
-          requests: X402_IP_BURST_LIMIT,
-          windowMs: X402_IP_BURST_WINDOW_MS,
+        supportedInputs: {
+          riskTolerance: ["Conservative", "Balanced", "Growth", "Aggressive"],
+          timeframe: ["<1_year", "1-3_years", "3+_years"],
+          withReport: "boolean",
         },
-        fromAddressDailyCap: X402_FROM_ADDRESS_DAILY_CAP,
-        globalConcurrencyCap: X402_GLOBAL_CONCURRENCY_CAP,
+        pricing: computePriceContract(),
+        accepts,
+        paymentProof: {
+          canonical: {
+            headers: ["x402-from-address", "x402-transaction-hash"],
+          },
+          deprecatedBodyFields: [
+            "payment.fromAddress",
+            "payment.transactionHash",
+            "fromAddress",
+            "transactionHash",
+          ],
+        },
+        limits: {
+          ipBurstLimit: {
+            requests: X402_IP_BURST_LIMIT,
+            windowMs: X402_IP_BURST_WINDOW_MS,
+          },
+          fromAddressDailyCap: X402_FROM_ADDRESS_DAILY_CAP,
+          globalConcurrencyCap: X402_GLOBAL_CONCURRENCY_CAP,
+        },
+        idempotency: {
+          required: true,
+          acceptedKeys: ["decisionId", "Idempotency-Key"],
+          conflictBehavior: "same decisionId + different inputs => 409",
+        },
+        discovery: {
+          type: "http",
+          facilitator: "coinbase_cdp_compatible",
+          network: config.networkId,
+          caip2Network: toCaip2Network(config.networkId),
+          metadataRefreshCadenceHours: 6,
+          category: "finance:allocation",
+          tags: ["portfolio", "allocation", "risk", "x402", "audit"],
+        },
+        inputSchema: {
+          type: "object",
+          properties: {
+            decisionId: { type: "string" },
+            riskTolerance: { enum: ["Conservative", "Balanced", "Growth", "Aggressive"] },
+            timeframe: { enum: ["<1_year", "1-3_years", "3+_years"] },
+            withReport: { type: "boolean" },
+          },
+          required: ["decisionId", "riskTolerance", "timeframe", "withReport"],
+        },
+        outputSchema: {
+          acceptedResponse: {
+            type: "object",
+            properties: {
+              success: { type: "boolean" },
+              data: {
+                type: "object",
+                properties: {
+                  status: { type: "string" },
+                  jobId: { type: "string" },
+                  decisionId: { type: "string" },
+                  statusPath: { type: "string" },
+                },
+              },
+            },
+          },
+        },
+        examples: {
+          request: {
+            decisionId: "agent-run-001",
+            riskTolerance: "Balanced",
+            timeframe: "1-3_years",
+            withReport: true,
+          },
+        },
       },
-      idempotency: {
-        required: true,
-        acceptedKeys: ["decisionId", "Idempotency-Key"],
-        conflictBehavior: "same decisionId + different inputs => 409",
-      },
-    },
-    logs: getExecutionLogs(120),
+      logs: getExecutionLogs(120),
+    });
+  } catch (error) {
+    return failure(res, error, 500);
+  }
+});
+
+router.get("/x402/discovery", async (_req: Request, res: Response) => {
+  // Alias for Bazaar-style discovery crawlers; keep payload identical to /x402/capabilities.
+  // Express Router is a callable request handler; use it to re-dispatch the request.
+  const forwardedReq = { ..._req, url: "/x402/capabilities", method: "GET" } as Request;
+  return new Promise<void>((resolve, reject) => {
+    router(forwardedReq, res, (err?: unknown) => {
+      if (err) reject(err);
+      else resolve();
+    });
   });
 });
 
@@ -727,12 +946,62 @@ router.post("/x402/allocate", async (req: Request, res: Response) => {
   const riskTolerance = normalizeRiskTolerance(req.body?.riskTolerance);
   const timeframe = normalizeTimeframe(req.body?.timeframe);
   const withReport = Boolean(req.body?.withReport);
+  const chargeAmountUsdc = getAllocateChargeAmountUsdc(withReport);
+  const requiresPayment = Number.parseFloat(chargeAmountUsdc) > 0;
   const decisionResolution = resolveDecisionId(req);
+  const decisionId = decisionResolution.decisionId;
+  const missingDecisionIdOnlyError = !decisionId && decisionResolution.error?.includes("decisionId is required");
+  if (decisionResolution.error && !missingDecisionIdOnlyError) {
+    return failure(res, new Error(decisionResolution.error), 400);
+  }
+  const existingRecord = decisionId ? x402AllocateByDecisionId.get(decisionId) : undefined;
+  const proof = readAllocatePaymentProof(req);
+  const missingProof = requiresPayment && (!proof.fromAddress || !proof.transactionHash);
 
-  if (!decisionResolution.decisionId) {
+  if (existingRecord?.state === "accepted" && existingRecord.jobId) {
+    return idempotentResponse(res, existingRecord);
+  }
+
+  if (proof.fromAddress && !isAddress(proof.fromAddress)) {
+    return failure(res, new Error("x402-from-address must be a valid EVM address."), 400);
+  }
+
+  if (missingProof) {
+    try {
+      const quoteWindow = createAllocateQuoteWindow();
+      const existingQuoteExpiresAtMs = existingRecord?.quoteExpiresAt ? Date.parse(existingRecord.quoteExpiresAt) : Number.NaN;
+      const quoteExpiresAt =
+        Number.isFinite(existingQuoteExpiresAtMs) && existingQuoteExpiresAtMs > Date.now()
+          ? (existingRecord?.quoteExpiresAt as string)
+          : quoteWindow.expiresAt;
+
+      const quoteDecisionId = decisionId ?? `quote-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      const quoteInputs: AllocateInputShape = {
+        riskTolerance: riskTolerance ?? "Balanced",
+        timeframe: timeframe ?? "1-3_years",
+        withReport,
+      };
+      const persistQuote = Boolean(decisionId && riskTolerance && timeframe);
+
+      return await sendAllocatePaymentRequired(res, {
+        inputs: quoteInputs,
+        withReport,
+        chargeAmountUsdc,
+        decisionId: quoteDecisionId,
+        quoteExpiresAt,
+        deprecationWarning: proof.deprecatedBodyProof
+          ? "Body payment proof fields are deprecated; use x402-from-address and x402-transaction-hash headers."
+          : undefined,
+        persistQuote,
+      });
+    } catch (error) {
+      return failure(res, error, 500);
+    }
+  }
+
+  if (!decisionId) {
     return failure(res, new Error(decisionResolution.error ?? "decisionId is required."), 400);
   }
-  const decisionId = decisionResolution.decisionId;
 
   if (!riskTolerance) {
     return failure(
@@ -756,33 +1025,26 @@ router.post("/x402/allocate", async (req: Request, res: Response) => {
     withReport,
   };
   const inputFingerprint = computeAllocateInputFingerprint(inputShape);
-  const chargeAmountUsdc = getAllocateChargeAmountUsdc(withReport);
-  const requiresPayment = Number.parseFloat(chargeAmountUsdc) > 0;
-  const existingRecord = x402AllocateByDecisionId.get(decisionId);
+  const decisionScopedRecord = x402AllocateByDecisionId.get(decisionId);
 
-  if (existingRecord && existingRecord.inputFingerprint !== inputFingerprint) {
-    return sendAllocateConflict(res, decisionId, existingRecord.inputs, inputShape);
+  if (decisionScopedRecord && decisionScopedRecord.inputFingerprint !== inputFingerprint) {
+    return sendAllocateConflict(res, decisionId, decisionScopedRecord.inputs, inputShape);
   }
 
-  if (existingRecord?.state === "accepted" && existingRecord.jobId) {
-    return idempotentResponse(res, existingRecord);
+  if (decisionScopedRecord?.state === "accepted" && decisionScopedRecord.jobId) {
+    return idempotentResponse(res, decisionScopedRecord);
   }
 
   if (runningAllocateOrchestration.size >= X402_GLOBAL_CONCURRENCY_CAP) {
     return sendRateLimited(res, "global_concurrency_cap", 10);
   }
 
-  const proof = readAllocatePaymentProof(req);
   const quoteWindow = createAllocateQuoteWindow();
-  const existingQuoteExpiresAtMs = existingRecord?.quoteExpiresAt ? Date.parse(existingRecord.quoteExpiresAt) : Number.NaN;
+  const existingQuoteExpiresAtMs = decisionScopedRecord?.quoteExpiresAt ? Date.parse(decisionScopedRecord.quoteExpiresAt) : Number.NaN;
   const quoteExpiresAt =
     Number.isFinite(existingQuoteExpiresAtMs) && existingQuoteExpiresAtMs > Date.now()
-      ? (existingRecord?.quoteExpiresAt as string)
+      ? (decisionScopedRecord?.quoteExpiresAt as string)
       : quoteWindow.expiresAt;
-
-  if (proof.fromAddress && !isAddress(proof.fromAddress)) {
-    return failure(res, new Error("x402-from-address must be a valid EVM address."), 400);
-  }
 
   if (requiresPayment && (!proof.fromAddress || !proof.transactionHash)) {
     try {
@@ -831,10 +1093,10 @@ router.post("/x402/allocate", async (req: Request, res: Response) => {
     }
   }
 
-  const jobId = existingRecord?.jobId ?? buildAllocateJobId(decisionId);
+  const jobId = decisionScopedRecord?.jobId ?? buildAllocateJobId(decisionId);
 
   try {
-    if (!existingRecord?.jobId) {
+    if (!decisionScopedRecord?.jobId) {
       runPhase1({
         jobId,
         executionTimestamp: nowIso(),
@@ -855,10 +1117,10 @@ router.post("/x402/allocate", async (req: Request, res: Response) => {
       inputFingerprint,
       inputs: inputShape,
       chargedAmountUsdc: chargeAmountUsdc,
-      quoteIssuedAt: existingRecord?.quoteIssuedAt ?? acceptedAt,
+      quoteIssuedAt: decisionScopedRecord?.quoteIssuedAt ?? acceptedAt,
       quoteExpiresAt,
       state: "accepted",
-      createdAt: existingRecord?.createdAt ?? acceptedAt,
+      createdAt: decisionScopedRecord?.createdAt ?? acceptedAt,
       updatedAt: acceptedAt,
       jobId,
       payment: proof.fromAddress && proof.transactionHash
@@ -872,7 +1134,7 @@ router.post("/x402/allocate", async (req: Request, res: Response) => {
 
     x402AllocateByDecisionId.set(decisionId, persistedRecord);
     x402DecisionIdByJobId.set(jobId, decisionId);
-    if (!existingRecord?.jobId && proof.fromAddress) {
+    if (!decisionScopedRecord?.jobId && proof.fromAddress) {
       incrementAddressUsage(proof.fromAddress);
     }
 
@@ -888,8 +1150,8 @@ router.post("/x402/allocate", async (req: Request, res: Response) => {
       success: true,
       executionModelVersion: EXECUTION_MODEL_VERSION,
       data: {
-        status: existingRecord?.jobId ? "already_accepted" : "accepted",
-        idempotentReplay: Boolean(existingRecord?.jobId),
+        status: decisionScopedRecord?.jobId ? "already_accepted" : "accepted",
+        idempotentReplay: Boolean(decisionScopedRecord?.jobId),
         endpoint: "/agent/x402/allocate",
         jobId,
         decisionId,

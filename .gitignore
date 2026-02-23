@@ -35,3 +35,6 @@ next-env.d.ts
 wallet_data.txt
 backend/dist/
 backend/data/
+
+# backend
+/backend/node_modules

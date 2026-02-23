@@ -85,6 +85,9 @@ Deprecated payment proof fields (backward compatibility only):
 Behavior:
 
 - Returns `402` when payment proof is missing/invalid.
+- Empty probe requests (no payment headers/body) also return `402` so discovery crawlers can read canonical payment requirements.
+- If no `decisionId` is supplied on a probe request, response includes a provisional quote `decisionId`; paid execution still requires caller-provided `decisionId` (or `Idempotency-Key`).
+- `402` payload includes `x402.accepts` with both exact price tiers (`allocation_only`, `allocation_with_report`) so agents can choose upfront.
 - Returns `409` if the same `decisionId` is reused with different inputs.
 - Returns `429` for burst, per-address daily cap, or global concurrency limits.
 - Returns `202` after payment verification and starts full allocation orchestration (Phase 1 -> 6) automatically.
@@ -113,6 +116,8 @@ Free discovery endpoint for agent integrators. Returns:
 
 - supported `riskTolerance` and `timeframe` enums
 - pricing rule and computed prices
+- exact `accepts` options for both tiers
+- discoverability metadata (method/category/tags/network)
 - canonical payment proof headers
 - idempotency policy
 - current rate limit configuration

@@ -1639,8 +1639,9 @@ async function fetchText(
       signal: controller.signal,
       headers: {
         Accept: "text/plain,application/xml,text/xml,*/*",
+        "Cache-Control": "no-store",
+        Pragma: "no-cache",
       },
-      cache: "no-store",
     });
 
     if (!response.ok) {
@@ -2723,9 +2724,10 @@ async function fetchJson<T>(
       signal: controller.signal,
       headers: {
         Accept: "application/json",
+        "Cache-Control": "no-store",
+        Pragma: "no-cache",
         ...(requestHeaders ?? {}),
       },
-      cache: "no-store",
     });
 
     if (!response.ok) {
@@ -2837,10 +2839,13 @@ async function forwardPhase6ToAaaAllocator(jobId: string, context: JobContext): 
   try {
     const response = await fetch(endpoint, {
       method: "POST",
-      headers,
+      headers: {
+        ...headers,
+        "Cache-Control": "no-store",
+        Pragma: "no-cache",
+      },
       body: bodyText,
       signal: controller.signal,
-      cache: "no-store",
     });
 
     const responseText = await response.text();
@@ -8138,10 +8143,18 @@ async function runPhase5AgentScoringProcess(
     const body = await response.text().catch(() => "");
     throw new Error(`phase5_agent_scoring_model_call_failed:${response.status}:${body.slice(0, 300)}`);
   }
-  const payload = await response.json();
+  const payload: unknown = await response.json();
+  const record = payload as Record<string, unknown>;
+  const data = record.data as Record<string, unknown> | undefined;
+  const choices = record.choices as Array<Record<string, unknown>> | undefined;
+
   const content =
-    (typeof payload?.data?.messages?.[0]?.content === "string" ? payload.data.messages[0].content : "") ||
-    (typeof payload?.choices?.[0]?.message?.content === "string" ? payload.choices[0].message.content : "");
+    (typeof (data?.messages as Array<Record<string, unknown>> | undefined)?.[0]?.content === "string"
+      ? String((data?.messages as Array<Record<string, unknown>>)[0].content)
+      : "") ||
+    (typeof (choices?.[0]?.message as Record<string, unknown> | undefined)?.content === "string"
+      ? String((choices?.[0]?.message as Record<string, unknown>).content)
+      : "");
   if (!content) {
     throw new Error("phase5_agent_scoring_model_response_empty");
   }
