@@ -1551,6 +1551,21 @@ async function tryRecoverExistingPayment(params: {
   }
 }
 
+async function getWalletChainIdHex(): Promise<string | null> {
+  const provider = window.ethereum;
+  if (!provider?.request) return null;
+  try {
+    const raw = await provider.request({ method: "eth_chainId" });
+    return typeof raw === "string" ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+// CHANGED: make switching more robust:
+// - if already on chain, return immediately
+// - use longer timeout (wallet UI may require user attention)
+// - keep original add-chain fallback
 async function ensureWalletOnChain(networkId: string) {
   const provider = window.ethereum;
   if (!provider?.request) {
@@ -1562,6 +1577,11 @@ async function ensureWalletOnChain(networkId: string) {
     throw new Error(`Unsupported chain requested: ${networkId}`);
   }
 
+  const currentChainId = await getWalletChainIdHex();
+  if (currentChainId && currentChainId.toLowerCase() === config.chainIdHex.toLowerCase()) {
+    return;
+  }
+
   try {
     await provider.request({
       method: "wallet_switchEthereumChain",
@@ -1570,8 +1590,15 @@ async function ensureWalletOnChain(networkId: string) {
     return;
   } catch (error) {
     const rpcError = error as ProviderRpcError;
+
+    // If switch request was shown but not completed, wallets may effectively "hang".
+    // Surface a more actionable hint.
+    if (rpcError?.code === 4001) {
+      throw new Error(`Network switch rejected. Please switch your wallet to ${config.chainName} and retry.`);
+    }
+
     if (rpcError.code !== 4902) {
-      throw new Error(rpcError.message || "Failed to switch wallet network.");
+      throw new Error(rpcError.message || `Failed to switch wallet network to ${config.chainName}.`);
     }
   }
 
@@ -1587,6 +1614,12 @@ async function ensureWalletOnChain(networkId: string) {
       },
     ],
   });
+}
+
+// Helper function to check if an amount is effectively zero
+function isZeroAmount(value: unknown): boolean {
+  const n = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  return Number.isFinite(n) && Math.abs(n) < 1e-9;
 }
 
 type ConfigureStepProps = {
@@ -1806,7 +1839,7 @@ function ReviewStep({
       ? "Insufficient USDC balance"
     : !requiresUsdcBalance
       ? "Generate Allocation"
-      : `Authorize ${formatUsdcValue(requiredAmountUsdc)} USDC & Generate Allocation`;
+    : `Authorize ${formatUsdcValue(requiredAmountUsdc)} USDC & Generate Allocation`;
 
   return (
     <section className="rounded-2xl border border-slate-300/70 bg-white/70 p-6 backdrop-blur">
@@ -3008,6 +3041,36 @@ function CompleteStep({
   );
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  if (!Number.isFinite(ms) || ms <= 0) return promise;
+  return new Promise<T>((resolve, reject) => {
+    const id = window.setTimeout(() => {
+      if (label.toLowerCase().includes("wallet network switch")) {
+        reject(
+          new Error(
+            "Wallet network switch is taking too long. Open your wallet extension/app and confirm the network change, then click Generate again.",
+          ),
+        );
+        return;
+      }
+      reject(new Error(`${label} timed out after ${ms}ms.`));
+    }, ms);
+
+    promise
+      .then((v) => resolve(v))
+      .catch(reject)
+      .finally(() => window.clearTimeout(id));
+  });
+}
+
+type PaymentStage =
+  | "idle"
+  | "preflight"
+  | "agent_pay"
+  | "wallet_tx_prompt"
+  | "verifying"
+  | "starting_execution";
+
 function SelunAllocationWizard() {
   const pageTopRef = useRef<HTMLDivElement | null>(null);
   const [wizardState, setWizardState] = useState<WizardState>("CONFIGURE");
@@ -3035,6 +3098,7 @@ function SelunAllocationWizard() {
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [agentPaymentReceipt, setAgentPaymentReceipt] = useState<AgentPaymentReceipt | null>(null);
   const [isPaying, setIsPaying] = useState(false);
+  const [paymentStage, setPaymentStage] = useState<PaymentStage>("idle");
   const [phase1JobId, setPhase1JobId] = useState<string | null>(null);
   const [phase1Status, setPhase1Status] = useState<Phase1Status>("idle");
   const [phase1Error, setPhase1Error] = useState<string | null>(null);
@@ -3083,6 +3147,12 @@ function SelunAllocationWizard() {
       usdcBalance !== null &&
       usdcBalance < requiredAmountUsdc,
   );
+
+  const resetPaymentUi = useCallback(() => {
+    setIsPaying(false);
+    setPaymentStage("idle");
+    setPaymentError(null);
+  }, []);
 
   useEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: "auto" });
@@ -3629,62 +3699,62 @@ function SelunAllocationWizard() {
 
   const handleGenerateAllocation = async () => {
     if (!riskMode || !investmentHorizon || isPaying) return;
-    const requiresUsdcBalance = requiredAmountUsdc > 0;
-    if (isLoadingPricing) {
-      setPaymentError("Loading backend pricing. Please wait.");
-      return;
-    }
-    if (pricingError) {
-      setPaymentError("Pricing unavailable. Retry after backend pricing is restored.");
-      return;
-    }
-    if (!walletAddress) {
-      setPaymentError("Connect wallet to authorize Selun agent payment.");
-      return;
-    }
-    if (isApplyingPromoCode) {
-      setPaymentError("Applying promo code. Please wait.");
-      return;
-    }
-    if (requiresPromoApply) {
-      setPaymentError("Apply promo code first to confirm final price before purchase.");
-      return;
-    }
-    if (requiresUsdcBalance && isLoadingUsdcBalance) {
-      setPaymentError("Checking USDC balance. Please wait.");
-      return;
-    }
-    if (requiresUsdcBalance && (usdcBalanceError || usdcBalance === null)) {
-      setPaymentError("USDC balance unavailable. Refresh balance and try again.");
-      return;
-    }
-    const availableUsdc = usdcBalance ?? 0;
-    if (requiresUsdcBalance && availableUsdc < requiredAmountUsdc) {
-      setPaymentError(
-        `Insufficient USDC on ${usdcNetworkLabel}. Required ${formatUsdcValue(requiredAmountUsdc)} USDC.`,
-      );
-      return;
-    }
 
     setIsPaying(true);
+    setPaymentStage("preflight");
     setPaymentError(null);
     setAgentPaymentReceipt(null);
 
     try {
-      const agentWallet = await queryAgentWallet();
-      await ensureWalletOnChain(agentWallet.networkId);
+      if (isLoadingPricing) {
+        throw new Error("Loading backend pricing. Please wait.");
+      }
+      if (pricingError) {
+        throw new Error("Pricing unavailable. Retry after backend pricing is restored.");
+      }
+      if (!walletAddress) {
+        throw new Error("Connect wallet to authorize Selun agent payment.");
+      }
+      if (isApplyingPromoCode) {
+        throw new Error("Applying promo code. Please wait.");
+      }
+      if (requiresPromoApply) {
+        throw new Error("Apply promo code first to confirm final price before purchase.");
+      }
+      if (requiredAmountUsdc > 0 && isLoadingUsdcBalance) {
+        throw new Error("Checking USDC balance. Please wait.");
+      }
+      if (requiredAmountUsdc > 0 && (usdcBalanceError || usdcBalance === null)) {
+        throw new Error("USDC balance unavailable. Refresh balance and try again.");
+      }
+      const availableUsdc = usdcBalance ?? 0;
+      if (requiredAmountUsdc > 0 && availableUsdc < requiredAmountUsdc) {
+        throw new Error(
+          `Insufficient USDC on ${usdcNetworkLabel}. Required ${formatUsdcValue(requiredAmountUsdc)} USDC.`,
+        );
+      }
 
-      const preAuthorizeResponse = await fetch("/api/agent/pay", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          walletAddress,
-          includeCertifiedDecisionRecord,
-          riskMode,
-          investmentHorizon,
-          promoCode: promoCode.trim() || undefined,
+      const agentWallet = await withTimeout(queryAgentWallet(), 20_000, "Agent wallet lookup");
+
+      // CHANGED: 30s -> 120s (wallet UI often needs user attention)
+      await withTimeout(ensureWalletOnChain(agentWallet.networkId), 120_000, "Wallet network switch");
+
+      setPaymentStage("agent_pay");
+      const preAuthorizeResponse = await withTimeout(
+        fetch("/api/agent/pay", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            walletAddress,
+            includeCertifiedDecisionRecord,
+            riskMode,
+            investmentHorizon,
+            promoCode: promoCode.trim() || undefined,
+          }),
         }),
-      });
+        30_000,
+        "Agent pay request",
+      );
 
       const paymentResult = (await preAuthorizeResponse.json()) as AgentPaymentResponse;
       if (!preAuthorizeResponse.ok || !paymentResult.success) {
@@ -3709,13 +3779,8 @@ function SelunAllocationWizard() {
       const freeCodeApplied = Boolean(paymentResult.freeCodeApplied);
       const isFreeCodeCheckout = paymentMethod === "free_code" || freeCodeApplied || chargedAmountUsdc === 0;
 
-      if (!isFreeCodeCheckout && availableUsdc < chargedAmountUsdc) {
-        throw new Error(
-          `Insufficient USDC on ${usdcNetworkLabel}. Required ${formatUsdcValue(chargedAmountUsdc)} USDC.`,
-        );
-      }
-
       if (isFreeCodeCheckout) {
+        setPaymentStage("starting_execution");
         setAgentPaymentReceipt({
           transactionId: paymentResult.transactionId,
           decisionId: paymentResult.decisionId,
@@ -3727,100 +3792,90 @@ function SelunAllocationWizard() {
         });
 
         const phase1JobId = `selun-phase1-${paymentResult.decisionId}-${Date.now()}`.replace(/[^a-zA-Z0-9-_]/g, "-");
-        await startPhase1Flow(phase1JobId);
+        await withTimeout(startPhase1Flow(phase1JobId), 20_000, "Phase 1 start");
         return;
       }
 
       const provider = window.ethereum;
-      if (!provider?.request) {
-        throw new Error("No Ethereum wallet detected.");
-      }
+      if (!provider?.request) throw new Error("No Ethereum wallet detected.");
 
-      let verification: Awaited<ReturnType<typeof verifyPaymentOnBackend>> | null = null;
-
-      const transferData = encodeUsdcTransferCall(
-        agentWallet.walletAddress,
-        parseUsdcToBaseUnits(chargedAmountUsdcString),
-      );
-      if (!verification) {
-        let transferHash: string | undefined;
-        let recoveredVerification:
-          | {
-              transactionHash: string;
-              amount: string;
-              confirmed: boolean;
-            }
-          | undefined;
-        try {
-          const transferHashRaw = await provider.request({
-            method: "eth_sendTransaction",
-            params: [
-              {
-                from: walletAddress,
-                to: agentWallet.usdcContractAddress,
-                data: transferData,
-                value: "0x0",
-              },
-            ],
-          });
-
-          if (typeof transferHashRaw !== "string" || !/^0x[a-fA-F0-9]{64}$/.test(transferHashRaw)) {
-            throw new Error("Wallet did not return a valid transfer transaction hash.");
-          }
-          transferHash = transferHashRaw;
-        } catch (error) {
-          const duplicateBroadcast = parseDuplicateBroadcastWalletError(error);
-          if (duplicateBroadcast.isDuplicateBroadcast) {
-            transferHash = duplicateBroadcast.transactionHash;
-          } else if (isUserRejectedWalletError(error)) {
-            // If the wallet pop-up was dismissed after showing "already known",
-            // try a longer verification window before treating it as a hard rejection.
-            try {
-              recoveredVerification = await verifyPaymentOnBackend(
-                {
-                  fromAddress: walletAddress,
-                  expectedAmountUSDC: chargedAmountUsdcString,
-                  decisionId: paymentResult.decisionId,
-                },
-                { timeoutMs: 120_000 },
-              );
-              transferHash = recoveredVerification.transactionHash;
-            } catch {
-              throw new Error(
-                "Wallet request was canceled and no matching payment was confirmed yet. If the wallet shows '-32000: already known', wait for the pending tx to settle and retry.",
-              );
-            }
-          } else {
-            throw new Error(duplicateBroadcast.message || "Wallet transfer failed.");
-          }
-        }
-
-        verification =
-          recoveredVerification ??
-          (await verifyPaymentOnBackend({
-            fromAddress: walletAddress,
-            expectedAmountUSDC: chargedAmountUsdcString,
-            transactionHash: transferHash,
+      const pendingLocal = await hasPendingTransactions(provider, walletAddress);
+      const pendingRpc = await hasPendingTransactionsOnRpc(agentWallet.networkId, walletAddress);
+      if (pendingLocal || pendingRpc) {
+        const recovered = await tryRecoverExistingPayment(
+          { fromAddress: walletAddress, expectedAmountUSDC: chargedAmountUsdcString, decisionId: paymentResult.decisionId },
+          30_000,
+        );
+        if (recovered) {
+          setPaymentStage("starting_execution");
+          setAgentPaymentReceipt({
+            transactionId: recovered.transactionHash,
             decisionId: paymentResult.decisionId,
-          }));
+            agentNote: paymentResult.agentNote!,
+            chargedAmountUsdc,
+            certifiedDecisionRecordPurchased: Boolean(paymentResult.certifiedDecisionRecordPurchased),
+            paymentMethod: "onchain",
+            freeCodeApplied: false,
+          });
+          const phase1JobId = `selun-phase1-${paymentResult.decisionId}-${Date.now()}`.replace(/[^a-zA-Z0-9-_]/g, "-");
+          await withTimeout(startPhase1Flow(phase1JobId), 20_000, "Phase 1 start");
+          return;
+        }
       }
+
+      setPaymentStage("wallet_tx_prompt");
+      const transferData = encodeUsdcTransferCall(agentWallet.walletAddress, parseUsdcToBaseUnits(chargedAmountUsdcString));
+
+      const transferHashRaw = await withTimeout(
+        provider.request({
+          method: "eth_sendTransaction",
+          params: [
+            {
+              from: walletAddress,
+              to: agentWallet.usdcContractAddress,
+              data: transferData,
+              value: "0x0",
+            },
+          ],
+        }) as Promise<unknown>,
+        120_000,
+        "Wallet transaction approval",
+      );
+
+      if (typeof transferHashRaw !== "string" || !/^0x[a-fA-F0-9]{64}$/.test(transferHashRaw)) {
+        throw new Error("Wallet did not return a valid transfer transaction hash.");
+      }
+
+      setPaymentStage("verifying");
+      const verification = await withTimeout(
+        verifyPaymentOnBackend({
+          fromAddress: walletAddress,
+          expectedAmountUSDC: chargedAmountUsdcString,
+          transactionHash: transferHashRaw,
+          decisionId: paymentResult.decisionId,
+        }),
+        120_000,
+        "Payment verification",
+      );
 
       setAgentPaymentReceipt({
         transactionId: verification.transactionHash,
         decisionId: paymentResult.decisionId,
-        agentNote: paymentResult.agentNote,
+        agentNote: paymentResult.agentNote!,
         chargedAmountUsdc,
-        certifiedDecisionRecordPurchased: paymentResult.certifiedDecisionRecordPurchased,
+        certifiedDecisionRecordPurchased: Boolean(paymentResult.certifiedDecisionRecordPurchased),
         paymentMethod: "onchain",
         freeCodeApplied: false,
       });
 
+      setPaymentStage("starting_execution");
       const phase1JobId = `selun-phase1-${paymentResult.decisionId}-${Date.now()}`.replace(/[^a-zA-Z0-9-_]/g, "-");
-      await startPhase1Flow(phase1JobId);
+      await withTimeout(startPhase1Flow(phase1JobId), 20_000, "Phase 1 start");
     } catch (error) {
       setPaymentError(error instanceof Error ? error.message : "Agent payment failed.");
     } finally {
       setIsPaying(false);
+      setPaymentStage("idle");
     }
   };
 
@@ -3940,6 +3995,7 @@ function SelunAllocationWizard() {
     setPaymentError(null);
     setAgentPaymentReceipt(null);
     setIsPaying(false);
+    setPaymentStage("idle");
     setPhase1JobId(null);
     setPhase1Status("idle");
     setPhase1Error(null);
