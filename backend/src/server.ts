@@ -192,6 +192,22 @@ function sanitizeExecutionStatusForAllocator<T>(payload: T): T {
   }
 }
 
+function resolveTrustProxySetting(value: string | undefined): boolean | number | string {
+  const raw = value?.trim();
+  if (!raw) return false;
+
+  const normalized = raw.toLowerCase();
+  if (normalized === "true") return true;
+  if (normalized === "false") return false;
+
+  const numericHops = Number.parseInt(raw, 10);
+  if (Number.isFinite(numericHops) && numericHops >= 0) {
+    return numericHops;
+  }
+
+  return raw;
+}
+
 const backendEnvPath = resolveBackendPath(".env");
 const backendEnvLocalPath = resolveBackendPath(".env.local");
 
@@ -206,6 +222,7 @@ if (fs.existsSync(backendEnvLocalPath)) {
 }
 
 const app = express();
+app.set("trust proxy", resolveTrustProxySetting(process.env.TRUST_PROXY));
 
 app.use(express.json({ limit: "1mb" }));
 

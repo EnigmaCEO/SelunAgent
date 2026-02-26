@@ -4,6 +4,8 @@ import { declareDiscoveryExtension } from "@x402/extensions/bazaar";
 import { isAddress } from "viem";
 import { EXECUTION_MODEL_VERSION, getConfig } from "../config";
 import { getExecutionLogs } from "../logging/execution-logs";
+import { getX402StateStore } from "../services/x402-state.service";
+import { isExpiredIsoTimestamp, normalizeOptionalBoolean } from "../services/x402-utils";
 import {
   authorizeWizardPayment,
   getAgentAddress,
@@ -27,40 +29,21 @@ import {
   runPhase5,
   runPhase6,
 } from "../services/phase1-execution.service";
+import type {
+  AllocateInputShape,
+  AllocateRiskTolerance,
+  AllocateTimeframe,
+  X402AllocateRecord,
+} from "../services/x402-state.types";
 
 const router = Router();
 
-type AllocateRiskTolerance = "Conservative" | "Balanced" | "Growth" | "Aggressive";
-type AllocateTimeframe = "<1_year" | "1-3_years" | "3+_years";
-type AllocateInputShape = {
-  riskTolerance: AllocateRiskTolerance;
-  timeframe: AllocateTimeframe;
-  withReport: boolean;
-};
 type AllocateProofSource = "headers" | "body_payment" | "body_legacy" | "none";
 type AllocatePaymentProof = {
   fromAddress?: string;
   transactionHash?: string;
   source: AllocateProofSource;
   deprecatedBodyProof: boolean;
-};
-type X402AllocateRecordState = "quoted" | "accepted";
-type X402AllocateRecord = {
-  decisionId: string;
-  inputFingerprint: string;
-  inputs: AllocateInputShape;
-  chargedAmountUsdc: string;
-  quoteIssuedAt: string;
-  quoteExpiresAt: string;
-  state: X402AllocateRecordState;
-  createdAt: string;
-  updatedAt: string;
-  jobId?: string;
-  payment?: {
-    fromAddress: string;
-    transactionHash: string;
-    verifiedAt: string;
-  };
 };
 type X402AllocateAccept = {
   optionId: "allocation_only" | "allocation_with_report";
@@ -90,16 +73,8 @@ type X402PaymentRequirementV2 = {
 
 const ALLOCATE_PHASE_POLL_INTERVAL_MS = 2_000;
 const ALLOCATE_PHASE_TIMEOUT_MS = 20 * 60 * 1_000;
-const X402_QUOTE_TTL_MS = readPositiveIntEnv("X402_QUOTE_TTL_MS", 10 * 60 * 1_000);
-const X402_IP_BURST_WINDOW_MS = readPositiveIntEnv("X402_IP_BURST_WINDOW_MS", 60_000);
-const X402_IP_BURST_LIMIT = readPositiveIntEnv("X402_IP_BURST_LIMIT", 60);
-const X402_FROM_ADDRESS_DAILY_CAP = readPositiveIntEnv("X402_FROM_ADDRESS_DAILY_CAP", 20);
-const X402_GLOBAL_CONCURRENCY_CAP = readPositiveIntEnv("X402_GLOBAL_CONCURRENCY_CAP", 8);
 const runningAllocateOrchestration = new Set<string>();
 const x402IpBurstState = new Map<string, number[]>();
-const x402AddressDailyUsage = new Map<string, number>();
-const x402AllocateByDecisionId = new Map<string, X402AllocateRecord>();
-const x402DecisionIdByJobId = new Map<string, string>();
 
 function nowIso() {
   return new Date().toISOString();
@@ -110,6 +85,26 @@ function readPositiveIntEnv(name: string, fallback: number): number {
   if (!raw) return fallback;
   const parsed = Number.parseInt(raw, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function getX402QuoteTtlMs() {
+  return readPositiveIntEnv("X402_QUOTE_TTL_MS", 10 * 60 * 1_000);
+}
+
+function getX402IpBurstWindowMs() {
+  return readPositiveIntEnv("X402_IP_BURST_WINDOW_MS", 60_000);
+}
+
+function getX402IpBurstLimit() {
+  return readPositiveIntEnv("X402_IP_BURST_LIMIT", 60);
+}
+
+function getX402FromAddressDailyCap() {
+  return readPositiveIntEnv("X402_FROM_ADDRESS_DAILY_CAP", 20);
+}
+
+function getX402GlobalConcurrencyCap() {
+  return readPositiveIntEnv("X402_GLOBAL_CONCURRENCY_CAP", 8);
 }
 
 function sleep(ms: number) {
@@ -191,28 +186,32 @@ function computeAllocateInputFingerprint(input: AllocateInputShape): string {
 
 function createAllocateQuoteWindow() {
   const issuedAt = nowIso();
-  const expiresAt = new Date(Date.now() + X402_QUOTE_TTL_MS).toISOString();
+  const expiresAt = new Date(Date.now() + getX402QuoteTtlMs()).toISOString();
   return { issuedAt, expiresAt };
 }
 
-function getClientIp(req: Request): string {
-  const xForwardedFor = req.header("x-forwarded-for");
-  if (xForwardedFor) {
-    const first = xForwardedFor.split(",")[0]?.trim();
-    if (first) return first;
+function resolveQuoteExpiresAt(existingRecord: X402AllocateRecord | undefined): string {
+  if (existingRecord?.quoteExpiresAt && !isExpiredIsoTimestamp(existingRecord.quoteExpiresAt)) {
+    return existingRecord.quoteExpiresAt;
   }
+  return createAllocateQuoteWindow().expiresAt;
+}
+
+function getClientIp(req: Request): string {
   return req.ip || req.socket.remoteAddress || "unknown";
 }
 
 function enforceIpBurstLimit(req: Request): { limited: boolean; retryAfterSeconds: number } {
+  const burstWindowMs = getX402IpBurstWindowMs();
+  const burstLimit = getX402IpBurstLimit();
   const ip = getClientIp(req);
   const now = Date.now();
-  const windowStart = now - X402_IP_BURST_WINDOW_MS;
+  const windowStart = now - burstWindowMs;
   const bucket = (x402IpBurstState.get(ip) ?? []).filter((timestamp) => timestamp >= windowStart);
 
-  if (bucket.length >= X402_IP_BURST_LIMIT) {
+  if (bucket.length >= burstLimit) {
     const oldest = bucket[0] ?? now;
-    const retryAfterMs = Math.max(1_000, X402_IP_BURST_WINDOW_MS - (now - oldest));
+    const retryAfterMs = Math.max(1_000, burstWindowMs - (now - oldest));
     return {
       limited: true,
       retryAfterSeconds: Math.ceil(retryAfterMs / 1000),
@@ -236,12 +235,12 @@ function makeDailyUsageKey(fromAddress: string, day = utcDayKey()): string {
 }
 
 function getAddressUsageCount(fromAddress: string): number {
-  return x402AddressDailyUsage.get(makeDailyUsageKey(fromAddress)) ?? 0;
+  return getX402StateStore().getAddressDailyUsage(makeDailyUsageKey(fromAddress));
 }
 
 function incrementAddressUsage(fromAddress: string) {
   const key = makeDailyUsageKey(fromAddress);
-  x402AddressDailyUsage.set(key, getAddressUsageCount(fromAddress) + 1);
+  getX402StateStore().incrementAddressDailyUsage(key);
 }
 
 function secondsUntilNextUtcDay(): number {
@@ -536,9 +535,9 @@ function idempotentResponse(res: Response, record: X402AllocateRecord) {
 }
 
 function getRecordByJobId(jobId: string): X402AllocateRecord | null {
-  const decisionId = x402DecisionIdByJobId.get(jobId);
+  const decisionId = getX402StateStore().getDecisionIdForJob(jobId);
   if (!decisionId) return null;
-  return x402AllocateByDecisionId.get(decisionId) ?? null;
+  return getX402StateStore().getAllocateRecord(decisionId) ?? null;
 }
 
 export function getX402AllocateMetadataByJobId(jobId: string): {
@@ -582,7 +581,8 @@ async function sendAllocatePaymentRequired(
   },
 ) {
   const shouldPersistQuote = params.persistQuote ?? true;
-  const existing = shouldPersistQuote ? x402AllocateByDecisionId.get(params.decisionId) : undefined;
+  const stateStore = getX402StateStore();
+  const existing = shouldPersistQuote ? stateStore.getAllocateRecord(params.decisionId) : undefined;
   const inputFingerprint = computeAllocateInputFingerprint(params.inputs);
   const timestamp = nowIso();
   const record: X402AllocateRecord = existing
@@ -608,7 +608,7 @@ async function sendAllocatePaymentRequired(
       updatedAt: timestamp,
     };
   if (shouldPersistQuote) {
-    x402AllocateByDecisionId.set(params.decisionId, record);
+    stateStore.setAllocateRecord(params.decisionId, record);
   }
 
   if (params.deprecationWarning) {
@@ -622,6 +622,7 @@ async function sendAllocatePaymentRequired(
   const identity = await getAgentAddress();
   const config = getConfig();
   const accepts = buildAllocateAccepts(identity.walletAddress);
+  const paymentRequirementsV2 = buildPaymentRequirementsV2(accepts);
   const selectedAccept = accepts.find((option) => option.withReport === params.withReport) ?? accepts[0];
 
   res.setHeader("WWW-Authenticate", "x402");
@@ -640,6 +641,7 @@ async function sendAllocatePaymentRequired(
       endpoint: "/agent/x402/allocate",
       amountUsdc: params.chargeAmountUsdc,
       accepts,
+      paymentRequirementsV2,
       selectedAccept,
       network: config.networkId,
       caip2Network: toCaip2Network(config.networkId),
@@ -723,6 +725,7 @@ router.get("/x402/capabilities", async (_req: Request, res: Response) => {
     const identity = await getAgentAddress();
     const config = getConfig();
     const accepts = buildAllocateAccepts(identity.walletAddress);
+    const paymentRequirementsV2 = buildPaymentRequirementsV2(accepts);
     return res.status(200).json({
       success: true,
       executionModelVersion: EXECUTION_MODEL_VERSION,
@@ -740,6 +743,7 @@ router.get("/x402/capabilities", async (_req: Request, res: Response) => {
         },
         pricing: computePriceContract(),
         accepts,
+        paymentRequirementsV2,
         paymentProof: {
           canonical: {
             headers: ["x402-from-address", "x402-transaction-hash"],
@@ -753,11 +757,11 @@ router.get("/x402/capabilities", async (_req: Request, res: Response) => {
         },
         limits: {
           ipBurstLimit: {
-            requests: X402_IP_BURST_LIMIT,
-            windowMs: X402_IP_BURST_WINDOW_MS,
+            requests: getX402IpBurstLimit(),
+            windowMs: getX402IpBurstWindowMs(),
           },
-          fromAddressDailyCap: X402_FROM_ADDRESS_DAILY_CAP,
-          globalConcurrencyCap: X402_GLOBAL_CONCURRENCY_CAP,
+          fromAddressDailyCap: getX402FromAddressDailyCap(),
+          globalConcurrencyCap: getX402GlobalConcurrencyCap(),
         },
         idempotency: {
           required: true,
@@ -945,7 +949,11 @@ router.post("/x402/allocate", async (req: Request, res: Response) => {
 
   const riskTolerance = normalizeRiskTolerance(req.body?.riskTolerance);
   const timeframe = normalizeTimeframe(req.body?.timeframe);
-  const withReport = Boolean(req.body?.withReport);
+  const withReportParsed = normalizeOptionalBoolean(req.body?.withReport);
+  if (!withReportParsed.valid) {
+    return failure(res, new Error("withReport must be a boolean (true or false)."), 400);
+  }
+  const withReport = withReportParsed.value;
   const chargeAmountUsdc = getAllocateChargeAmountUsdc(withReport);
   const requiresPayment = Number.parseFloat(chargeAmountUsdc) > 0;
   const decisionResolution = resolveDecisionId(req);
@@ -954,7 +962,8 @@ router.post("/x402/allocate", async (req: Request, res: Response) => {
   if (decisionResolution.error && !missingDecisionIdOnlyError) {
     return failure(res, new Error(decisionResolution.error), 400);
   }
-  const existingRecord = decisionId ? x402AllocateByDecisionId.get(decisionId) : undefined;
+  const stateStore = getX402StateStore();
+  const existingRecord = decisionId ? stateStore.getAllocateRecord(decisionId) : undefined;
   const proof = readAllocatePaymentProof(req);
   const missingProof = requiresPayment && (!proof.fromAddress || !proof.transactionHash);
 
@@ -968,13 +977,6 @@ router.post("/x402/allocate", async (req: Request, res: Response) => {
 
   if (missingProof) {
     try {
-      const quoteWindow = createAllocateQuoteWindow();
-      const existingQuoteExpiresAtMs = existingRecord?.quoteExpiresAt ? Date.parse(existingRecord.quoteExpiresAt) : Number.NaN;
-      const quoteExpiresAt =
-        Number.isFinite(existingQuoteExpiresAtMs) && existingQuoteExpiresAtMs > Date.now()
-          ? (existingRecord?.quoteExpiresAt as string)
-          : quoteWindow.expiresAt;
-
       const quoteDecisionId = decisionId ?? `quote-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
       const quoteInputs: AllocateInputShape = {
         riskTolerance: riskTolerance ?? "Balanced",
@@ -988,7 +990,7 @@ router.post("/x402/allocate", async (req: Request, res: Response) => {
         withReport,
         chargeAmountUsdc,
         decisionId: quoteDecisionId,
-        quoteExpiresAt,
+        quoteExpiresAt: resolveQuoteExpiresAt(existingRecord),
         deprecationWarning: proof.deprecatedBodyProof
           ? "Body payment proof fields are deprecated; use x402-from-address and x402-transaction-hash headers."
           : undefined,
@@ -1025,7 +1027,7 @@ router.post("/x402/allocate", async (req: Request, res: Response) => {
     withReport,
   };
   const inputFingerprint = computeAllocateInputFingerprint(inputShape);
-  const decisionScopedRecord = x402AllocateByDecisionId.get(decisionId);
+  const decisionScopedRecord = stateStore.getAllocateRecord(decisionId);
 
   if (decisionScopedRecord && decisionScopedRecord.inputFingerprint !== inputFingerprint) {
     return sendAllocateConflict(res, decisionId, decisionScopedRecord.inputs, inputShape);
@@ -1035,16 +1037,39 @@ router.post("/x402/allocate", async (req: Request, res: Response) => {
     return idempotentResponse(res, decisionScopedRecord);
   }
 
-  if (runningAllocateOrchestration.size >= X402_GLOBAL_CONCURRENCY_CAP) {
+  if (decisionScopedRecord?.state === "quoted" && isExpiredIsoTimestamp(decisionScopedRecord.quoteExpiresAt)) {
+    try {
+      return await sendAllocatePaymentRequired(res, {
+        inputs: inputShape,
+        withReport,
+        chargeAmountUsdc,
+        decisionId,
+        quoteExpiresAt: createAllocateQuoteWindow().expiresAt,
+        deprecationWarning: proof.deprecatedBodyProof
+          ? "Body payment proof fields are deprecated; use x402-from-address and x402-transaction-hash headers."
+          : undefined,
+      });
+    } catch (error) {
+      return failure(res, error, 500);
+    }
+  }
+
+  if (proof.transactionHash) {
+    const transactionOwner = stateStore.getTransactionOwner(proof.transactionHash);
+    if (transactionOwner && transactionOwner !== decisionId) {
+      return failure(
+        res,
+        new Error("x402-transaction-hash was already consumed for a different decisionId."),
+        409,
+      );
+    }
+  }
+
+  if (runningAllocateOrchestration.size >= getX402GlobalConcurrencyCap()) {
     return sendRateLimited(res, "global_concurrency_cap", 10);
   }
 
-  const quoteWindow = createAllocateQuoteWindow();
-  const existingQuoteExpiresAtMs = decisionScopedRecord?.quoteExpiresAt ? Date.parse(decisionScopedRecord.quoteExpiresAt) : Number.NaN;
-  const quoteExpiresAt =
-    Number.isFinite(existingQuoteExpiresAtMs) && existingQuoteExpiresAtMs > Date.now()
-      ? (decisionScopedRecord?.quoteExpiresAt as string)
-      : quoteWindow.expiresAt;
+  const quoteExpiresAt = resolveQuoteExpiresAt(decisionScopedRecord);
 
   if (requiresPayment && (!proof.fromAddress || !proof.transactionHash)) {
     try {
@@ -1063,7 +1088,7 @@ router.post("/x402/allocate", async (req: Request, res: Response) => {
     }
   }
 
-  if (proof.fromAddress && getAddressUsageCount(proof.fromAddress) >= X402_FROM_ADDRESS_DAILY_CAP) {
+  if (proof.fromAddress && getAddressUsageCount(proof.fromAddress) >= getX402FromAddressDailyCap()) {
     return sendRateLimited(res, "from_address_daily_cap", secondsUntilNextUtcDay());
   }
 
@@ -1089,6 +1114,17 @@ router.post("/x402/allocate", async (req: Request, res: Response) => {
         });
       } catch {
         return failure(res, error, 402);
+      }
+    }
+
+    if (proof.transactionHash) {
+      const reservation = stateStore.reserveTransactionHash(proof.transactionHash, decisionId);
+      if (!reservation.accepted) {
+        return failure(
+          res,
+          new Error("x402-transaction-hash was already consumed for a different decisionId."),
+          409,
+        );
       }
     }
   }
@@ -1132,8 +1168,7 @@ router.post("/x402/allocate", async (req: Request, res: Response) => {
         : undefined,
     };
 
-    x402AllocateByDecisionId.set(decisionId, persistedRecord);
-    x402DecisionIdByJobId.set(jobId, decisionId);
+    stateStore.setAllocateRecord(decisionId, persistedRecord);
     if (!decisionScopedRecord?.jobId && proof.fromAddress) {
       incrementAddressUsage(proof.fromAddress);
     }

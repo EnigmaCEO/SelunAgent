@@ -7,6 +7,10 @@ primary_region = "sin"
 [env]
   PORT = "8787"
 
+[mounts]
+  source = "selun_data"
+  destination = "/app/backend/data"
+
 
 [http_service]
   internal_port = 8787

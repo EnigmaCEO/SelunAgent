@@ -9,7 +9,8 @@
     "lint": "next lint",
     "backend:dev": "tsx backend/src/server.ts",
     "backend:build": "tsc -p backend/tsconfig.json",
-    "backend:start": "node backend/dist/server.js"
+    "backend:start": "node backend/dist/server.js",
+    "backend:test": "npm --prefix backend run test"
   },
   "dependencies": {
     "@coinbase/agentkit": "latest",

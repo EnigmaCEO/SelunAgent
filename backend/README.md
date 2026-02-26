@@ -28,6 +28,9 @@ Optional:
 - `X402_IP_BURST_LIMIT` (default `60`)
 - `X402_FROM_ADDRESS_DAILY_CAP` (default `20`)
 - `X402_GLOBAL_CONCURRENCY_CAP` (default `8`)
+- `X402_STATE_FILE` (optional path override; default `backend/data/x402-state.json`)
+- `X402_STATE_RETENTION_DAYS` (default `3`)
+- `TRUST_PROXY` (default `false`; set for reverse proxies/load balancers)
 - `PORT` (default `8787`)
 - `SELUN_FREE_CODES_JSON` (JSON array of promo code rules; supports `discountPercent` from `0 < x <= 100`)
 - `SELUN_FREE_CODES` (CSV fallback of one-use free codes at 100% discount)
@@ -37,6 +40,16 @@ Optional:
 - `npm run backend:dev`
 - `npm run backend:build`
 - `npm run backend:start`
+
+## Fly.io Volume
+
+Fly config mounts persistent storage at `/app/backend/data` using volume source `selun_data`.
+
+Create the volume before first deploy (region must match app primary region):
+
+```bash
+fly volumes create selun_data --region sin --size 1 --app selunagent
+```
 
 ## Endpoints
 
@@ -88,6 +101,8 @@ Behavior:
 - Empty probe requests (no payment headers/body) also return `402` so discovery crawlers can read canonical payment requirements.
 - If no `decisionId` is supplied on a probe request, response includes a provisional quote `decisionId`; paid execution still requires caller-provided `decisionId` (or `Idempotency-Key`).
 - `402` payload includes `x402.accepts` with both exact price tiers (`allocation_only`, `allocation_with_report`) so agents can choose upfront.
+- Quoted payment windows are enforced; expired quotes return a fresh `402` quote challenge.
+- Transaction hashes are single-use across decision IDs (replay-safe) and persisted across restarts.
 - Returns `409` if the same `decisionId` is reused with different inputs.
 - Returns `429` for burst, per-address daily cap, or global concurrency limits.
 - Returns `202` after payment verification and starts full allocation orchestration (Phase 1 -> 6) automatically.
@@ -117,6 +132,7 @@ Free discovery endpoint for agent integrators. Returns:
 - supported `riskTolerance` and `timeframe` enums
 - pricing rule and computed prices
 - exact `accepts` options for both tiers
+- normalized `paymentRequirementsV2` entries for exact-scheme agents
 - discoverability metadata (method/category/tags/network)
 - canonical payment proof headers
 - idempotency policy
