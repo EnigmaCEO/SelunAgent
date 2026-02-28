@@ -1,12 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { resolveBackendDataFilePath } from "../runtime-paths";
-import type { AllocateInputShape, X402AllocateRecord } from "./x402-state.types";
+import type { AllocateInputShape, X402AllocateRecord, X402ToolProductId, X402ToolRecord } from "./x402-state.types";
 
 type PersistedX402State = {
-  version: 1;
+  version: number;
   updatedAt: string;
   allocateByDecisionId: Record<string, X402AllocateRecord>;
+  toolByProductDecisionKey?: Record<string, X402ToolRecord>;
   decisionIdByJobId: Record<string, string>;
   addressDailyUsage: Record<string, number>;
   consumedTransactionByHash: Record<string, string>;
@@ -64,6 +65,17 @@ function normalizeAllocateInputs(value: unknown): AllocateInputShape | null {
   };
 }
 
+function isToolProductId(value: unknown): value is X402ToolProductId {
+  return value === "market_regime" || value === "policy_envelope" || value === "asset_scorecard" || value === "rebalance";
+}
+
+function normalizeRecordPayload(value: unknown): Record<string, unknown> | null {
+  if (!isObject(value)) return null;
+  return Object.fromEntries(
+    Object.entries(value).filter(([key]) => typeof key === "string" && key.trim().length > 0),
+  );
+}
+
 function normalizeAllocateRecord(decisionId: string, value: unknown): X402AllocateRecord | null {
   if (!isObject(value)) return null;
 
@@ -114,6 +126,63 @@ function normalizeAllocateRecord(decisionId: string, value: unknown): X402Alloca
   };
 }
 
+function normalizeToolRecord(key: string, value: unknown): X402ToolRecord | null {
+  if (!isObject(value)) return null;
+
+  const decisionId = typeof value.decisionId === "string" ? value.decisionId.trim() : "";
+  const productId = isToolProductId(value.productId) ? value.productId : null;
+  const inputFingerprint = typeof value.inputFingerprint === "string" ? value.inputFingerprint.trim() : "";
+  const requestBody = normalizeRecordPayload(value.requestBody);
+  const chargedAmountUsdc = typeof value.chargedAmountUsdc === "string" ? value.chargedAmountUsdc.trim() : "";
+  const quoteIssuedAt = toIsoOrNow(value.quoteIssuedAt);
+  const quoteExpiresAt = toIsoOrNow(value.quoteExpiresAt);
+  const state = value.state === "accepted" ? "accepted" : value.state === "quoted" ? "quoted" : null;
+  const createdAt = toIsoOrNow(value.createdAt);
+  const updatedAt = toIsoOrNow(value.updatedAt);
+  const responseData = normalizeRecordPayload(value.responseData);
+
+  if (!decisionId || !productId || !inputFingerprint || !requestBody || !chargedAmountUsdc || !state) {
+    return null;
+  }
+
+  let payment: X402ToolRecord["payment"];
+  if (isObject(value.payment)) {
+    const fromAddress = typeof value.payment.fromAddress === "string" ? value.payment.fromAddress.trim() : "";
+    const transactionHash =
+      typeof value.payment.transactionHash === "string" ? value.payment.transactionHash.trim() : "";
+    const network = typeof value.payment.network === "string" ? value.payment.network.trim() : undefined;
+    const verifiedAt = toIsoOrNow(value.payment.verifiedAt);
+    if (fromAddress && transactionHash) {
+      payment = {
+        fromAddress,
+        transactionHash,
+        ...(network ? { network } : {}),
+        verifiedAt,
+      };
+    }
+  }
+
+  const expectedKey = `${productId}:${decisionId}`;
+  if (key.trim() && key.trim() !== expectedKey) {
+    return null;
+  }
+
+  return {
+    decisionId,
+    productId,
+    inputFingerprint,
+    requestBody,
+    chargedAmountUsdc,
+    quoteIssuedAt,
+    quoteExpiresAt,
+    state,
+    createdAt,
+    updatedAt,
+    ...(responseData ? { responseData } : {}),
+    ...(payment ? { payment } : {}),
+  };
+}
+
 function normalizeDailyUsageCount(value: unknown): number | null {
   if (typeof value !== "number" || !Number.isFinite(value)) return null;
   const normalized = Math.floor(value);
@@ -132,6 +201,7 @@ export class X402StateStore {
   private readonly filePath: string;
   private readonly dailyUsageRetentionDays: number;
   private readonly allocateByDecisionId = new Map<string, X402AllocateRecord>();
+  private readonly toolByProductDecisionKey = new Map<string, X402ToolRecord>();
   private readonly decisionIdByJobId = new Map<string, string>();
   private readonly addressDailyUsage = new Map<string, number>();
   private readonly consumedTransactionByHash = new Map<string, string>();
@@ -146,6 +216,10 @@ export class X402StateStore {
     return this.allocateByDecisionId.get(decisionId);
   }
 
+  getToolRecord(productId: X402ToolProductId, decisionId: string): X402ToolRecord | undefined {
+    return this.toolByProductDecisionKey.get(`${productId}:${decisionId}`);
+  }
+
   setAllocateRecord(decisionId: string, record: X402AllocateRecord) {
     this.allocateByDecisionId.set(decisionId, record);
     if (record.jobId) {
@@ -153,6 +227,14 @@ export class X402StateStore {
     }
     if (record.payment?.transactionHash) {
       this.consumedTransactionByHash.set(normalizeTransactionHash(record.payment.transactionHash), decisionId);
+    }
+    this.persist();
+  }
+
+  setToolRecord(productId: X402ToolProductId, decisionId: string, record: X402ToolRecord) {
+    this.toolByProductDecisionKey.set(`${productId}:${decisionId}`, record);
+    if (record.payment?.transactionHash) {
+      this.consumedTransactionByHash.set(normalizeTransactionHash(record.payment.transactionHash), `${productId}:${decisionId}`);
     }
     this.persist();
   }
@@ -213,6 +295,13 @@ export class X402StateStore {
         this.allocateByDecisionId.set(record.decisionId, record);
       }
 
+      const toolByProductDecisionKey = isObject(parsed.toolByProductDecisionKey) ? parsed.toolByProductDecisionKey : {};
+      for (const [key, value] of Object.entries(toolByProductDecisionKey)) {
+        const record = normalizeToolRecord(key, value);
+        if (!record) continue;
+        this.toolByProductDecisionKey.set(`${record.productId}:${record.decisionId}`, record);
+      }
+
       const decisionIdByJobId = isObject(parsed.decisionIdByJobId) ? parsed.decisionIdByJobId : {};
       for (const [jobId, decisionId] of Object.entries(decisionIdByJobId)) {
         if (!jobId.trim() || typeof decisionId !== "string" || !decisionId.trim()) continue;
@@ -242,6 +331,15 @@ export class X402StateStore {
         }
       }
 
+      const toolRecordsByCreatedAt = Array.from(this.toolByProductDecisionKey.values()).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      for (const record of toolRecordsByCreatedAt) {
+        if (!record.payment?.transactionHash) continue;
+        const hash = normalizeTransactionHash(record.payment.transactionHash);
+        if (!this.consumedTransactionByHash.has(hash)) {
+          this.consumedTransactionByHash.set(hash, `${record.productId}:${record.decisionId}`);
+        }
+      }
+
       this.pruneAddressDailyUsage();
     } catch {
       // Ignore corrupt state files and continue with clean in-memory state.
@@ -264,9 +362,10 @@ export class X402StateStore {
 
   private persist() {
     const payload: PersistedX402State = {
-      version: 1,
+      version: 2,
       updatedAt: new Date().toISOString(),
       allocateByDecisionId: toSortedObject(this.allocateByDecisionId),
+      toolByProductDecisionKey: toSortedObject(this.toolByProductDecisionKey),
       decisionIdByJobId: toSortedObject(this.decisionIdByJobId),
       addressDailyUsage: toSortedObject(this.addressDailyUsage),
       consumedTransactionByHash: toSortedObject(this.consumedTransactionByHash),

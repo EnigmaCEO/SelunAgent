@@ -23,10 +23,10 @@ if (process.argv.includes("--help") || process.argv.includes("-h")) {
   process.exit(0);
 }
 
-const allocateUrl = resolveAllocateUrl();
 const privateKey = readRequiredEnv(["SELUN_X402_SMOKE_PRIVATE_KEY", "EVM_PRIVATE_KEY"]);
 const account = privateKeyToAccount(privateKey);
 const withReport = readBooleanEnv("SELUN_X402_SMOKE_WITH_REPORT", false);
+const allocateUrl = resolveAllocateUrl(withReport);
 const shouldPoll = readBooleanEnv("SELUN_X402_SMOKE_POLL", true);
 const pollIntervalMs = readPositiveIntEnv("SELUN_X402_SMOKE_POLL_INTERVAL_MS", 5000);
 const pollTimeoutMs = readPositiveIntEnv("SELUN_X402_SMOKE_POLL_TIMEOUT_MS", 10 * 60 * 1000);
@@ -170,7 +170,7 @@ function loadEnvFiles(paths) {
   }
 }
 
-function resolveAllocateUrl() {
+function resolveAllocateUrl(withReport) {
   const direct = process.env.SELUN_X402_SMOKE_URL?.trim();
   if (direct) return direct;
 
@@ -181,7 +181,8 @@ function resolveAllocateUrl() {
     );
   }
 
-  return new URL("/agent/x402/allocate", ensureTrailingSlash(backendBaseUrl)).toString();
+  const routePath = withReport ? "/agent/x402/allocate-with-report" : "/agent/x402/allocate";
+  return new URL(routePath, ensureTrailingSlash(backendBaseUrl)).toString();
 }
 
 function ensureTrailingSlash(value) {

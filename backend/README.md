@@ -33,6 +33,10 @@ Optional:
 - `X402_IP_BURST_LIMIT` (default `60`)
 - `X402_FROM_ADDRESS_DAILY_CAP` (default `20`)
 - `X402_GLOBAL_CONCURRENCY_CAP` (default `8`)
+- `X402_MARKET_REGIME_PRICE_USDC` (default `0.25`)
+- `X402_POLICY_ENVELOPE_PRICE_USDC` (default `0.25`)
+- `X402_ASSET_SCORECARD_PRICE_USDC` (default `0.5`)
+- `X402_REBALANCE_PRICE_USDC` (default `1`)
 - `X402_STATE_FILE` (optional path override; default `backend/data/x402-state.json`)
 - `X402_STATE_RETENTION_DAYS` (default `3`)
 - `TRUST_PROXY` (default `false`; set for reverse proxies/load balancers)
@@ -71,6 +75,11 @@ fly scale count 1 --app selunagent
 ## Endpoints
 
 - `POST /agent/x402/allocate`
+- `POST /agent/x402/allocate-with-report`
+- `POST /agent/x402/market-regime`
+- `POST /agent/x402/policy-envelope`
+- `POST /agent/x402/asset-scorecard`
+- `POST /agent/x402/rebalance`
 - `GET /agent/x402/capabilities`
 - `POST /agent/init`
 - `GET /agent/wallet`
@@ -83,7 +92,32 @@ fly scale count 1 --app selunagent
 
 Wizard UI can continue using `/agent/pay`, `/agent/verify-payment`, and `/agent/phase1..6` routes.
 
-## `/agent/x402/allocate` (x402 v2 commerce entrypoint)
+## x402 Resource Catalog
+
+- `POST /agent/x402/allocate`
+  - allocation only
+  - asynchronous `202` response with `statusPath`
+- `POST /agent/x402/allocate-with-report`
+  - allocation plus certified decision record
+  - asynchronous `202` response with `statusPath`
+- `POST /agent/x402/market-regime`
+  - synchronous Phase 1 market-condition summary
+- `POST /agent/x402/policy-envelope`
+  - synchronous Phase 2 policy-envelope output
+- `POST /agent/x402/asset-scorecard`
+  - synchronous Phase 5 shortlist/scorecard output
+- `POST /agent/x402/rebalance`
+  - synchronous rebalance recommendations from supplied holdings
+
+All x402 resources:
+
+- require `decisionId` in the body or `Idempotency-Key`
+- return `402` with `PAYMENT-REQUIRED` when unpaid
+- accept `PAYMENT-SIGNATURE` on paid retries
+- return `PAYMENT-RESPONSE` after successful settlement
+- enforce quote expiry, replay protection, and transaction single-use
+
+## `/agent/x402/allocate`
 
 Request body:
 
@@ -91,8 +125,7 @@ Request body:
 {
   "decisionId": "required (or use Idempotency-Key header)",
   "riskTolerance": "Conservative | Balanced | Growth | Aggressive",
-  "timeframe": "<1_year | 1-3_years | 3+_years",
-  "withReport": false
+  "timeframe": "<1_year | 1-3_years | 3+_years"
 }
 ```
 
@@ -127,20 +160,47 @@ When available, `GET /execution-status/:jobId` includes a machine-first `agentCo
 - `confidenceScore`
 - echoed `inputs` and `payment`
 
-Deterministic pricing rule (server computed):
+Pricing:
 
 - `allocation only`: `STRUCTURED_ALLOCATION_PRICE_USDC`
-- `allocation + report`: `STRUCTURED_ALLOCATION_PRICE_USDC + CERTIFIED_DECISION_RECORD_FEE_USDC`
 - Caller-provided amount is ignored; server verifies payment meets/exceeds required amount.
+
+## `/agent/x402/allocate-with-report`
+
+Same request body as `/agent/x402/allocate`.
+
+Pricing:
+
+- `allocation + report`: `STRUCTURED_ALLOCATION_PRICE_USDC + CERTIFIED_DECISION_RECORD_FEE_USDC`
+
+## `/agent/x402/rebalance`
+
+Request body:
+
+```json
+{
+  "decisionId": "required (or use Idempotency-Key header)",
+  "riskTolerance": "Conservative | Balanced | Growth | Aggressive",
+  "timeframe": "<1_year | 1-3_years | 3+_years",
+  "holdings": [
+    { "asset": "BTC", "usdValue": 4300 },
+    { "asset": "ETH", "usdValue": 3700 },
+    { "asset": "USDC", "usdValue": 2000 }
+  ]
+}
+```
+
+Pricing:
+
+- `rebalance`: `X402_REBALANCE_PRICE_USDC` (default `1`)
 
 ## `/agent/x402/capabilities`
 
 Free discovery endpoint for agent integrators. Returns:
 
-- supported `riskTolerance` and `timeframe` enums
-- pricing rule and computed prices
-- exact `accepts` options for both tiers
-- normalized `paymentRequirementsV2` entries for exact-scheme agents
+- resource catalog across allocation, report, market-regime, policy-envelope, asset-scorecard, and rebalance
+- computed prices for each resource
+- normalized `paymentRequirementsV2` preview entries
 - x402 v2 transport headers and facilitator URL
 - discoverability metadata (method/category/tags/network)
 - idempotency policy
@@ -148,7 +208,7 @@ Free discovery endpoint for agent integrators. Returns:
 
 ## Bazaar Cataloging
 
-Selun now registers the official Bazaar resource-server extension on the x402 seller server and declares Bazaar discovery metadata directly on `POST /agent/x402/allocate`.
+Selun now registers the official Bazaar resource-server extension on the x402 seller server and declares Bazaar discovery metadata directly on each public x402 resource.
 
 That means:
 
@@ -198,7 +258,9 @@ Optional environment:
 
 The script:
 
-- probes `/agent/x402/allocate` for a real `402` + `PAYMENT-REQUIRED`
+- probes the selected allocation endpoint for a real `402` + `PAYMENT-REQUIRED`
 - retries with the official x402 buyer wrapper
 - decodes `PAYMENT-RESPONSE`
 - optionally polls `statusPath` until Phase 6 completes
+
+When `SELUN_X402_SMOKE_WITH_REPORT=true`, the smoke script automatically targets `/agent/x402/allocate-with-report`.
