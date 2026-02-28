@@ -24,6 +24,7 @@ export type X402AllocateRecord = {
   payment?: {
     fromAddress: string;
     transactionHash: string;
+    network?: string;
     verifiedAt: string;
   };
 };

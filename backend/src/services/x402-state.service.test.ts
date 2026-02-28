@@ -36,6 +36,7 @@ function buildAcceptedRecord(decisionId: string, transactionHash: string): X402A
     payment: {
       fromAddress: "0x1234567890123456789012345678901234567890",
       transactionHash,
+      network: "eip155:8453",
       verifiedAt: timestamp,
     },
   };
@@ -74,6 +75,7 @@ test("accepted records persist and backfill transaction ownership on restart", (
     assert.equal(restarted.getTransactionOwner(txHash), "decision-42");
     assert.equal(restarted.getDecisionIdForJob("job-decision-42"), "decision-42");
     assert.equal(restarted.getAllocateRecord("decision-42")?.payment?.transactionHash, txHash);
+    assert.equal(restarted.getAllocateRecord("decision-42")?.payment?.network, "eip155:8453");
   });
 });
 

@@ -87,11 +87,13 @@ function normalizeAllocateRecord(decisionId: string, value: unknown): X402Alloca
     const fromAddress = typeof value.payment.fromAddress === "string" ? value.payment.fromAddress.trim() : "";
     const transactionHash =
       typeof value.payment.transactionHash === "string" ? value.payment.transactionHash.trim() : "";
+    const network = typeof value.payment.network === "string" ? value.payment.network.trim() : undefined;
     const verifiedAt = toIsoOrNow(value.payment.verifiedAt);
     if (fromAddress && transactionHash) {
       payment = {
         fromAddress,
         transactionHash,
+        ...(network ? { network } : {}),
         verifiedAt,
       };
     }
@@ -284,4 +286,3 @@ export function getX402StateStore(): X402StateStore {
   cachedStore = new X402StateStore();
   return cachedStore;
 }
-

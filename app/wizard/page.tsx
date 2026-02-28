@@ -788,7 +788,7 @@ function aggregateAllocationEntries(entries: AllocationEntry[]): AllocationRow[]
     });
   }
 
-  return [...byAsset.values()]
+  const roundedRows = [...byAsset.values()]
     .map((entry) => ({
       asset: entry.asset,
       name: entry.name,
@@ -797,6 +797,8 @@ function aggregateAllocationEntries(entries: AllocationEntry[]): AllocationRow[]
       allocationPct: roundPercentage(entry.weight),
     }))
     .sort((left, right) => right.allocationPct - left.allocationPct || left.asset.localeCompare(right.asset));
+
+  return normalizeRoundedAllocationRows(roundedRows);
 }
 
 function getAaaPayloadCandidates(phase6AaaAllocate: AaaAllocateDispatch | null): Record<string, unknown>[] {
@@ -996,6 +998,53 @@ function toAllocationRows(
 
 function roundPercentage(weight: number): number {
   return Math.round(weight * 10_000) / 100;
+}
+
+function normalizeRoundedAllocationRows(rows: AllocationRow[]): AllocationRow[] {
+  if (rows.length === 0) return rows;
+
+  const targetBasisPoints = 10_000;
+  const maxAdjustmentBasisPoints = 10;
+  const basisPoints = rows.map((row) => Math.max(0, Math.round(row.allocationPct * 100)));
+  let remainingAdjustment = targetBasisPoints - basisPoints.reduce((sum, value) => sum + value, 0);
+  if (remainingAdjustment === 0 || Math.abs(remainingAdjustment) > maxAdjustmentBasisPoints) {
+    return rows;
+  }
+
+  const adjustmentOrder = rows
+    .map((row, index) => ({ index, allocationPct: row.allocationPct, asset: row.asset }))
+    .sort((left, right) => right.allocationPct - left.allocationPct || left.asset.localeCompare(right.asset))
+    .map((entry) => entry.index);
+
+  while (remainingAdjustment !== 0) {
+    let adjustedInPass = false;
+
+    for (const index of adjustmentOrder) {
+      if (remainingAdjustment === 0) break;
+
+      if (remainingAdjustment > 0) {
+        basisPoints[index] += 1;
+        remainingAdjustment -= 1;
+        adjustedInPass = true;
+        continue;
+      }
+
+      if (basisPoints[index] > 0) {
+        basisPoints[index] -= 1;
+        remainingAdjustment += 1;
+        adjustedInPass = true;
+      }
+    }
+
+    if (!adjustedInPass) {
+      return rows;
+    }
+  }
+
+  return rows.map((row, index) => ({
+    ...row,
+    allocationPct: basisPoints[index] / 100,
+  }));
 }
 
 function formatRiskClassLabel(riskClass: string): string {
@@ -2815,19 +2864,41 @@ function CompleteStep({
     setPortfolioTotalUsdInput(next.toFixed(2));
   };
 
-  const rowsForDisplay = allocations.map((row) => ({
+  const allocationBasisPoints = allocations.map((row) => Math.max(0, Math.round(row.allocationPct * 100)));
+  const totalAllocationBasisPoints = allocationBasisPoints.reduce((sum, value) => sum + value, 0);
+  const portfolioTotalCents = Math.max(0, Math.round(portfolioTotalUsd * 100));
+  const rawUsdAllocations = allocationBasisPoints.map((basisPoints, index) => {
+    const divisor = totalAllocationBasisPoints > 0 ? totalAllocationBasisPoints : 1;
+    const rawCents = (portfolioTotalCents * basisPoints) / divisor;
+    return {
+      index,
+      cents: Math.floor(rawCents),
+      remainder: rawCents - Math.floor(rawCents),
+    };
+  });
+  let remainingUsdCents = portfolioTotalCents - rawUsdAllocations.reduce((sum, entry) => sum + entry.cents, 0);
+  const usdAdjustmentOrder = rawUsdAllocations
+    .slice()
+    .sort((left, right) => right.remainder - left.remainder || allocations[left.index].asset.localeCompare(allocations[right.index].asset));
+  for (let orderIndex = 0; remainingUsdCents > 0 && usdAdjustmentOrder.length > 0; orderIndex += 1) {
+    const target = usdAdjustmentOrder[orderIndex % usdAdjustmentOrder.length];
+    rawUsdAllocations[target.index].cents += 1;
+    remainingUsdCents -= 1;
+  }
+
+  const rowsForDisplay = allocations.map((row, index) => ({
     ...row,
-    usdAmount: roundUsd((portfolioTotalUsd * row.allocationPct) / 100),
+    usdAmount: rawUsdAllocations[index].cents / 100,
     roleTooltip: PORTFOLIO_ROLE_TOOLTIPS[row.category] ?? PORTFOLIO_ROLE_TOOLTIPS.Allocation,
     roleGroup: normalizeRoleGroupLabel(row.category, row.riskClass),
   }));
-  const rowsTotalUsd = rowsForDisplay.reduce((sum, row) => sum + row.usdAmount, 0);
-  const totalAllocationPct = rowsForDisplay.reduce((sum, row) => sum + row.allocationPct, 0);
+  const rowsTotalUsd = portfolioTotalCents / 100;
+  const totalAllocationPct = totalAllocationBasisPoints / 100;
   const roleGroupOrder = ROLE_GROUP_CONFIG.map((entry) => entry.key);
   const roleGroupTotals = new Map<RoleGroupKey, number>();
   for (const group of roleGroupOrder) roleGroupTotals.set(group, 0);
-  for (const row of rowsForDisplay) {
-    roleGroupTotals.set(row.roleGroup, (roleGroupTotals.get(row.roleGroup) ?? 0) + row.allocationPct);
+  for (const [index, row] of rowsForDisplay.entries()) {
+    roleGroupTotals.set(row.roleGroup, (roleGroupTotals.get(row.roleGroup) ?? 0) + allocationBasisPoints[index]);
   }
   const groupedRows = roleGroupOrder
     .map((group) => ({
@@ -2839,7 +2910,7 @@ function CompleteStep({
     .filter((entry) => entry.rows.length > 0);
   const roleOverviewStats = ROLE_GROUP_CONFIG.map((group) => ({
     label: group.label,
-    value: formatPct(roleGroupTotals.get(group.key) ?? 0),
+    value: formatPct((roleGroupTotals.get(group.key) ?? 0) / 100),
   }));
   const hasResultEmail = resultEmail.trim().length > 0;
   const resultEmailTone =
@@ -3040,7 +3111,7 @@ function CompleteStep({
                   <td className="px-4 py-2" colSpan={5}>
                     <div className="flex items-center gap-3 text-xs font-bold uppercase tracking-[0.12em] text-slate-600">
                       <span className="h-px flex-1 bg-slate-300" />
-                      <span>{mapRoleGroupLabel(group.group)} - {formatPct(roleGroupTotals.get(group.group) ?? 0)}</span>
+                      <span>{mapRoleGroupLabel(group.group)} - {formatPct((roleGroupTotals.get(group.group) ?? 0) / 100)}</span>
                       <span className="h-px flex-1 bg-slate-300" />
                     </div>
                   </td>
