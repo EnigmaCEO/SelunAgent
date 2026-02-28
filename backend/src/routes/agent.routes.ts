@@ -1582,6 +1582,116 @@ function failure(res: Response, error: unknown, status = 500, details?: Record<s
   });
 }
 
+async function buildX402CapabilitiesData() {
+  const identity = await getAgentAddress();
+  const config = getConfig();
+  const accepts = buildAllocateAccepts(identity.walletAddress);
+  const allocationOnlyAccept = getAllocateAcceptByReport(accepts, false);
+  const allocationWithReportAccept = getAllocateAcceptByReport(accepts, true);
+  const toolDefinitions = getX402ToolDefinitions();
+  const resources = [
+    {
+      endpoint: "/agent/x402/allocate",
+      method: "POST",
+      productId: "allocate",
+      title: "Selun Allocation",
+      description: "Selun deterministic crypto allocation construction.",
+      pricing: {
+        amountUsdc: allocationOnlyAccept.amountUsdc,
+        price: allocationOnlyAccept.price,
+      },
+      accepts: [allocationOnlyAccept],
+      paymentRequirementsV2: buildPaymentRequirementsV2([allocationOnlyAccept]),
+      inputSchema: buildAllocateDiscoveryExtension().inputSchema,
+    },
+    {
+      endpoint: "/agent/x402/allocate-with-report",
+      method: "POST",
+      productId: "allocate_with_report",
+      title: "Selun Allocation With Report",
+      description: "Selun deterministic crypto allocation construction bundled with the certified decision record.",
+      pricing: {
+        amountUsdc: allocationWithReportAccept.amountUsdc,
+        price: allocationWithReportAccept.price,
+      },
+      accepts: [allocationWithReportAccept],
+      paymentRequirementsV2: buildPaymentRequirementsV2([allocationWithReportAccept]),
+      inputSchema: buildAllocateWithReportDiscoveryExtension().inputSchema,
+    },
+    ...toolDefinitions.map((definition) => {
+      const requirement = buildToolPreviewRequirement(definition.productId, identity.walletAddress);
+      return {
+        endpoint: definition.routePath,
+        method: "POST",
+        productId: definition.productId,
+        title: definition.title,
+        description: definition.description,
+        pricing: {
+          amountUsdc: definition.amountUsdc(),
+          price: toUsdPrice(definition.amountUsdc()),
+        },
+        paymentRequirementsV2: [requirement],
+        inputSchema: definition.inputSchema,
+      };
+    }),
+  ];
+
+  return {
+    discoverable: true,
+    x402Version: 2,
+    versions: {
+      executionModelVersion: EXECUTION_MODEL_VERSION,
+    },
+    pricing: {
+      ...computePriceContract(),
+      marketRegimeUsdc: getX402ToolPriceUsdc("market_regime"),
+      policyEnvelopeUsdc: getX402ToolPriceUsdc("policy_envelope"),
+      assetScorecardUsdc: getX402ToolPriceUsdc("asset_scorecard"),
+      rebalanceUsdc: getX402ToolPriceUsdc("rebalance"),
+    },
+    resources,
+    paymentTransport: {
+      facilitatorUrl: getX402FacilitatorUrl(),
+      headers: {
+        paymentRequired: "PAYMENT-REQUIRED",
+        paymentSignature: "PAYMENT-SIGNATURE",
+        paymentResponse: "PAYMENT-RESPONSE",
+      },
+      requestScopedRequirements: {
+        boundFields: ["decisionId", "quoteExpiresAt", "request input fingerprint"],
+        mismatchBehavior: "server returns 402 with a fresh PAYMENT-REQUIRED challenge",
+      },
+    },
+    limits: {
+      ipBurstLimit: {
+        requests: getX402IpBurstLimit(),
+        windowMs: getX402IpBurstWindowMs(),
+      },
+      fromAddressDailyCap: getX402FromAddressDailyCap(),
+      globalConcurrencyCap: getX402GlobalConcurrencyCap(),
+    },
+    idempotency: {
+      required: true,
+      acceptedKeys: ["decisionId", "Idempotency-Key"],
+      conflictBehavior: "same decisionId + different inputs => 409",
+    },
+    discovery: {
+      type: "http",
+      facilitator: getX402FacilitatorUrl(),
+      transportVersion: 2,
+      network: config.networkId,
+      caip2Network: toCaip2Network(config.networkId),
+      metadataRefreshCadenceHours: 6,
+      category: "finance:portfolio-agent",
+      tags: ["portfolio", "allocation", "rebalance", "risk", "x402", "audit"],
+    },
+  };
+}
+
+export async function getX402CapabilitiesData() {
+  return buildX402CapabilitiesData();
+}
+
 async function verifyResultEmailPayment(params: {
   fromAddress: string;
   expectedAmountUSDC: number;
@@ -1903,108 +2013,11 @@ router.get("/pricing", (_req: Request, res: Response) => {
 router.get("/x402/capabilities", async (_req: Request, res: Response) => {
   try {
     attachBazaarDiscovery(res);
-    const identity = await getAgentAddress();
-    const config = getConfig();
-    const accepts = buildAllocateAccepts(identity.walletAddress);
-    const allocationOnlyAccept = getAllocateAcceptByReport(accepts, false);
-    const allocationWithReportAccept = getAllocateAcceptByReport(accepts, true);
-    const toolDefinitions = getX402ToolDefinitions();
-    const resources = [
-      {
-        endpoint: "/agent/x402/allocate",
-        method: "POST",
-        productId: "allocate",
-        description: "Selun deterministic crypto allocation construction.",
-        pricing: {
-          amountUsdc: allocationOnlyAccept.amountUsdc,
-          price: allocationOnlyAccept.price,
-        },
-        accepts: [allocationOnlyAccept],
-        paymentRequirementsV2: buildPaymentRequirementsV2([allocationOnlyAccept]),
-        inputSchema: buildAllocateDiscoveryExtension().inputSchema,
-      },
-      {
-        endpoint: "/agent/x402/allocate-with-report",
-        method: "POST",
-        productId: "allocate_with_report",
-        description: "Selun deterministic crypto allocation construction bundled with the certified decision record.",
-        pricing: {
-          amountUsdc: allocationWithReportAccept.amountUsdc,
-          price: allocationWithReportAccept.price,
-        },
-        accepts: [allocationWithReportAccept],
-        paymentRequirementsV2: buildPaymentRequirementsV2([allocationWithReportAccept]),
-        inputSchema: buildAllocateWithReportDiscoveryExtension().inputSchema,
-      },
-      ...toolDefinitions.map((definition) => {
-        const requirement = buildToolPreviewRequirement(definition.productId, identity.walletAddress);
-        return {
-          endpoint: definition.routePath,
-          method: "POST",
-          productId: definition.productId,
-          description: definition.description,
-          pricing: {
-            amountUsdc: definition.amountUsdc(),
-            price: toUsdPrice(definition.amountUsdc()),
-          },
-          paymentRequirementsV2: [requirement],
-          inputSchema: definition.inputSchema,
-        };
-      }),
-    ];
+    const data = await buildX402CapabilitiesData();
     return res.status(200).json({
       success: true,
       executionModelVersion: EXECUTION_MODEL_VERSION,
-      data: {
-        discoverable: true,
-        x402Version: 2,
-        versions: {
-          executionModelVersion: EXECUTION_MODEL_VERSION,
-        },
-        pricing: {
-          ...computePriceContract(),
-          marketRegimeUsdc: getX402ToolPriceUsdc("market_regime"),
-          policyEnvelopeUsdc: getX402ToolPriceUsdc("policy_envelope"),
-          assetScorecardUsdc: getX402ToolPriceUsdc("asset_scorecard"),
-          rebalanceUsdc: getX402ToolPriceUsdc("rebalance"),
-        },
-        resources,
-        paymentTransport: {
-          facilitatorUrl: getX402FacilitatorUrl(),
-          headers: {
-            paymentRequired: "PAYMENT-REQUIRED",
-            paymentSignature: "PAYMENT-SIGNATURE",
-            paymentResponse: "PAYMENT-RESPONSE",
-          },
-          requestScopedRequirements: {
-            boundFields: ["decisionId", "quoteExpiresAt", "request input fingerprint"],
-            mismatchBehavior: "server returns 402 with a fresh PAYMENT-REQUIRED challenge",
-          },
-        },
-        limits: {
-          ipBurstLimit: {
-            requests: getX402IpBurstLimit(),
-            windowMs: getX402IpBurstWindowMs(),
-          },
-          fromAddressDailyCap: getX402FromAddressDailyCap(),
-          globalConcurrencyCap: getX402GlobalConcurrencyCap(),
-        },
-        idempotency: {
-          required: true,
-          acceptedKeys: ["decisionId", "Idempotency-Key"],
-          conflictBehavior: "same decisionId + different inputs => 409",
-        },
-        discovery: {
-          type: "http",
-          facilitator: getX402FacilitatorUrl(),
-          transportVersion: 2,
-          network: config.networkId,
-          caip2Network: toCaip2Network(config.networkId),
-          metadataRefreshCadenceHours: 6,
-          category: "finance:portfolio-agent",
-          tags: ["portfolio", "allocation", "rebalance", "risk", "x402", "audit"],
-        },
-      },
+      data,
       logs: getExecutionLogs(120),
     });
   } catch (error) {

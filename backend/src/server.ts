@@ -2,7 +2,7 @@ import fs from "node:fs";
 import { createHash } from "node:crypto";
 import dotenv from "dotenv";
 import express from "express";
-import { createAgentRouter, getX402AllocateMetadataByJobId } from "./routes/agent.routes";
+import { createAgentRouter, getX402AllocateMetadataByJobId, getX402CapabilitiesData } from "./routes/agent.routes";
 import { EXECUTION_MODEL_VERSION, getConfig } from "./config";
 import { resolveBackendPath } from "./runtime-paths";
 import { getExecutionStatus, getExecutionStatusByWallet } from "./services/phase1-execution.service";
@@ -226,12 +226,76 @@ app.set("trust proxy", resolveTrustProxySetting(process.env.TRUST_PROXY));
 
 app.use(express.json({ limit: "1mb" }));
 
+function buildAbsoluteUrl(req: express.Request, routePath: string): string {
+  const forwardedProto = req.header("x-forwarded-proto")?.split(",")[0]?.trim();
+  const forwardedHost = req.header("x-forwarded-host")?.split(",")[0]?.trim();
+  const proto = forwardedProto || req.protocol || "https";
+  const host = forwardedHost || req.get("host");
+  if (!host) return routePath;
+  return `${proto}://${host}${routePath}`;
+}
+
+async function buildWellKnownX402Document(req: express.Request) {
+  const capabilities = await getX402CapabilitiesData();
+  const origin = buildAbsoluteUrl(req, "").replace(/\/$/, "");
+  return {
+    version: "1",
+    name: "Selun Autonomous Portfolio Agent",
+    description: "Selun x402 resource catalog for crypto portfolio allocation, report delivery, and rebalance tools.",
+    provider: {
+      name: "Sagitta",
+      url: origin,
+    },
+    x402Version: capabilities.x402Version,
+    executionModelVersion: EXECUTION_MODEL_VERSION,
+    facilitatorUrl: capabilities.paymentTransport.facilitatorUrl,
+    network: capabilities.discovery.network,
+    caip2Network: capabilities.discovery.caip2Network,
+    discovery: {
+      capabilitiesUrl: buildAbsoluteUrl(req, "/agent/x402/capabilities"),
+      discoveryUrl: buildAbsoluteUrl(req, "/agent/x402/discovery"),
+    },
+    resources: capabilities.resources.map((resource) => ({
+      ...resource,
+      url: buildAbsoluteUrl(req, resource.endpoint),
+    })),
+  };
+}
+
 app.get("/health", (_req, res) => {
   res.status(200).json({
     success: true,
     executionModelVersion: EXECUTION_MODEL_VERSION,
     status: "ok",
   });
+});
+
+app.get("/.well-known/x402", async (req, res) => {
+  try {
+    const document = await buildWellKnownX402Document(req);
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    return res.status(200).json(document);
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      executionModelVersion: EXECUTION_MODEL_VERSION,
+      error: error instanceof Error ? error.message : "Failed to build x402 discovery document.",
+    });
+  }
+});
+
+app.get("/.well-known/x402.json", async (req, res) => {
+  try {
+    const document = await buildWellKnownX402Document(req);
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    return res.status(200).json(document);
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      executionModelVersion: EXECUTION_MODEL_VERSION,
+      error: error instanceof Error ? error.message : "Failed to build x402 discovery document.",
+    });
+  }
 });
 
 app.use("/agent", createAgentRouter());

@@ -218,6 +218,20 @@ That means:
 
 The legacy `X-X402-Bazaar-Discovery` response header remains as a convenience hint for custom clients, but Bazaar listing depends on the official x402 extension path, not that custom header.
 
+## Well-Known Discovery
+
+Selun now exposes a root discovery document for crawler-style registration:
+
+- `GET /.well-known/x402`
+- `GET /.well-known/x402.json`
+
+The document includes absolute URLs for every public x402 resource plus links back to:
+
+- `/agent/x402/capabilities`
+- `/agent/x402/discovery`
+
+If you are using the branded frontend domain, the Next.js rewrite forwards these well-known URLs to the backend automatically.
+
 ### Bazaar Smoke Test
 
 Use the root script to trigger a real x402 payment flow that can seed facilitator discovery:

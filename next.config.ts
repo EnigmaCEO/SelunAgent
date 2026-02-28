@@ -29,6 +29,14 @@ const nextConfig: NextConfig = {
     const backendOrigin = getPublicBackendOrigin();
     return [
       {
+        source: "/.well-known/x402",
+        destination: `${backendOrigin}/.well-known/x402`,
+      },
+      {
+        source: "/.well-known/x402.json",
+        destination: `${backendOrigin}/.well-known/x402.json`,
+      },
+      {
         source: "/agent/:path*",
         destination: `${backendOrigin}/agent/:path*`,
       },
