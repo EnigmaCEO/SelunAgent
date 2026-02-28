@@ -489,6 +489,14 @@ type AaaAllocateDispatch = {
   error?: string;
 };
 
+type ResultEmailDeliveryStatus = "idle" | "sending" | "sent" | "failed";
+
+type ResultEmailDeliveryResponse = {
+  success?: boolean;
+  status?: "sent" | "skipped" | "failed";
+  error?: string;
+};
+
 type ExecutionStatusResponse = {
   success?: boolean;
   error?: string;
@@ -1741,6 +1749,7 @@ type ReviewStepProps = {
   investmentHorizon: InvestmentHorizon;
   basePriceUsdc: number;
   certifiedDecisionRecordFeeUsdc: number;
+  resultEmail: string;
   includeCertifiedDecisionRecord: boolean;
   promoCode: string;
   promoQuote: PromoQuoteResult | null;
@@ -1760,6 +1769,7 @@ type ReviewStepProps = {
   isConnectingWallet: boolean;
   paymentError: string | null;
   isPaying: boolean;
+  onResultEmailChange: (value: string) => void;
   onToggleCertifiedDecisionRecord: (nextValue: boolean) => void;
   onPromoCodeChange: (value: string) => void;
   onApplyPromoCode: () => Promise<void>;
@@ -1775,6 +1785,7 @@ function ReviewStep({
   investmentHorizon,
   basePriceUsdc,
   certifiedDecisionRecordFeeUsdc,
+  resultEmail,
   includeCertifiedDecisionRecord,
   promoCode,
   promoQuote,
@@ -1794,6 +1805,7 @@ function ReviewStep({
   isConnectingWallet,
   paymentError,
   isPaying,
+  onResultEmailChange,
   onToggleCertifiedDecisionRecord,
   onPromoCodeChange,
   onApplyPromoCode,
@@ -1805,11 +1817,15 @@ function ReviewStep({
 }: ReviewStepProps) {
   const hasPromoCode = promoCode.trim().length > 0;
   const promoApplied = Boolean(promoQuote?.promoCodeApplied);
+  const normalizedResultEmail = resultEmail.trim();
+  const hasResultEmail = normalizedResultEmail.length > 0;
+  const invalidResultEmail = hasResultEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedResultEmail);
   const requiresUsdcBalance = requiredAmountUsdc > 0;
   const canGenerate =
     Boolean(walletAddress) &&
     !isPaying &&
     !isApplyingPromoCode &&
+    !invalidResultEmail &&
     !requiresPromoApply &&
     (
       !requiresUsdcBalance ||
@@ -1831,6 +1847,8 @@ function ReviewStep({
       ? "Loading pricing..."
     : pricingError
       ? "Pricing unavailable. Refresh required."
+    : invalidResultEmail
+      ? "Enter a valid results email or leave blank"
     : requiresUsdcBalance && isLoadingUsdcBalance && walletAddress
       ? "Checking USDC balance..."
     : requiresPromoApply
@@ -1879,6 +1897,29 @@ function ReviewStep({
             </p>
           </div>
         </label>
+      </div>
+
+      <div className="mt-4 rounded-xl border border-slate-300/60 bg-slate-50/70 p-4">
+        <label htmlFor="review-result-email" className="block text-xs font-bold uppercase tracking-[0.12em] text-slate-500">
+          Optional Results Email
+        </label>
+        <input
+          id="review-result-email"
+          type="email"
+          value={resultEmail}
+          onChange={(event) => onResultEmailChange(event.target.value)}
+          placeholder="you@example.com"
+          className={`mt-2 w-full rounded-lg border bg-white px-3 py-2 text-sm text-slate-800 focus:outline-none ${
+            invalidResultEmail ? "border-rose-300 focus:border-rose-400" : "border-slate-300 focus:border-cyan-400"
+          }`}
+        />
+        <p className="mt-1 text-xs text-slate-500">
+          If provided, Selun will email your allocation summary after generation. If you later download the certified
+          record, the same address will be used for PDF delivery.
+        </p>
+        {invalidResultEmail && (
+          <p className="mt-2 text-xs font-medium text-rose-700">Enter a valid email address or leave this field blank.</p>
+        )}
       </div>
 
       <div className="mt-4 rounded-xl border border-slate-300/60 bg-white/80 p-4">
@@ -2516,11 +2557,15 @@ type CompleteStepProps = {
   phase7Enabled: boolean;
   walletAddress: string | null;
   agentPaymentReceipt: AgentPaymentReceipt | null;
+  resultEmail: string;
+  resultEmailDeliveryStatus: ResultEmailDeliveryStatus;
+  resultEmailDeliveryMessage: string | null;
   phase1Output: Phase1Output | null;
   phase2Output: Phase2Output | null;
   phase6AaaAllocate: AaaAllocateDispatch | null;
   downloadError: string | null;
   isDownloading: boolean;
+  onRetryResultEmail: () => void;
   onDownloadReport: () => void;
   onStartOver: () => void;
 };
@@ -2531,11 +2576,15 @@ function CompleteStep({
   phase7Enabled,
   walletAddress,
   agentPaymentReceipt,
+  resultEmail,
+  resultEmailDeliveryStatus,
+  resultEmailDeliveryMessage,
   phase1Output,
   phase2Output,
   phase6AaaAllocate,
   downloadError,
   isDownloading,
+  onRetryResultEmail,
   onDownloadReport,
   onStartOver,
 }: CompleteStepProps) {
@@ -2792,6 +2841,35 @@ function CompleteStep({
     label: group.label,
     value: formatPct(roleGroupTotals.get(group.key) ?? 0),
   }));
+  const hasResultEmail = resultEmail.trim().length > 0;
+  const resultEmailTone =
+    resultEmailDeliveryStatus === "sent"
+      ? "border-emerald-300 bg-emerald-50 text-emerald-900"
+      : resultEmailDeliveryStatus === "failed"
+        ? "border-rose-300 bg-rose-50 text-rose-900"
+        : resultEmailDeliveryStatus === "sending"
+          ? "border-cyan-300 bg-cyan-50 text-cyan-900"
+          : "border-slate-300 bg-slate-50 text-slate-800";
+  const resultEmailHeadline =
+    resultEmailDeliveryStatus === "sent"
+      ? "Allocation summary emailed"
+      : resultEmailDeliveryStatus === "failed"
+        ? "Allocation summary email failed"
+        : resultEmailDeliveryStatus === "sending"
+          ? "Sending allocation summary"
+          : hasResultEmail
+            ? "Allocation summary email queued"
+            : "No result email requested";
+  const resultEmailBody = hasResultEmail
+    ? resultEmailDeliveryMessage ??
+      (resultEmailDeliveryStatus === "sent"
+        ? `A summary of this run was sent to ${resultEmail}.`
+        : resultEmailDeliveryStatus === "failed"
+          ? `Selun could not deliver the summary to ${resultEmail}.`
+          : resultEmailDeliveryStatus === "sending"
+            ? `Sending this run summary to ${resultEmail}.`
+            : `Selun will keep using ${resultEmail} for any report email delivery from this run.`)
+    : "No summary email was requested for this run.";
 
   return (
     <section className="rounded-2xl border border-slate-300/70 bg-white/70 p-6 backdrop-blur">
@@ -3032,6 +3110,27 @@ function CompleteStep({
         )}
       </div>
 
+      <div className={`mt-4 rounded-xl border p-3 ${resultEmailTone}`}>
+        <p className="text-xs font-bold uppercase tracking-[0.12em]">Result Email Delivery</p>
+        <p className="mt-2 text-sm font-semibold">{resultEmailHeadline}</p>
+        <p className="mt-1 text-sm">{resultEmailBody}</p>
+        {phase7Enabled && hasResultEmail && (
+          <p className="mt-2 text-xs">
+            Downloading the certified record will also attempt PDF delivery to {resultEmail}.
+          </p>
+        )}
+        {hasResultEmail && resultEmailDeliveryStatus === "failed" && (
+          <button
+            type="button"
+            onClick={onRetryResultEmail}
+            disabled={isDownloading}
+            className="mt-3 rounded-full border border-current bg-white/80 px-4 py-2 text-sm font-semibold transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            Retry Summary Email
+          </button>
+        )}
+      </div>
+
       {downloadError && (
         <p className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-medium text-rose-700">
           {downloadError}
@@ -3073,9 +3172,13 @@ type PaymentStage =
 
 function SelunAllocationWizard() {
   const pageTopRef = useRef<HTMLDivElement | null>(null);
+  const resultEmailAttemptKeyRef = useRef<string | null>(null);
   const [wizardState, setWizardState] = useState<WizardState>("CONFIGURE");
   const [riskMode, setRiskMode] = useState<RiskMode | null>(DEFAULT_RISK_MODE);
   const [investmentHorizon, setInvestmentHorizon] = useState<InvestmentHorizon | null>(DEFAULT_HORIZON);
+  const [resultEmail, setResultEmail] = useState("");
+  const [resultEmailDeliveryStatus, setResultEmailDeliveryStatus] = useState<ResultEmailDeliveryStatus>("idle");
+  const [resultEmailDeliveryMessage, setResultEmailDeliveryMessage] = useState<string | null>(null);
   const [includeCertifiedDecisionRecord, setIncludeCertifiedDecisionRecord] = useState(false);
   const [promoCode, setPromoCode] = useState("");
   const [promoQuote, setPromoQuote] = useState<PromoQuoteResult | null>(null);
@@ -3697,6 +3800,121 @@ function SelunAllocationWizard() {
     setWizardState("COMPLETE");
   }, [wizardState, phase6Status]);
 
+  const buildResultDeliveryPayload = useCallback(() => {
+    if (!agentPaymentReceipt) return null;
+
+    return {
+      riskMode,
+      investmentHorizon,
+      includeCertifiedDecisionRecord: agentPaymentReceipt.certifiedDecisionRecordPurchased,
+      totalPriceUsdc,
+      walletAddress,
+      usdcNetworkId,
+      usdcNetworkLabel,
+      observedUsdcBalance: usdcBalance,
+      payment: {
+        status: "paid" as const,
+        transactionId: agentPaymentReceipt.transactionId,
+        decisionId: agentPaymentReceipt.decisionId,
+        amountUsdc: agentPaymentReceipt.chargedAmountUsdc,
+        chargedAmountUsdc: agentPaymentReceipt.chargedAmountUsdc,
+        agentNote: agentPaymentReceipt.agentNote,
+        certifiedDecisionRecordPurchased: agentPaymentReceipt.certifiedDecisionRecordPurchased,
+        paymentMethod: agentPaymentReceipt.paymentMethod,
+        freeCodeApplied: agentPaymentReceipt.freeCodeApplied,
+      },
+      regimeDetected,
+      phase1Artifact: phase1Output,
+      phase2Artifact: phase2Output,
+      phase3Artifact: phase3Output,
+      phase4Artifact: phase4Output,
+      phase5Artifact: phase5Output,
+      phase6Artifact: phase6Output,
+      aaaAllocateDispatch: phase6AaaAllocate,
+      allocations: toAllocationRows(phase5Output, phase6Output, phase6AaaAllocate),
+    };
+  }, [
+    agentPaymentReceipt,
+    investmentHorizon,
+    phase1Output,
+    phase2Output,
+    phase3Output,
+    phase4Output,
+    phase5Output,
+    phase6AaaAllocate,
+    phase6Output,
+    regimeDetected,
+    riskMode,
+    totalPriceUsdc,
+    usdcBalance,
+    usdcNetworkId,
+    usdcNetworkLabel,
+    walletAddress,
+  ]);
+
+  const sendResultSummaryEmail = useCallback(async () => {
+    const trimmedResultEmail = resultEmail.trim().toLowerCase();
+    if (!trimmedResultEmail) {
+      setResultEmailDeliveryStatus("idle");
+      setResultEmailDeliveryMessage(null);
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedResultEmail)) {
+      setResultEmailDeliveryStatus("failed");
+      setResultEmailDeliveryMessage("Enter a valid email address on Step 2 to receive summary delivery.");
+      return;
+    }
+
+    const payload = buildResultDeliveryPayload();
+    if (!payload) {
+      setResultEmailDeliveryStatus("failed");
+      setResultEmailDeliveryMessage("Payment confirmation is required before result email delivery.");
+      return;
+    }
+    if (payload.payment.decisionId) {
+      resultEmailAttemptKeyRef.current = `${payload.payment.decisionId}:${trimmedResultEmail}`;
+    }
+
+    setResultEmailDeliveryStatus("sending");
+    setResultEmailDeliveryMessage(`Sending allocation summary to ${trimmedResultEmail}.`);
+
+    try {
+      const response = await fetch("/api/result-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...payload,
+          resultEmail: trimmedResultEmail,
+        }),
+      });
+
+      const body = (await response.json().catch(() => ({}))) as ResultEmailDeliveryResponse;
+      if (!response.ok || body.status !== "sent") {
+        throw new Error(body.error || `Result email delivery failed (HTTP ${response.status}).`);
+      }
+
+      setResultEmailDeliveryStatus("sent");
+      setResultEmailDeliveryMessage(`Allocation summary sent to ${trimmedResultEmail}.`);
+    } catch (error) {
+      setResultEmailDeliveryStatus("failed");
+      setResultEmailDeliveryMessage(
+        error instanceof Error ? error.message : "Result email delivery failed.",
+      );
+    }
+  }, [buildResultDeliveryPayload, resultEmail]);
+
+  useEffect(() => {
+    if (wizardState !== "COMPLETE") return;
+    const trimmedResultEmail = resultEmail.trim().toLowerCase();
+    const decisionId = agentPaymentReceipt?.decisionId ?? "";
+    if (!trimmedResultEmail || !decisionId) return;
+
+    const attemptKey = `${decisionId}:${trimmedResultEmail}`;
+    if (resultEmailAttemptKeyRef.current === attemptKey) return;
+    resultEmailAttemptKeyRef.current = attemptKey;
+    void sendResultSummaryEmail();
+  }, [agentPaymentReceipt?.decisionId, resultEmail, sendResultSummaryEmail, wizardState]);
+
   const handleGenerateAllocation = async () => {
     if (!riskMode || !investmentHorizon || isPaying) return;
 
@@ -3706,6 +3924,11 @@ function SelunAllocationWizard() {
     setAgentPaymentReceipt(null);
 
     try {
+      const trimmedResultEmail = resultEmail.trim();
+      if (trimmedResultEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedResultEmail)) {
+        throw new Error("Enter a valid results email or leave the field blank before generating.");
+      }
+
       if (isLoadingPricing) {
         throw new Error("Loading backend pricing. Please wait.");
       }
@@ -3740,6 +3963,9 @@ function SelunAllocationWizard() {
       await withTimeout(ensureWalletOnChain(agentWallet.networkId), 120_000, "Wallet network switch");
 
       setPaymentStage("agent_pay");
+      resultEmailAttemptKeyRef.current = null;
+      setResultEmailDeliveryStatus("idle");
+      setResultEmailDeliveryMessage(null);
       const preAuthorizeResponse = await withTimeout(
         fetch("/api/agent/pay", {
           method: "POST",
@@ -3750,6 +3976,7 @@ function SelunAllocationWizard() {
             riskMode,
             investmentHorizon,
             promoCode: promoCode.trim() || undefined,
+            resultEmail: trimmedResultEmail || undefined,
           }),
         }),
         30_000,
@@ -3890,42 +4117,25 @@ function SelunAllocationWizard() {
       return;
     }
 
+    const trimmedResultEmail = resultEmail.trim();
+    if (trimmedResultEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedResultEmail)) {
+      setPaymentError("Please enter a valid email address to send report results.");
+      return;
+    }
+
     try {
       setIsDownloading(true);
       setPaymentError(null);
+      const payload = buildResultDeliveryPayload();
+      if (!payload) {
+        throw new Error("Payment confirmation is required before report download.");
+      }
 
       const response = await fetch("/api/report/download", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          riskMode,
-          investmentHorizon,
-          includeCertifiedDecisionRecord: agentPaymentReceipt.certifiedDecisionRecordPurchased,
-          totalPriceUsdc,
-          walletAddress,
-          usdcNetworkId,
-          usdcNetworkLabel,
-          observedUsdcBalance: usdcBalance,
-          payment: agentPaymentReceipt
-            ? {
-                status: "paid",
-                transactionId: agentPaymentReceipt.transactionId,
-                decisionId: agentPaymentReceipt.decisionId,
-                amountUsdc: agentPaymentReceipt.chargedAmountUsdc,
-                agentNote: agentPaymentReceipt.agentNote,
-                certifiedDecisionRecordPurchased: agentPaymentReceipt.certifiedDecisionRecordPurchased,
-                paymentMethod: agentPaymentReceipt.paymentMethod,
-                freeCodeApplied: agentPaymentReceipt.freeCodeApplied,
-              }
-            : null,
-          regimeDetected,
-          phase1Artifact: phase1Output,
-          phase2Artifact: phase2Output,
-          phase3Artifact: phase3Output,
-          phase4Artifact: phase4Output,
-          phase5Artifact: phase5Output,
-          phase6Artifact: phase6Output,
-          aaaAllocateDispatch: phase6AaaAllocate,
+          ...payload,
           decisionRecord: agentPaymentReceipt.certifiedDecisionRecordPurchased
             ? {
                 decisionId: agentPaymentReceipt?.decisionId ?? `SELUN-DEC-${Date.now()}`,
@@ -3934,7 +4144,7 @@ function SelunAllocationWizard() {
                 format: "formal-pdf-export-mock",
               }
             : null,
-          allocations: toAllocationRows(phase5Output, phase6Output, phase6AaaAllocate),
+          resultEmail: trimmedResultEmail || undefined,
         }),
       });
 
@@ -3974,11 +4184,20 @@ function SelunAllocationWizard() {
     }
   };
 
+  const handleRetryResultEmail = () => {
+    resultEmailAttemptKeyRef.current = null;
+    void sendResultSummaryEmail();
+  };
+
   const handleStartOver = () => {
     if (isDownloading) return;
     setWizardState("CONFIGURE");
     setRiskMode(DEFAULT_RISK_MODE);
     setInvestmentHorizon(DEFAULT_HORIZON);
+    setResultEmail("");
+    setResultEmailDeliveryStatus("idle");
+    setResultEmailDeliveryMessage(null);
+    resultEmailAttemptKeyRef.current = null;
     setIncludeCertifiedDecisionRecord(false);
     setPromoCode("");
     setPromoQuote(null);
@@ -4115,6 +4334,7 @@ function SelunAllocationWizard() {
           investmentHorizon={investmentHorizon}
           basePriceUsdc={basePriceUsdc}
           certifiedDecisionRecordFeeUsdc={certifiedDecisionRecordFeeUsdc}
+          resultEmail={resultEmail}
           includeCertifiedDecisionRecord={includeCertifiedDecisionRecord}
           promoCode={promoCode}
           promoQuote={promoQuote}
@@ -4134,6 +4354,7 @@ function SelunAllocationWizard() {
           isConnectingWallet={isConnectingWallet}
           paymentError={paymentError}
           isPaying={isPaying}
+          onResultEmailChange={setResultEmail}
           onToggleCertifiedDecisionRecord={handleToggleCertifiedDecisionRecord}
           onPromoCodeChange={handlePromoCodeChange}
           onApplyPromoCode={handleApplyPromoCode}
@@ -4183,11 +4404,15 @@ function SelunAllocationWizard() {
           phase7Enabled={phase7Enabled}
           walletAddress={walletAddress}
           agentPaymentReceipt={agentPaymentReceipt}
+          resultEmail={resultEmail}
+          resultEmailDeliveryStatus={resultEmailDeliveryStatus}
+          resultEmailDeliveryMessage={resultEmailDeliveryMessage}
           phase1Output={phase1Output}
           phase2Output={phase2Output}
           phase6AaaAllocate={phase6AaaAllocate}
           downloadError={paymentError}
           isDownloading={isDownloading}
+          onRetryResultEmail={handleRetryResultEmail}
           onDownloadReport={handleDownloadReport}
           onStartOver={handleStartOver}
         />

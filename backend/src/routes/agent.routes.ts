@@ -6,6 +6,7 @@ import { EXECUTION_MODEL_VERSION, getConfig } from "../config";
 import { getExecutionLogs } from "../logging/execution-logs";
 import { getX402StateStore } from "../services/x402-state.service";
 import { isExpiredIsoTimestamp, normalizeOptionalBoolean } from "../services/x402-utils";
+import { isValidEmail, sendAdminUsageEmail, sendUserReportEmail, sendUserSummaryEmail } from "../services/email.service";
 import {
   authorizeWizardPayment,
   getAgentAddress,
@@ -71,6 +72,14 @@ type X402PaymentRequirementV2 = {
   };
 };
 
+type AllocationEmailRow = {
+  asset: string;
+  name: string;
+  category: string;
+  riskClass: string;
+  allocationPct: number;
+};
+
 const ALLOCATE_PHASE_POLL_INTERVAL_MS = 2_000;
 const ALLOCATE_PHASE_TIMEOUT_MS = 20 * 60 * 1_000;
 const runningAllocateOrchestration = new Set<string>();
@@ -109,6 +118,81 @@ function getX402GlobalConcurrencyCap() {
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function toText(value: unknown, fallback = ""): string {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : fallback;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "boolean") return value ? "true" : "false";
+  return fallback;
+}
+
+function toFiniteNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function toTitleCase(value: string): string {
+  return value
+    .replace(/[_-]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((token) => token.charAt(0).toUpperCase() + token.slice(1).toLowerCase())
+    .join(" ");
+}
+
+function mapStrategyLabel(value: unknown): string {
+  const normalized = toText(value, "").toLowerCase();
+  if (normalized === "capital_preservation") return "Capital Preservation";
+  if (normalized === "balanced_defensive") return "Balanced Defensive";
+  if (normalized === "balanced_growth") return "Balanced Growth";
+  if (normalized === "offensive_growth") return "Growth-Focused";
+  return toTitleCase(toText(value, "Unspecified"));
+}
+
+function mapRiskClassLabel(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized || normalized === "unknown") return "Unspecified";
+  if (normalized === "large_cap_crypto") return "Large Cap Crypto";
+  if (normalized === "stablecoin") return "Stablecoin";
+  return toTitleCase(normalized);
+}
+
+function collectAllocationRows(value: unknown): AllocationEmailRow[] {
+  if (!Array.isArray(value)) return [];
+  const rows: AllocationEmailRow[] = [];
+
+  for (const row of value) {
+    if (!isRecord(row)) continue;
+    const asset = toText(row.asset, "");
+    const name = toText(row.name, asset);
+    const category = toText(row.category, "Unknown");
+    const riskClass = toText(row.riskClass, "Unknown");
+    const allocationPct = toFiniteNumber(row.allocationPct);
+    if (!asset || allocationPct === null) continue;
+
+    rows.push({
+      asset,
+      name,
+      category,
+      riskClass: mapRiskClassLabel(riskClass),
+      allocationPct: Math.max(0, Math.min(100, allocationPct)),
+    });
+  }
+
+  return rows.sort((left, right) => right.allocationPct - left.allocationPct || left.asset.localeCompare(right.asset));
 }
 
 function normalizeRiskTolerance(value: unknown): AllocateRiskTolerance | null {
@@ -685,6 +769,20 @@ function failure(res: Response, error: unknown, status = 500) {
   });
 }
 
+async function verifyResultEmailPayment(params: {
+  fromAddress: string;
+  expectedAmountUSDC: number;
+  transactionHash: string;
+  decisionId: string;
+}) {
+  return verifyIncomingPayment({
+    fromAddress: params.fromAddress,
+    expectedAmountUSDC: params.expectedAmountUSDC,
+    transactionHash: params.transactionHash,
+    decisionId: params.decisionId,
+  });
+}
+
 router.post("/init", async (_req: Request, res: Response) => {
   try {
     const identity = await initializeAgent();
@@ -882,6 +980,132 @@ router.post("/verify-payment", async (req: Request, res: Response) => {
   }
 });
 
+router.post("/result-email", async (req: Request, res: Response) => {
+  const resultEmail = toText(req.body?.resultEmail, "").toLowerCase();
+  if (!resultEmail || !isValidEmail(resultEmail)) {
+    return failure(res, new Error("resultEmail must be a valid email address."), 400);
+  }
+
+  const payment = isRecord(req.body?.payment) ? req.body.payment : null;
+  const paymentStatus = toText(payment?.status, "").toLowerCase();
+  const decisionId = toText(payment?.decisionId, "");
+  const transactionId = toText(payment?.transactionId, "");
+  const chargedAmountUsdc = toFiniteNumber(payment?.chargedAmountUsdc ?? payment?.amountUsdc);
+  const walletAddress = toText(req.body?.walletAddress, "");
+  if (paymentStatus !== "paid" || !decisionId || !transactionId) {
+    return failure(res, new Error("Paid purchase record is required before result email delivery."), 402);
+  }
+  if (chargedAmountUsdc === null || chargedAmountUsdc < 0) {
+    return failure(res, new Error("Charged amount is required before result email delivery."), 400);
+  }
+  if (!walletAddress || !isAddress(walletAddress)) {
+    return failure(res, new Error("Valid wallet address is required before result email delivery."), 400);
+  }
+
+  try {
+    await verifyResultEmailPayment({
+      fromAddress: walletAddress,
+      expectedAmountUSDC: chargedAmountUsdc,
+      transactionHash: transactionId,
+      decisionId,
+    });
+  } catch (error) {
+    return failure(res, new Error(`Payment verification required: ${error instanceof Error ? error.message : "verification failed."}`), 402);
+  }
+
+  const phase2Artifact = isRecord(req.body?.phase2Artifact) ? req.body.phase2Artifact : null;
+  const allocationPolicy = phase2Artifact && isRecord(phase2Artifact.allocation_policy)
+    ? phase2Artifact.allocation_policy
+    : null;
+  const result = await sendUserSummaryEmail({
+    toEmail: resultEmail,
+    decisionId,
+    riskMode: toText(req.body?.riskMode, "n/a"),
+    investmentHorizon: toText(req.body?.investmentHorizon, "n/a"),
+    regimeDetected: toText(req.body?.regimeDetected, "Unknown"),
+    strategyLabel: mapStrategyLabel(allocationPolicy?.mode),
+    walletAddress,
+    chargedAmountUsdc,
+    transactionHash: transactionId,
+    certifiedDecisionRecordPurchased: Boolean(payment?.certifiedDecisionRecordPurchased),
+    allocations: collectAllocationRows(req.body?.allocations).slice(0, 12),
+  });
+
+  if (result.status === "failed") {
+    return failure(res, new Error(result.error || "Result email delivery failed."), 502);
+  }
+
+  return success(res, {
+    status: result.status,
+    error: result.error ?? null,
+  });
+});
+
+router.post("/report-email", async (req: Request, res: Response) => {
+  const resultEmail = toText(req.body?.resultEmail, "").toLowerCase();
+  if (!resultEmail || !isValidEmail(resultEmail)) {
+    return failure(res, new Error("resultEmail must be a valid email address."), 400);
+  }
+
+  const filename = toText(req.body?.filename, "");
+  const pdfBase64 = toText(req.body?.pdfBase64, "");
+  if (!filename) {
+    return failure(res, new Error("filename is required for report email delivery."), 400);
+  }
+  if (!pdfBase64) {
+    return failure(res, new Error("pdfBase64 is required for report email delivery."), 400);
+  }
+
+  const payment = isRecord(req.body?.payment) ? req.body.payment : null;
+  const paymentStatus = toText(payment?.status, "").toLowerCase();
+  const decisionId = toText(payment?.decisionId, "");
+  const transactionId = toText(payment?.transactionId, "");
+  const chargedAmountUsdc = toFiniteNumber(payment?.chargedAmountUsdc ?? payment?.amountUsdc);
+  const walletAddress = toText(req.body?.walletAddress, "");
+  if (paymentStatus !== "paid" || !decisionId || !transactionId) {
+    return failure(res, new Error("Paid purchase record is required before report email delivery."), 402);
+  }
+  if (chargedAmountUsdc === null || chargedAmountUsdc < 0) {
+    return failure(res, new Error("Charged amount is required before report email delivery."), 400);
+  }
+  if (!walletAddress || !isAddress(walletAddress)) {
+    return failure(res, new Error("Valid wallet address is required before report email delivery."), 400);
+  }
+
+  try {
+    await verifyResultEmailPayment({
+      fromAddress: walletAddress,
+      expectedAmountUSDC: chargedAmountUsdc,
+      transactionHash: transactionId,
+      decisionId,
+    });
+  } catch (error) {
+    return failure(res, new Error(`Payment verification required: ${error instanceof Error ? error.message : "verification failed."}`), 402);
+  }
+
+  const result = await sendUserReportEmail({
+    toEmail: resultEmail,
+    decisionId,
+    filename,
+    pdfBase64,
+    riskMode: toText(req.body?.riskMode, "n/a"),
+    investmentHorizon: toText(req.body?.investmentHorizon, "n/a"),
+    includeCertified: Boolean(req.body?.includeCertifiedDecisionRecord),
+    walletAddress,
+    amountUsdc: chargedAmountUsdc,
+    transactionHash: transactionId,
+  });
+
+  if (result.status === "failed") {
+    return failure(res, new Error(result.error || "Report email delivery failed."), 502);
+  }
+
+  return success(res, {
+    status: result.status,
+    error: result.error ?? null,
+  });
+});
+
 router.post("/pay", async (req: Request, res: Response) => {
   const walletAddress = req.body?.walletAddress;
 
@@ -897,6 +1121,29 @@ router.post("/pay", async (req: Request, res: Response) => {
       investmentHorizon: req.body?.investmentHorizon,
       promoCode: req.body?.promoCode,
     });
+
+    void sendAdminUsageEmail({
+      channel: "legacy_pay",
+      decisionId: receipt.decisionId,
+      walletAddress,
+      resultEmail:
+        typeof req.body?.resultEmail === "string" && isValidEmail(req.body.resultEmail.trim().toLowerCase())
+          ? req.body.resultEmail.trim().toLowerCase()
+          : null,
+      promoCode: typeof req.body?.promoCode === "string" && req.body.promoCode.trim()
+        ? req.body.promoCode.trim()
+        : null,
+      chargedAmountUsdc: receipt.chargedAmountUsdc,
+      transactionHash: receipt.transactionId,
+      paymentMethod: receipt.paymentMethod ?? "onchain",
+      includeCertifiedDecisionRecord: receipt.certifiedDecisionRecordPurchased,
+      riskTolerance: typeof req.body?.riskMode === "string" ? req.body.riskMode : null,
+      timeframe: typeof req.body?.investmentHorizon === "string" ? req.body.investmentHorizon : null,
+      jobId: null,
+    }).catch((error) => {
+      console.error("Failed to send Selun admin usage email (legacy_pay):", error);
+    });
+
     return success(res, receipt);
   } catch (error) {
     return failure(res, error, 400);
@@ -1172,6 +1419,28 @@ router.post("/x402/allocate", async (req: Request, res: Response) => {
     if (!decisionScopedRecord?.jobId && proof.fromAddress) {
       incrementAddressUsage(proof.fromAddress);
     }
+
+    void sendAdminUsageEmail({
+      channel: "x402_allocate",
+      decisionId,
+      walletAddress: proof.fromAddress ?? null,
+      resultEmail:
+        typeof req.body?.resultEmail === "string" && isValidEmail(req.body.resultEmail.trim().toLowerCase())
+          ? req.body.resultEmail.trim().toLowerCase()
+          : null,
+      promoCode: typeof req.body?.promoCode === "string" && req.body.promoCode.trim()
+        ? req.body.promoCode.trim()
+        : null,
+      chargedAmountUsdc: chargeAmountUsdc,
+      transactionHash: proof.transactionHash ?? null,
+      paymentMethod: "x402",
+      includeCertifiedDecisionRecord: withReport,
+      riskTolerance,
+      timeframe,
+      jobId,
+    }).catch((error) => {
+      console.error("Failed to send Selun admin usage email (x402_allocate):", error);
+    });
 
     if (proof.deprecatedBodyProof) {
       res.setHeader(

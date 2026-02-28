@@ -9,6 +9,7 @@ type AgentPaymentRequest = {
   riskMode?: string;
   investmentHorizon?: string;
   promoCode?: string;
+  resultEmail?: string;
 };
 
 type BackendAgentResponse = {
@@ -67,6 +68,7 @@ export async function POST(req: Request): Promise<NextResponse> {
         riskMode: payload.riskMode,
         investmentHorizon: payload.investmentHorizon,
         promoCode: payload.promoCode,
+        resultEmail: payload.resultEmail,
       }),
       cache: "no-store",
     });

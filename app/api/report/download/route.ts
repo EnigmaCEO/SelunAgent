@@ -5,6 +5,8 @@ import { NextResponse } from "next/server";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+type ResultEmailStatus = "sent" | "skipped" | "failed";
+
 type AllocationRow = {
   asset?: string;
   name?: string;
@@ -14,6 +16,7 @@ type AllocationRow = {
 };
 
 type DownloadRequestPayload = {
+  resultEmail?: string | null;
   riskMode?: string;
   investmentHorizon?: string;
   includeCertifiedDecisionRecord?: boolean;
@@ -365,6 +368,76 @@ function humanizeKey(key: string): string {
 function truncateText(value: string, maxChars: number): string {
   if (value.length <= maxChars) return value;
   return `${value.slice(0, Math.max(0, maxChars - 3))}...`;
+}
+
+function getBackendBaseUrl() {
+  return process.env.SELUN_BACKEND_URL?.trim() || "http://localhost:8787";
+}
+
+function isValidEmail(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+async function sendResultEmail(params: {
+  toEmail: string;
+  filename: string;
+  pdfBuffer: Buffer;
+  decisionId: string;
+  riskMode: string;
+  investmentHorizon: string;
+  includeCertified: boolean;
+  walletAddress: string;
+  amountUsdc: number | null;
+  transactionHash: string;
+}): Promise<{ status: ResultEmailStatus; error?: string }> {
+  try {
+    const response = await fetch(`${getBackendBaseUrl()}/agent/report-email`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        resultEmail: params.toEmail,
+        filename: params.filename,
+        pdfBase64: params.pdfBuffer.toString("base64"),
+        riskMode: params.riskMode,
+        investmentHorizon: params.investmentHorizon,
+        includeCertifiedDecisionRecord: params.includeCertified,
+        walletAddress: params.walletAddress,
+        payment: {
+          status: "paid",
+          transactionId: params.transactionHash,
+          decisionId: params.decisionId,
+          chargedAmountUsdc: params.amountUsdc,
+        },
+      }),
+      cache: "no-store",
+    });
+
+    const body = (await response.json().catch(() => ({}))) as {
+      success?: boolean;
+      error?: string;
+      data?: {
+        status?: ResultEmailStatus;
+        error?: string | null;
+      };
+    };
+
+    if (!response.ok || !body.success) {
+      return {
+        status: "failed",
+        error: body.error || `Result email delivery failed with HTTP ${response.status}.`,
+      };
+    }
+
+    return {
+      status: body.data?.status ?? "skipped",
+      error: body.data?.error ?? undefined,
+    };
+  } catch (error) {
+    return {
+      status: "failed",
+      error: error instanceof Error ? error.message : "Result email delivery request failed.",
+    };
+  }
 }
 
 async function storeHashOnBackend(decisionId: string, pdfHash: string): Promise<ChainAttestationResult> {
@@ -1705,6 +1778,11 @@ export async function POST(req: Request): Promise<Response> {
 
   const payload = raw as DownloadRequestPayload;
   const payment = isRecord(payload.payment) ? payload.payment : null;
+  const requestedResultEmailRaw = toText(payload.resultEmail, "");
+  const requestedResultEmail = requestedResultEmailRaw ? requestedResultEmailRaw.toLowerCase() : "";
+  if (requestedResultEmail && !isValidEmail(requestedResultEmail)) {
+    return NextResponse.json({ error: "resultEmail must be a valid email address." }, { status: 400 });
+  }
 
   const paymentStatus = toText(payment?.status, "").toLowerCase();
   const decisionId = toText(payment?.decisionId, "");
@@ -1783,6 +1861,27 @@ export async function POST(req: Request): Promise<Response> {
   const fileStem = includeCertified ? "selun-certified-decision-record" : "selun-structured-allocation-report";
   const safeDecision = sanitizeFilenamePart(decisionId);
   const filename = `${fileStem}-${safeDecision}.pdf`;
+  const resultEmailStatus = requestedResultEmail
+    ? await sendResultEmail({
+      toEmail: requestedResultEmail,
+      filename,
+      pdfBuffer,
+      decisionId,
+      riskMode: toText(payload.riskMode, "n/a"),
+      investmentHorizon: toText(payload.investmentHorizon, "n/a"),
+      includeCertified,
+      walletAddress,
+      amountUsdc: chargedAmountUsdc,
+      transactionHash: transactionId,
+    })
+    : { status: "skipped" as const };
+
+  if (resultEmailStatus.status === "failed" && resultEmailStatus.error) {
+    console.error("Selun result email failed:", resultEmailStatus.error);
+  }
+  if (resultEmailStatus.status === "skipped" && resultEmailStatus.error) {
+    console.warn("Selun result email skipped:", resultEmailStatus.error);
+  }
 
   return new Response(pdfBuffer, {
     status: 200,
@@ -1790,6 +1889,7 @@ export async function POST(req: Request): Promise<Response> {
       "Content-Type": "application/pdf",
       "Content-Disposition": `attachment; filename=\"${filename}\"`,
       "Cache-Control": "no-store",
+      "X-Selun-Result-Email-Status": resultEmailStatus.status,
     },
   });
 }
