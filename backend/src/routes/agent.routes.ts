@@ -1751,36 +1751,39 @@ async function handleX402ToolRequest(
 
   const definition = getX402ToolDefinition(productId);
   const paymentSignatureHeader = req.header("payment-signature")?.trim() || req.header("PAYMENT-SIGNATURE")?.trim();
+  const hasPaymentSignature = Boolean(paymentSignatureHeader);
   const decisionResolution = resolveDecisionId(req);
-  if (decisionResolution.error || !decisionResolution.decisionId) {
+  const decisionId = decisionResolution.decisionId;
+  const missingDecisionIdOnlyError = !decisionId && decisionResolution.error?.includes("decisionId is required");
+  if (decisionResolution.error && !missingDecisionIdOnlyError) {
     return failure(res, new Error(decisionResolution.error ?? "decisionId is required."), 400);
   }
-  const decisionId = decisionResolution.decisionId;
-  if (paymentSignatureHeader && !decisionId) {
+  if (hasPaymentSignature && !decisionId) {
     return failure(res, new Error("decisionId is required."), 400);
   }
 
   const inputFingerprint = computeToolInputFingerprint(normalizedInput);
   const stateStore = getX402StateStore();
-  const existingRecord = stateStore.getToolRecord(productId, decisionId);
+  const existingRecord = decisionId ? stateStore.getToolRecord(productId, decisionId) : undefined;
   if (existingRecord?.state === "accepted" && existingRecord.responseData) {
-    return idempotentToolResponse(res, productId, decisionId);
+    return idempotentToolResponse(res, productId, decisionId as string);
   }
   if (existingRecord && existingRecord.inputFingerprint !== inputFingerprint) {
-    return sendToolConflict(res, definition, decisionId);
+    return sendToolConflict(res, definition, decisionId as string);
   }
 
   if (runningAllocateOrchestration.size >= getX402GlobalConcurrencyCap()) {
     return sendRateLimited(res, "global_concurrency_cap", 10);
   }
 
-  const orchestrationKey = buildToolStateKey(productId, decisionId);
+  const orchestrationKey = buildToolStateKey(productId, decisionId ?? `probe-${Date.now()}`);
   if (runningAllocateOrchestration.has(orchestrationKey)) {
     return sendRateLimited(res, "global_concurrency_cap", 10);
   }
   runningAllocateOrchestration.add(orchestrationKey);
 
   try {
+    const quoteDecisionId = decisionId ?? `quote-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     const activeQuoteWindow = existingRecord?.state === "quoted" && !isExpiredIsoTimestamp(existingRecord.quoteExpiresAt)
       ? {
         issuedAt: existingRecord.quoteIssuedAt,
@@ -1792,7 +1795,7 @@ async function handleX402ToolRequest(
     const requirement = buildToolRequirement(
       productId,
       identity.walletAddress,
-      decisionId,
+      quoteDecisionId,
       inputFingerprint,
       activeQuoteWindow.issuedAt,
       activeQuoteWindow.expiresAt,
@@ -1800,24 +1803,26 @@ async function handleX402ToolRequest(
     const discoveryExtension = buildToolDiscoveryExtension(definition, definition.exampleOutput);
     const challengeBody = buildToolChallengeBody({
       definition,
-      decisionId,
+      decisionId: quoteDecisionId,
       requirement,
       quoteIssuedAt: activeQuoteWindow.issuedAt,
       quoteExpiresAt: activeQuoteWindow.expiresAt,
     });
 
-    stateStore.setToolRecord(productId, decisionId, {
-      decisionId,
-      productId,
-      inputFingerprint,
-      requestBody: normalizedInput,
-      chargedAmountUsdc: getX402ToolPriceUsdc(productId),
-      quoteIssuedAt: activeQuoteWindow.issuedAt,
-      quoteExpiresAt: activeQuoteWindow.expiresAt,
-      state: "quoted",
-      createdAt: existingRecord?.createdAt ?? activeQuoteWindow.issuedAt,
-      updatedAt: nowIso(),
-    });
+    if (decisionId) {
+      stateStore.setToolRecord(productId, decisionId, {
+        decisionId,
+        productId,
+        inputFingerprint,
+        requestBody: normalizedInput,
+        chargedAmountUsdc: getX402ToolPriceUsdc(productId),
+        quoteIssuedAt: activeQuoteWindow.issuedAt,
+        quoteExpiresAt: activeQuoteWindow.expiresAt,
+        state: "quoted",
+        createdAt: existingRecord?.createdAt ?? activeQuoteWindow.issuedAt,
+        updatedAt: nowIso(),
+      });
+    }
 
     const httpServer = await createToolX402HttpServer(req, definition, requirement, challengeBody, discoveryExtension);
     const httpContext = buildAllocateHttpContext(req);
@@ -1881,7 +1886,12 @@ async function handleX402ToolRequest(
       return failure(res, new Error("x402 settlement completed without a transaction hash."), 502);
     }
 
-    const reservation = stateStore.reserveTransactionHash(transactionHash, buildToolStateKey(productId, decisionId));
+    const confirmedDecisionId = decisionId;
+    if (!confirmedDecisionId) {
+      return failure(res, new Error("decisionId is required."), 400);
+    }
+
+    const reservation = stateStore.reserveTransactionHash(transactionHash, buildToolStateKey(productId, confirmedDecisionId));
     if (!reservation.accepted) {
       return failure(
         res,
@@ -1890,7 +1900,7 @@ async function handleX402ToolRequest(
       );
     }
 
-    const jobId = buildToolJobId(productId, decisionId);
+    const jobId = buildToolJobId(productId, confirmedDecisionId);
     runPhase1({
       jobId,
       executionTimestamp: nowIso(),
@@ -1905,7 +1915,7 @@ async function handleX402ToolRequest(
     const responseData: StoredToolResponseData = {
       status: "completed",
       endpoint: definition.routePath,
-      decisionId,
+      decisionId: confirmedDecisionId,
       productId,
       payment: {
         required: true,
@@ -1918,8 +1928,8 @@ async function handleX402ToolRequest(
       result,
     };
 
-    stateStore.setToolRecord(productId, decisionId, {
-      decisionId,
+    stateStore.setToolRecord(productId, confirmedDecisionId, {
+      decisionId: confirmedDecisionId,
       productId,
       inputFingerprint,
       requestBody: normalizedInput,
@@ -1941,7 +1951,7 @@ async function handleX402ToolRequest(
 
     void sendAdminUsageEmail({
       channel: "x402_allocate",
-      decisionId,
+      decisionId: confirmedDecisionId,
       walletAddress: payer,
       resultEmail:
         typeof req.body?.resultEmail === "string" && isValidEmail(req.body.resultEmail.trim().toLowerCase())
@@ -2702,8 +2712,10 @@ router.post("/x402/allocate-with-report", async (req: Request, res: Response) =>
 );
 
 router.post("/x402/market-regime", async (req: Request, res: Response) => {
-  const riskTolerance = normalizeRiskTolerance(req.body?.riskTolerance);
-  const timeframe = normalizeTimeframe(req.body?.timeframe);
+  const paymentSignatureHeader = req.header("payment-signature")?.trim() || req.header("PAYMENT-SIGNATURE")?.trim();
+  const isProbe = !paymentSignatureHeader;
+  const riskTolerance = normalizeRiskTolerance(req.body?.riskTolerance) ?? (isProbe ? "Balanced" : null);
+  const timeframe = normalizeTimeframe(req.body?.timeframe) ?? (isProbe ? "1-3_years" : null);
   if (!riskTolerance) {
     return failure(res, new Error("riskTolerance must be one of Conservative | Balanced | Growth | Aggressive."), 400);
   }
@@ -2718,8 +2730,10 @@ router.post("/x402/market-regime", async (req: Request, res: Response) => {
 });
 
 router.post("/x402/policy-envelope", async (req: Request, res: Response) => {
-  const riskTolerance = normalizeRiskTolerance(req.body?.riskTolerance);
-  const timeframe = normalizeTimeframe(req.body?.timeframe);
+  const paymentSignatureHeader = req.header("payment-signature")?.trim() || req.header("PAYMENT-SIGNATURE")?.trim();
+  const isProbe = !paymentSignatureHeader;
+  const riskTolerance = normalizeRiskTolerance(req.body?.riskTolerance) ?? (isProbe ? "Balanced" : null);
+  const timeframe = normalizeTimeframe(req.body?.timeframe) ?? (isProbe ? "1-3_years" : null);
   if (!riskTolerance) {
     return failure(res, new Error("riskTolerance must be one of Conservative | Balanced | Growth | Aggressive."), 400);
   }
@@ -2734,8 +2748,10 @@ router.post("/x402/policy-envelope", async (req: Request, res: Response) => {
 });
 
 router.post("/x402/asset-scorecard", async (req: Request, res: Response) => {
-  const riskTolerance = normalizeRiskTolerance(req.body?.riskTolerance);
-  const timeframe = normalizeTimeframe(req.body?.timeframe);
+  const paymentSignatureHeader = req.header("payment-signature")?.trim() || req.header("PAYMENT-SIGNATURE")?.trim();
+  const isProbe = !paymentSignatureHeader;
+  const riskTolerance = normalizeRiskTolerance(req.body?.riskTolerance) ?? (isProbe ? "Balanced" : null);
+  const timeframe = normalizeTimeframe(req.body?.timeframe) ?? (isProbe ? "1-3_years" : null);
   if (!riskTolerance) {
     return failure(res, new Error("riskTolerance must be one of Conservative | Balanced | Growth | Aggressive."), 400);
   }
@@ -2754,8 +2770,10 @@ router.post("/x402/asset-scorecard", async (req: Request, res: Response) => {
 });
 
 router.post("/x402/rebalance", async (req: Request, res: Response) => {
-  const riskTolerance = normalizeRiskTolerance(req.body?.riskTolerance);
-  const timeframe = normalizeTimeframe(req.body?.timeframe);
+  const paymentSignatureHeader = req.header("payment-signature")?.trim() || req.header("PAYMENT-SIGNATURE")?.trim();
+  const isProbe = !paymentSignatureHeader;
+  const riskTolerance = normalizeRiskTolerance(req.body?.riskTolerance) ?? (isProbe ? "Balanced" : null);
+  const timeframe = normalizeTimeframe(req.body?.timeframe) ?? (isProbe ? "1-3_years" : null);
   if (!riskTolerance) {
     return failure(res, new Error("riskTolerance must be one of Conservative | Balanced | Growth | Aggressive."), 400);
   }
@@ -2763,7 +2781,7 @@ router.post("/x402/rebalance", async (req: Request, res: Response) => {
     return failure(res, new Error("timeframe must be one of <1_year | 1-3_years | 3+_years."), 400);
   }
 
-  const holdings = normalizeRebalanceHoldings(req.body?.holdings);
+  const holdings = normalizeRebalanceHoldings(req.body?.holdings) ?? (isProbe ? [{ asset: "BTC", name: "Bitcoin", usdValue: 1000, allocationPct: 100 }] : null);
   if (!holdings) {
     return failure(
       res,
