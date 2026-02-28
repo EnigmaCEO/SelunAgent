@@ -21,7 +21,7 @@ export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
   title: "Selun | Autonomous Portfolio Agent",
   description:
-    "Selun is an autonomous agent built on top of the AAA API to help retail investors make calmer, structured portfolio decisions.",
+    "Selun is an autonomous crypto allocation agent built on Sagitta AAA’s quant allocation engine. It analyzes current market conditions and produces deterministic, risk-aligned portfolio allocations.",
   openGraph: {
     type: "website",
     url: "/",
