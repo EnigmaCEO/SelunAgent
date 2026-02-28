@@ -23,7 +23,9 @@ Optional:
 - `PAYMENT_CONFIRMATIONS` (default `2`, capped to `2`)
 - `PAYMENT_POLL_INTERVAL_MS` (default `4000`)
 - `PAYMENT_TIMEOUT_MS` (default `120000`)
-- `X402_FACILITATOR_URL` (default `https://www.x402.org/facilitator`)
+- `X402_FACILITATOR_URL` (optional override; defaults to `https://www.x402.org/facilitator` on `base-sepolia` and `https://api.cdp.coinbase.com/platform/v2/x402` on `base-mainnet`)
+- `CDP_API_KEY_ID` (optional explicit CDP x402 facilitator credential for mainnet; falls back to `COINBASE_API_KEY`)
+- `CDP_API_KEY_SECRET` (optional explicit CDP x402 facilitator secret for mainnet; falls back to `COINBASE_API_SECRET`)
 - `X402_EIP712_DOMAIN_NAME` (optional override; defaults are derived from the configured payment asset)
 - `X402_EIP712_DOMAIN_VERSION` (optional override; defaults are derived from the configured payment asset)
 - `X402_QUOTE_TTL_MS` (default `600000`)
@@ -105,6 +107,7 @@ Behavior:
 - Paid retries use `PAYMENT-SIGNATURE`, and successful accepts return `PAYMENT-RESPONSE`.
 - Empty probe requests also return `402` so discovery crawlers can read canonical payment requirements.
 - Exact-EVM requirements include the token EIP-712 domain metadata (`extra.name`, `extra.version`) required by official buyer SDKs.
+- On `base-mainnet`, Selun uses Coinbase's authenticated CDP facilitator config for `verify`/`settle`.
 - If no `decisionId` is supplied on a probe request, response includes a provisional quote `decisionId`; paid execution must reuse that `decisionId` in the body or `Idempotency-Key`.
 - Quoted payment windows are enforced through request-scoped requirements; expired quotes return a fresh `402` challenge.
 - Settled transaction hashes are single-use across decision IDs (replay-safe) and persisted across restarts.

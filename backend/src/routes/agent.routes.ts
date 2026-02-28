@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import { createHash } from "node:crypto";
+import { createFacilitatorConfig } from "@coinbase/x402";
 import { encodePaymentResponseHeader } from "@x402/core/http";
 import { HTTPFacilitatorClient, type HTTPRequestContext, type ProcessSettleSuccessResponse, type RouteConfig, x402ResourceServer } from "@x402/core/server";
 import type { Network, PaymentRequirements } from "@x402/core/types";
@@ -411,7 +412,44 @@ function toCaip2Network(networkId: string): string {
 }
 
 function getX402FacilitatorUrl() {
-  return process.env.X402_FACILITATOR_URL?.trim() || "https://www.x402.org/facilitator";
+  const configured = process.env.X402_FACILITATOR_URL?.trim();
+  if (configured) return configured;
+  return getConfig().networkId === "base-mainnet"
+    ? "https://api.cdp.coinbase.com/platform/v2/x402"
+    : "https://www.x402.org/facilitator";
+}
+
+function normalizeSecret(value: string): string {
+  const withoutWrappingQuotes =
+    (value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))
+      ? value.slice(1, -1)
+      : value;
+
+  return withoutWrappingQuotes.replace(/\\n/g, "\n");
+}
+
+function getX402MainnetFacilitatorApiKeyId() {
+  return process.env.CDP_API_KEY_ID?.trim() || getConfig().coinbaseApiKey;
+}
+
+function getX402MainnetFacilitatorApiKeySecret() {
+  const raw = process.env.CDP_API_KEY_SECRET?.trim();
+  return raw ? normalizeSecret(raw) : getConfig().coinbaseApiSecret;
+}
+
+function createX402FacilitatorClient() {
+  if (getConfig().networkId === "base-mainnet") {
+    return new HTTPFacilitatorClient(
+      createFacilitatorConfig(
+        getX402MainnetFacilitatorApiKeyId(),
+        getX402MainnetFacilitatorApiKeySecret(),
+      ),
+    );
+  }
+
+  return new HTTPFacilitatorClient({
+    url: getX402FacilitatorUrl(),
+  });
 }
 
 function getX402MaxTimeoutSeconds() {
@@ -684,11 +722,7 @@ async function getX402SellerServer(): Promise<x402ResourceServer> {
   if (x402SellerServer) return x402SellerServer;
   if (!x402SellerServerInitPromise) {
     x402SellerServerInitPromise = (async () => {
-      const server = new x402ResourceServer(
-        new HTTPFacilitatorClient({
-          url: getX402FacilitatorUrl(),
-        }),
-      );
+      const server = new x402ResourceServer(createX402FacilitatorClient());
       server.register(toCaip2Network(getConfig().networkId) as Network, new ExactEvmScheme());
       server.registerExtension(bazaarResourceServerExtension);
       await server.initialize();
