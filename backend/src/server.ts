@@ -226,6 +226,14 @@ app.set("trust proxy", resolveTrustProxySetting(process.env.TRUST_PROXY));
 
 app.use(express.json({ limit: "1mb" }));
 
+function parseCsv(value: string | undefined): string[] {
+  if (!value?.trim()) return [];
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
 function buildAbsoluteUrl(req: express.Request, routePath: string): string {
   const forwardedProto = req.header("x-forwarded-proto")?.split(",")[0]?.trim();
   const forwardedHost = req.header("x-forwarded-host")?.split(",")[0]?.trim();
@@ -237,28 +245,14 @@ function buildAbsoluteUrl(req: express.Request, routePath: string): string {
 
 async function buildWellKnownX402Document(req: express.Request) {
   const capabilities = await getX402CapabilitiesData();
-  const origin = buildAbsoluteUrl(req, "").replace(/\/$/, "");
+  const resources = capabilities.resources.map((resource) => buildAbsoluteUrl(req, resource.endpoint));
+  const ownershipProofs = parseCsv(process.env.X402_DISCOVERY_OWNERSHIP_PROOFS);
+  const instructions = process.env.X402_DISCOVERY_INSTRUCTIONS?.trim();
   return {
-    version: "1",
-    name: "Selun Autonomous Portfolio Agent",
-    description: "Selun x402 resource catalog for crypto portfolio allocation, report delivery, and rebalance tools.",
-    provider: {
-      name: "Sagitta",
-      url: origin,
-    },
-    x402Version: capabilities.x402Version,
-    executionModelVersion: EXECUTION_MODEL_VERSION,
-    facilitatorUrl: capabilities.paymentTransport.facilitatorUrl,
-    network: capabilities.discovery.network,
-    caip2Network: capabilities.discovery.caip2Network,
-    discovery: {
-      capabilitiesUrl: buildAbsoluteUrl(req, "/agent/x402/capabilities"),
-      discoveryUrl: buildAbsoluteUrl(req, "/agent/x402/discovery"),
-    },
-    resources: capabilities.resources.map((resource) => ({
-      ...resource,
-      url: buildAbsoluteUrl(req, resource.endpoint),
-    })),
+    version: 1,
+    resources,
+    ...(ownershipProofs.length > 0 ? { ownershipProofs } : {}),
+    ...(instructions ? { instructions } : {}),
   };
 }
 

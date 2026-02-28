@@ -39,6 +39,8 @@ Optional:
 - `X402_REBALANCE_PRICE_USDC` (default `1`)
 - `X402_STATE_FILE` (optional path override; default `backend/data/x402-state.json`)
 - `X402_STATE_RETENTION_DAYS` (default `3`)
+- `X402_DISCOVERY_OWNERSHIP_PROOFS` (optional CSV of absolute proof URLs for `/.well-known/x402`)
+- `X402_DISCOVERY_INSTRUCTIONS` (optional human-readable instructions string for `/.well-known/x402`)
 - `TRUST_PROXY` (default `false`; set for reverse proxies/load balancers)
 - `RESEND_API_KEY` (required for email notifications)
 - `SELUN_EMAIL_FROM` (sender email, e.g. `Selun <noreply@yourdomain.com>`)
@@ -225,10 +227,12 @@ Selun now exposes a root discovery document for crawler-style registration:
 - `GET /.well-known/x402`
 - `GET /.well-known/x402.json`
 
-The document includes absolute URLs for every public x402 resource plus links back to:
+The document now follows x402scan's discovery schema:
 
-- `/agent/x402/capabilities`
-- `/agent/x402/discovery`
+- `version`
+- `resources` (absolute x402 resource URLs)
+- optional `ownershipProofs`
+- optional `instructions`
 
 If you are using the branded frontend domain, the Next.js rewrite forwards these well-known URLs to the backend automatically.
 
