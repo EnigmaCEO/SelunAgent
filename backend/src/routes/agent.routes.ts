@@ -553,13 +553,28 @@ function getX402ToolPriceUsdc(productId: X402ToolProductId): string {
   }
 }
 
+const X402_PUBLIC_DESCRIPTIONS = {
+  allocate:
+    "Portfolio allocation engine. Call this when an automated portfolio workflow needs a target crypto allocation for a specified risk tolerance and timeframe. Returns an accepted allocation job with a statusPath for asynchronous completion.",
+  allocateWithReport:
+    "Portfolio allocation and report engine. Call this when an automated portfolio workflow needs the target allocation plus a certified decision record. Returns an accepted allocation job with a statusPath for asynchronous completion.",
+  marketRegime:
+    "Market regime classifier. Call this before allocation or rebalancing. Returns volatility, liquidity, sentiment, and allocation authorization inputs for automated portfolio workflows.",
+  policyEnvelope:
+    "Risk policy engine. Call this when portfolio constraints must be computed for a supplied risk tolerance and timeframe. Returns exposure caps, stablecoin floor, risk budget, and authorization constraints.",
+  assetScorecard:
+    "Asset scoring engine. Call this before asset selection or allocation. Returns liquidity, structural stability, role classification, and composite quality scores for candidate assets.",
+  rebalance:
+    "Portfolio rebalance engine. Call this after allocation or on a monitoring schedule with current holdings. Returns target-vs-current drift and the adjustments required to rebalance within policy constraints.",
+} as const;
+
 function getX402ToolDefinitions(): X402ToolDefinition[] {
   return [
     {
       productId: "market_regime",
       routePath: "/agent/x402/market-regime",
       title: "Selun Market Regime",
-      description: "Phase 1 market-condition summary covering volatility, liquidity, sentiment, and allocation authorization.",
+      description: X402_PUBLIC_DESCRIPTIONS.marketRegime,
       category: "finance:market-regime",
       tags: ["portfolio", "market-regime", "risk", "x402"],
       amountUsdc: () => getX402ToolPriceUsdc("market_regime"),
@@ -597,7 +612,7 @@ function getX402ToolDefinitions(): X402ToolDefinition[] {
       productId: "policy_envelope",
       routePath: "/agent/x402/policy-envelope",
       title: "Selun Policy Envelope",
-      description: "Phase 2 policy envelope with risk budget, exposure caps, stablecoin floor, and authorization status.",
+      description: X402_PUBLIC_DESCRIPTIONS.policyEnvelope,
       category: "finance:policy-envelope",
       tags: ["portfolio", "policy", "risk-budget", "x402"],
       amountUsdc: () => getX402ToolPriceUsdc("policy_envelope"),
@@ -633,7 +648,7 @@ function getX402ToolDefinitions(): X402ToolDefinition[] {
       productId: "asset_scorecard",
       routePath: "/agent/x402/asset-scorecard",
       title: "Selun Asset Scorecard",
-      description: "Phase 5 asset-quality shortlist with role, risk class, liquidity, and composite scores.",
+      description: X402_PUBLIC_DESCRIPTIONS.assetScorecard,
       category: "finance:asset-scorecard",
       tags: ["portfolio", "asset-scorecard", "quality", "x402"],
       amountUsdc: () => getX402ToolPriceUsdc("asset_scorecard"),
@@ -678,7 +693,7 @@ function getX402ToolDefinitions(): X402ToolDefinition[] {
       productId: "rebalance",
       routePath: "/agent/x402/rebalance",
       title: "Selun Rebalance",
-      description: "Target-vs-current portfolio drift analysis using supplied holdings and Selun's Phase 6 allocation target.",
+      description: X402_PUBLIC_DESCRIPTIONS.rebalance,
       category: "finance:rebalance",
       tags: ["portfolio", "rebalance", "allocation", "x402"],
       amountUsdc: () => getX402ToolPriceUsdc("rebalance"),
@@ -819,8 +834,7 @@ function buildRequestScopedPaymentRequirement(params: {
 
 function buildAllocateDiscoveryExtension() {
   return declareDiscoveryExtension({
-    description:
-      "Selun performs deterministic crypto allocation construction, payable via x402 (USDC) on Base.",
+    description: X402_PUBLIC_DESCRIPTIONS.allocate,
     bodyType: "json",
     input: {
       decisionId: "agent-run-001",
@@ -853,8 +867,7 @@ function buildAllocateDiscoveryExtension() {
 
 function buildAllocateWithReportDiscoveryExtension() {
   return declareDiscoveryExtension({
-    description:
-      "Selun deterministic crypto allocation construction bundled with the certified decision record, payable via x402 (USDC) on Base.",
+    description: X402_PUBLIC_DESCRIPTIONS.allocateWithReport,
     bodyType: "json",
     input: {
       decisionId: "agent-run-001",
@@ -1595,7 +1608,7 @@ async function buildX402CapabilitiesData() {
       method: "POST",
       productId: "allocate",
       title: "Selun Allocation",
-      description: "Selun deterministic crypto allocation construction.",
+      description: X402_PUBLIC_DESCRIPTIONS.allocate,
       pricing: {
         amountUsdc: allocationOnlyAccept.amountUsdc,
         price: allocationOnlyAccept.price,
@@ -1609,7 +1622,7 @@ async function buildX402CapabilitiesData() {
       method: "POST",
       productId: "allocate_with_report",
       title: "Selun Allocation With Report",
-      description: "Selun deterministic crypto allocation construction bundled with the certified decision record.",
+      description: X402_PUBLIC_DESCRIPTIONS.allocateWithReport,
       pricing: {
         amountUsdc: allocationWithReportAccept.amountUsdc,
         price: allocationWithReportAccept.price,
@@ -2697,7 +2710,7 @@ router.post("/x402/allocate", async (req: Request, res: Response) =>
   handleX402AllocateRequest(req, res, {
     routePath: "/agent/x402/allocate",
     withReport: false,
-    description: "Selun deterministic crypto allocation construction.",
+    description: X402_PUBLIC_DESCRIPTIONS.allocate,
     discoveryExtension: buildAllocateDiscoveryExtension(),
   })
 );
@@ -2706,7 +2719,7 @@ router.post("/x402/allocate-with-report", async (req: Request, res: Response) =>
   handleX402AllocateRequest(req, res, {
     routePath: "/agent/x402/allocate-with-report",
     withReport: true,
-    description: "Selun deterministic crypto allocation construction bundled with the certified decision record.",
+    description: X402_PUBLIC_DESCRIPTIONS.allocateWithReport,
     discoveryExtension: buildAllocateWithReportDiscoveryExtension(),
   })
 );

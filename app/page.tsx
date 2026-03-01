@@ -75,6 +75,10 @@ const coreTitle =
             <Image src="/selun-logo.svg" alt="Selun" width={154} height={48} className={styles.brandLogo} priority />
           </Link>
 
+          <nav className={styles.nav} aria-label="Primary navigation">
+            <Link href="/x402">x402 API</Link>
+          </nav>
+
           {/* <div className={styles.contractPill} title={TOKEN_CONTRACT}>
             <span className={styles.tokenTicker}>{TOKEN_TICKER}</span>
             <span className={styles.contractDivider} aria-hidden />
