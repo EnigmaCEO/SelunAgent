@@ -150,6 +150,31 @@ type TreasurySetupResponse = {
   };
 };
 
+type SwapResponse = {
+  success: boolean;
+  error?: string;
+  data?: {
+    sourceWallet?: {
+      walletAddress: string;
+      usdcBalanceBefore: string;
+      nativeBalanceBefore: string;
+    };
+    transfer: {
+      sellerWalletAddress: string;
+      transactionHash: string;
+      approvalTransactionHash?: string;
+      amountUsdc: string;
+      estimatedToAmountEth: string;
+      minimumToAmountEth: string;
+      slippageBps: number;
+      nativeBalanceBefore: string;
+      nativeBalanceAfter: string;
+      usdcBalanceBefore: string;
+      usdcBalanceAfter: string;
+    };
+  };
+};
+
 function formatDate(value: string): string {
   const parsed = Date.parse(value);
   if (!Number.isFinite(parsed)) return value;
@@ -176,6 +201,11 @@ export default function AdminPage() {
   const [treasuryMessage, setTreasuryMessage] = useState("");
   const [initializingTreasury, setInitializingTreasury] = useState(false);
   const [rollingUpTreasuryWalletAddress, setRollingUpTreasuryWalletAddress] = useState("");
+  const [swappingWalletAddress, setSwappingWalletAddress] = useState("");
+  const [swapError, setSwapError] = useState("");
+  const [swapResult, setSwapResult] = useState<SwapResponse["data"] | null>(null);
+  const [swapAmountUsdc, setSwapAmountUsdc] = useState("0.1");
+  const [swapSlippageBps, setSwapSlippageBps] = useState("100");
   const [nativeTopUpAmountEth, setNativeTopUpAmountEth] = useState("0.00005");
   const [nativeTopUpFromSellerAddress, setNativeTopUpFromSellerAddress] = useState("");
   const [withdrawAll, setWithdrawAll] = useState(true);
@@ -336,6 +366,45 @@ export default function AdminPage() {
       setTreasuryRollupError(error instanceof Error ? error.message : "Treasury USDC rollup failed.");
     } finally {
       setRollingUpTreasuryWalletAddress("");
+    }
+  }
+
+  async function swapWalletUsdcToEth(sellerAddress: string) {
+    if (!swapAmountUsdc || Number(swapAmountUsdc) <= 0) {
+      setSwapError("Provide a USDC amount greater than zero before submitting the swap.");
+      return;
+    }
+
+    setSwappingWalletAddress(sellerAddress);
+    setSwapError("");
+    setSwapResult(null);
+
+    try {
+      const response = await fetch("/api/admin/swap-usdc-to-eth", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Selun-Admin-Token": adminToken,
+        },
+        body: JSON.stringify({
+          sellerAddress,
+          amountUsdc: swapAmountUsdc,
+          slippageBps: swapSlippageBps,
+          ...(note ? { note } : {}),
+        }),
+      });
+
+      const payload = (await response.json()) as SwapResponse;
+      if (!response.ok || !payload.success || !payload.data) {
+        throw new Error(payload.error || "Seller wallet swap failed.");
+      }
+
+      setSwapResult(payload.data);
+      await loadOverview();
+    } catch (error) {
+      setSwapError(error instanceof Error ? error.message : "Seller wallet swap failed.");
+    } finally {
+      setSwappingWalletAddress("");
     }
   }
 
@@ -540,6 +609,26 @@ export default function AdminPage() {
                 </div>
               </div>
 
+              <div className={styles.refundControls}>
+                <input
+                  type="text"
+                  value={swapAmountUsdc}
+                  onChange={(event) => setSwapAmountUsdc(event.target.value)}
+                  className={styles.input}
+                  placeholder="USDC to swap into ETH"
+                />
+                <input
+                  type="text"
+                  value={swapSlippageBps}
+                  onChange={(event) => setSwapSlippageBps(event.target.value)}
+                  className={styles.input}
+                  placeholder="Slippage (bps)"
+                />
+              </div>
+              <p className={styles.selectionText}>
+                Mainnet only. This attempts a seller-wallet USDC to native ETH swap to bootstrap gas. Permit2 approval is sent automatically if required.
+              </p>
+
               {treasuryRollupError ? <p className={styles.error}>{treasuryRollupError}</p> : null}
               {treasuryRollupResult ? (
                 <p className={styles.success}>
@@ -547,6 +636,16 @@ export default function AdminPage() {
                   {treasuryRollupResult.destinationWallet?.walletAddress}. Tx {treasuryRollupResult.transfer.transactionHash}
                   {treasuryRollupResult.nativeTopUp
                     ? ` Top-up: ${treasuryRollupResult.nativeTopUp.amountEth} ETH from ${treasuryRollupResult.nativeTopUp.fromWalletAddress}.`
+                    : ""}
+                </p>
+              ) : null}
+              {swapError ? <p className={styles.error}>{swapError}</p> : null}
+              {swapResult ? (
+                <p className={styles.success}>
+                  Swapped {swapResult.transfer.amountUsdc} USDC to an estimated {swapResult.transfer.estimatedToAmountEth} ETH
+                  (minimum {swapResult.transfer.minimumToAmountEth} ETH) on {swapResult.transfer.sellerWalletAddress}. Tx {swapResult.transfer.transactionHash}
+                  {swapResult.transfer.approvalTransactionHash
+                    ? ` Approval Tx ${swapResult.transfer.approvalTransactionHash}.`
                     : ""}
                 </p>
               ) : null}
@@ -587,6 +686,18 @@ export default function AdminPage() {
                                 className={styles.secondaryButton}
                               >
                                 {rollingUpTreasuryWalletAddress === wallet.walletAddress ? "Rolling Up..." : "Roll Up to Treasury"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => swapWalletUsdcToEth(wallet.walletAddress)}
+                                disabled={
+                                  overview.wallet.network !== "base-mainnet" ||
+                                  Boolean(swappingWalletAddress) ||
+                                  Number(wallet.usdcBalance) <= 0
+                                }
+                                className={styles.secondaryButton}
+                              >
+                                {swappingWalletAddress === wallet.walletAddress ? "Swapping..." : "Swap USDC -> ETH"}
                               </button>
                             </div>
                           ) : (

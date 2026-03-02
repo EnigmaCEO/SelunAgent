@@ -127,6 +127,7 @@ Both require either:
 `POST /agent/admin/withdraw-treasury` sweeps USDC from Selun's treasury smart account to `SELUN_ADMIN_WITHDRAW_ADDRESS`.
 `POST /agent/admin/rollup-usdc` sweeps USDC from an older seller wallet into Selun's active wallet.
 `POST /agent/admin/rollup-usdc-to-treasury` sweeps USDC from a selected seller wallet into Selun's treasury smart account.
+`POST /agent/admin/swap-usdc-to-eth` attempts a seller-wallet USDC to native ETH swap on Base mainnet. Selun quotes the swap, sends Permit2 approval if needed, then executes the swap.
 `POST /agent/admin/treasury-smart-account` creates or reuses a named CDP treasury owner account and a named CDP smart account so Selun has a stable treasury identity for future paymaster-backed operations.
 `POST /agent/admin/refund` remains available for purchase-linked refund bookkeeping, but wallet operations should use treasury rollup plus `POST /agent/admin/withdraw-treasury`.
 `GET /agent/admin/overview` includes all CDP EVM server wallets visible to the configured project, the currently active wallet Selun is using for commerce, and the configured treasury smart-account status.

@@ -6,6 +6,7 @@ import { CdpClient } from "@coinbase/cdp-sdk";
 import {
   createPublicClient,
   createWalletClient,
+  encodeFunctionData,
   formatUnits,
   http,
   isAddress,
@@ -24,6 +25,7 @@ import { resolveBackendDataFilePath } from "../runtime-paths";
 const USDC_DECIMALS = 6;
 const RPC_READ_TIMEOUT_MS = 12_000;
 const BALANCE_CACHE_TTL_MS = 10_000;
+const NATIVE_ETH_ADDRESS = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE" as Address;
 const IDENTITY_PATH = resolveBackendDataFilePath("agent-identity.json");
 const PROMO_CODE_REDEMPTIONS_PATH = resolveBackendDataFilePath("free-code-redemptions.json");
 const TRANSFER_EVENT = parseAbiItem("event Transfer(address indexed from, address indexed to, uint256 value)");
@@ -34,6 +36,18 @@ const ERC20_BALANCE_OF_ABI = [
     stateMutability: "view",
     inputs: [{ name: "account", type: "address" }],
     outputs: [{ name: "balance", type: "uint256" }],
+  },
+] as const;
+const ERC20_APPROVE_ABI = [
+  {
+    type: "function",
+    name: "approve",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "spender", type: "address" },
+      { name: "value", type: "uint256" },
+    ],
+    outputs: [{ name: "", type: "bool" }],
   },
 ] as const;
 type PersistedIdentity = {
@@ -172,6 +186,13 @@ export type TreasuryUsdcTransferInput = {
   note?: string;
 };
 
+export type SellerUsdcToEthSwapInput = {
+  sellerAddress?: string;
+  amountUsdc: number | string;
+  slippageBps?: number;
+  note?: string;
+};
+
 export type SellerNativeTransferInput = {
   fromSellerAddress?: string;
   toAddress: string;
@@ -211,6 +232,25 @@ export type TreasuryUsdcTransferResult = {
   note?: string;
   userOpHash: Hex;
   transactionHash: Hex;
+  nativeBalanceBefore: string;
+  nativeBalanceAfter: string;
+  usdcBalanceBefore: string;
+  usdcBalanceAfter: string;
+};
+
+export type SellerUsdcToEthSwapResult = {
+  sellerWalletAddress: Address;
+  network: string;
+  fromTokenAddress: Address;
+  toTokenAddress: Address;
+  amountUsdc: string;
+  amountBaseUnits: string;
+  estimatedToAmountEth: string;
+  minimumToAmountEth: string;
+  slippageBps: number;
+  note?: string;
+  transactionHash: Hex;
+  approvalTransactionHash?: Hex;
   nativeBalanceBefore: string;
   nativeBalanceAfter: string;
   usdcBalanceBefore: string;
@@ -830,6 +870,21 @@ function getAdminFundingPrivateKey(): Hex | null {
     throw new Error("SELUN_ADMIN_FUNDING_PRIVATE_KEY must be a valid 0x-prefixed 32-byte private key.");
   }
   return candidate as Hex;
+}
+
+function normalizeSwapSlippageBps(value: unknown, fallback = 100): number {
+  const parsed =
+    typeof value === "number"
+      ? value
+      : typeof value === "string"
+        ? Number.parseInt(value.trim(), 10)
+        : Number.NaN;
+
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 10_000) {
+    return fallback;
+  }
+
+  return parsed;
 }
 
 async function getSellerWalletContext(sellerAddress?: Address): Promise<{
@@ -1706,6 +1761,125 @@ export async function transferSellerUsdc(input: SellerUsdcTransferInput): Promis
     amountBaseUnits: amountBaseUnits.toString(),
     ...(input.note?.trim() ? { note: input.note.trim() } : {}),
     transactionHash: txHash,
+    nativeBalanceBefore: formatUnits(nativeBalanceBefore, 18),
+    nativeBalanceAfter: formatUnits(nativeBalanceAfter, 18),
+    usdcBalanceBefore: formatUnits(usdcBalanceBefore, USDC_DECIMALS),
+    usdcBalanceAfter: formatUnits(usdcBalanceAfter, USDC_DECIMALS),
+  };
+}
+
+export async function swapSellerUsdcToEth(input: SellerUsdcToEthSwapInput): Promise<SellerUsdcToEthSwapResult> {
+  const config = getConfig();
+  if (config.networkId !== "base-mainnet") {
+    throw new Error("Seller wallet USDC-to-ETH swaps are only enabled on base-mainnet.");
+  }
+
+  const sellerAddress =
+    typeof input.sellerAddress === "string" && isAddress(input.sellerAddress)
+      ? (input.sellerAddress as Address)
+      : undefined;
+  const runtime = await getSellerWalletContext(sellerAddress);
+  const cdp = createConfiguredCdpClient(config);
+  const sellerAccount = await cdp.evm.getAccount({ address: runtime.identity.walletAddress });
+  const amountBaseUnits = normalizeExpectedUsdc(input.amountUsdc);
+  const slippageBps = normalizeSwapSlippageBps(input.slippageBps, 100);
+
+  emitExecutionLog({
+    phase: "WALLET",
+    action: "seller_usdc_to_eth_swap",
+    status: "started",
+    transactionHash: null,
+  });
+
+  const [nativeBalanceBefore, usdcBalanceBefore] = await Promise.all([
+    runtime.walletProvider.getBalance(),
+    runtime.walletProvider.readContract({
+      address: config.usdcContractAddress,
+      abi: ERC20_BALANCE_OF_ABI,
+      functionName: "balanceOf",
+      args: [runtime.identity.walletAddress],
+    }),
+  ]);
+
+  if (usdcBalanceBefore < amountBaseUnits) {
+    throw new Error(
+      `Seller wallet balance is too low. Balance: ${formatUnits(usdcBalanceBefore, USDC_DECIMALS)} USDC, requested swap: ${formatUnits(amountBaseUnits, USDC_DECIMALS)} USDC.`,
+    );
+  }
+
+  const buildSwapQuote = () =>
+    sellerAccount.quoteSwap({
+      network: "base",
+      fromToken: config.usdcContractAddress,
+      toToken: NATIVE_ETH_ADDRESS,
+      fromAmount: amountBaseUnits,
+      slippageBps,
+    });
+
+  let swapQuote = await buildSwapQuote();
+  if (!swapQuote.liquidityAvailable) {
+    throw new Error("Insufficient liquidity for seller wallet USDC-to-ETH swap.");
+  }
+
+  let approvalTransactionHash: Hex | undefined;
+  if (swapQuote.issues.allowance) {
+    approvalTransactionHash = await runtime.walletProvider.sendTransaction({
+      to: config.usdcContractAddress,
+      value: 0n,
+      data: encodeFunctionData({
+        abi: ERC20_APPROVE_ABI,
+        functionName: "approve",
+        args: [swapQuote.issues.allowance.spender, amountBaseUnits],
+      }),
+    });
+
+    await runtime.walletProvider.waitForTransactionReceipt(approvalTransactionHash);
+    invalidateBalanceCache(runtime.identity.walletAddress, config);
+    swapQuote = await buildSwapQuote();
+    if (!swapQuote.liquidityAvailable) {
+      throw new Error("Liquidity became unavailable after approving Permit2 allowance for swap.");
+    }
+    if (swapQuote.issues.allowance) {
+      throw new Error("Swap still requires additional token allowance after approval.");
+    }
+  }
+
+  const { transactionHash } = await sellerAccount.swap({
+    swapQuote,
+  });
+  await runtime.walletProvider.waitForTransactionReceipt(transactionHash);
+  invalidateBalanceCache(runtime.identity.walletAddress, config);
+
+  const [nativeBalanceAfter, usdcBalanceAfter] = await Promise.all([
+    runtime.walletProvider.getBalance(),
+    runtime.walletProvider.readContract({
+      address: config.usdcContractAddress,
+      abi: ERC20_BALANCE_OF_ABI,
+      functionName: "balanceOf",
+      args: [runtime.identity.walletAddress],
+    }),
+  ]);
+
+  emitExecutionLog({
+    phase: "WALLET",
+    action: "seller_usdc_to_eth_swap",
+    status: "success",
+    transactionHash,
+  });
+
+  return {
+    sellerWalletAddress: runtime.identity.walletAddress,
+    network: runtime.identity.network,
+    fromTokenAddress: config.usdcContractAddress,
+    toTokenAddress: NATIVE_ETH_ADDRESS,
+    amountUsdc: formatUnits(amountBaseUnits, USDC_DECIMALS),
+    amountBaseUnits: amountBaseUnits.toString(),
+    estimatedToAmountEth: formatUnits(swapQuote.toAmount, 18),
+    minimumToAmountEth: formatUnits(swapQuote.minToAmount, 18),
+    slippageBps,
+    ...(input.note?.trim() ? { note: input.note.trim() } : {}),
+    transactionHash,
+    ...(approvalTransactionHash ? { approvalTransactionHash } : {}),
     nativeBalanceBefore: formatUnits(nativeBalanceBefore, 18),
     nativeBalanceAfter: formatUnits(nativeBalanceAfter, 18),
     usdcBalanceBefore: formatUnits(usdcBalanceBefore, USDC_DECIMALS),

@@ -29,6 +29,7 @@ import {
   transferNativeFromAdminWallet,
   transferSellerNative,
   transferSellerUsdc,
+  swapSellerUsdcToEth,
   transferTreasuryUsdc,
   verifyIncomingPayment,
 } from "../services/selun-agent.service";
@@ -2539,6 +2540,62 @@ router.post("/admin/rollup-usdc-to-treasury", async (req: Request, res: Response
         walletAddress: treasury.smartAccount.walletAddress,
         usdcBalanceBefore: treasury.smartAccount.usdcBalance,
         nativeBalanceBefore: treasury.smartAccount.nativeBalance,
+      },
+      transfer,
+    });
+  } catch (error) {
+    return failure(res, error, 400);
+  }
+});
+
+router.post("/admin/swap-usdc-to-eth", async (req: Request, res: Response) => {
+  if (!requireAdminRequest(req, res)) return;
+
+  try {
+    const config = getConfig();
+    if (config.networkId !== "base-mainnet") {
+      return failure(res, new Error("USDC-to-ETH seller wallet swaps are only available on base-mainnet."), 400);
+    }
+
+    const sellerAddress =
+      typeof req.body?.sellerAddress === "string" && isAddress(req.body.sellerAddress)
+        ? req.body.sellerAddress
+        : undefined;
+    if (!sellerAddress) {
+      return failure(res, new Error("sellerAddress is required and must be a valid EVM address."), 400);
+    }
+
+    const amountUsdc = req.body?.amountUsdc;
+    if (typeof amountUsdc !== "string" && typeof amountUsdc !== "number") {
+      return failure(res, new Error("amountUsdc is required."), 400);
+    }
+
+    const slippageBps =
+      typeof req.body?.slippageBps === "string" || typeof req.body?.slippageBps === "number"
+        ? Number(req.body.slippageBps)
+        : undefined;
+    const note = toText(req.body?.note, "");
+
+    const wallets = await listProjectSellerWalletSnapshots();
+    const sourceWallet = wallets.find(
+      (wallet) => wallet.walletAddress.toLowerCase() === sellerAddress.toLowerCase(),
+    );
+    if (!sourceWallet) {
+      return failure(res, new Error("Selected seller wallet was not found in the configured CDP project."), 404);
+    }
+
+    const transfer = await swapSellerUsdcToEth({
+      sellerAddress,
+      amountUsdc,
+      ...(slippageBps !== undefined ? { slippageBps } : {}),
+      ...(note ? { note } : {}),
+    });
+
+    return success(res, {
+      sourceWallet: {
+        walletAddress: sourceWallet.walletAddress,
+        usdcBalanceBefore: sourceWallet.usdcBalance,
+        nativeBalanceBefore: sourceWallet.nativeBalance,
       },
       transfer,
     });
