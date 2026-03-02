@@ -186,6 +186,15 @@ function shortHash(value: string): string {
   return `${value.slice(0, 8)}...${value.slice(-6)}`;
 }
 
+function summarizePaymasterUrl(value: string | null | undefined): string {
+  if (!value) return "custom paymaster configured";
+  try {
+    return `custom paymaster configured (${new URL(value).host})`;
+  } catch {
+    return "custom paymaster configured";
+  }
+}
+
 export default function AdminPage() {
   const [adminToken, setAdminToken] = useState("");
   const [overview, setOverview] = useState<OverviewResponse["data"] | null>(null);
@@ -496,7 +505,7 @@ export default function AdminPage() {
               <p className={styles.selectionText}>
                 Sponsorship mode:{" "}
                 {overview.treasury.smartAccount?.sponsorshipMode === "configured_paymaster"
-                  ? `custom paymaster (${overview.treasury.smartAccount.paymasterUrl})`
+                  ? summarizePaymasterUrl(overview.treasury.smartAccount.paymasterUrl)
                   : "manual or managed-default not assumed"}
               </p>
               {overview.transferMode?.note ? <p className={styles.selectionText}>{overview.transferMode.note}</p> : null}
