@@ -679,6 +679,25 @@ const X402_PUBLIC_DESCRIPTIONS = {
     "Portfolio rebalance engine. Call this after allocation or on a monitoring schedule with current holdings. Returns target-vs-current drift and the adjustments required to rebalance within policy constraints.",
 } as const;
 
+const X402_SERVER_METADATA = {
+  name: "Selun | Sagitta AAA Portfolio Infrastructure",
+  description:
+    "Payment-gated x402 endpoints exposing Sagitta AAA portfolio allocation, market regime classification, policy evaluation, asset scoring, and portfolio rebalancing.",
+  provider: {
+    name: "Sagitta AAA",
+    url: "https://selun.sagitta.systems",
+  },
+  discoveryTags: [
+    "portfolio",
+    "allocation",
+    "market-regime",
+    "policy-engine",
+    "asset-scoring",
+    "rebalance",
+    "x402",
+  ],
+} as const;
+
 function getX402ToolDefinitions(): X402ToolDefinition[] {
   return [
     {
@@ -687,7 +706,7 @@ function getX402ToolDefinitions(): X402ToolDefinition[] {
       title: "Selun Market Regime",
       description: X402_PUBLIC_DESCRIPTIONS.marketRegime,
       category: "finance:market-regime",
-      tags: ["portfolio", "market-regime", "risk", "x402"],
+      tags: ["portfolio", "market-regime", "volatility", "sentiment", "x402"],
       amountUsdc: () => getX402ToolPriceUsdc("market_regime"),
       inputSchema: {
         type: "object",
@@ -725,7 +744,7 @@ function getX402ToolDefinitions(): X402ToolDefinition[] {
       title: "Selun Policy Envelope",
       description: X402_PUBLIC_DESCRIPTIONS.policyEnvelope,
       category: "finance:policy-envelope",
-      tags: ["portfolio", "policy", "risk-budget", "x402"],
+      tags: ["portfolio", "policy-engine", "risk-budget", "exposure-caps", "x402"],
       amountUsdc: () => getX402ToolPriceUsdc("policy_envelope"),
       inputSchema: {
         type: "object",
@@ -761,7 +780,7 @@ function getX402ToolDefinitions(): X402ToolDefinition[] {
       title: "Selun Asset Scorecard",
       description: X402_PUBLIC_DESCRIPTIONS.assetScorecard,
       category: "finance:asset-scorecard",
-      tags: ["portfolio", "asset-scorecard", "quality", "x402"],
+      tags: ["portfolio", "asset-scoring", "liquidity", "quality", "x402"],
       amountUsdc: () => getX402ToolPriceUsdc("asset_scorecard"),
       inputSchema: {
         type: "object",
@@ -806,7 +825,7 @@ function getX402ToolDefinitions(): X402ToolDefinition[] {
       title: "Selun Rebalance",
       description: X402_PUBLIC_DESCRIPTIONS.rebalance,
       category: "finance:rebalance",
-      tags: ["portfolio", "rebalance", "allocation", "x402"],
+      tags: ["portfolio", "rebalance", "drift-analysis", "allocation-target", "x402"],
       amountUsdc: () => getX402ToolPriceUsdc("rebalance"),
       inputSchema: {
         type: "object",
@@ -1762,6 +1781,9 @@ async function buildX402CapabilitiesData() {
 
   return {
     discoverable: true,
+    name: X402_SERVER_METADATA.name,
+    description: X402_SERVER_METADATA.description,
+    provider: X402_SERVER_METADATA.provider,
     x402Version: 2,
     versions: {
       executionModelVersion: EXECUTION_MODEL_VERSION,
@@ -1807,7 +1829,7 @@ async function buildX402CapabilitiesData() {
       caip2Network: toCaip2Network(config.networkId),
       metadataRefreshCadenceHours: 6,
       category: "finance:portfolio-agent",
-      tags: ["portfolio", "allocation", "rebalance", "risk", "x402", "audit"],
+      tags: [...X402_SERVER_METADATA.discoveryTags],
     },
   };
 }

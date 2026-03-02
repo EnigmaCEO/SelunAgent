@@ -16,33 +16,33 @@ const bodyFont = Manrope({
 });
 
 const siteUrl = process.env.NEXT_PUBLIC_SITE_URL?.trim() || "https://selun.sagitta.systems";
+const siteTitle = "Selun | Sagitta AAA Portfolio Infrastructure";
+const siteDescription =
+  "Payment-gated x402 endpoints exposing Sagitta AAA portfolio allocation, market regime classification, policy evaluation, asset scoring, and portfolio rebalancing.";
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
-  title: "Selun | Autonomous Portfolio Agent",
-  description:
-    "Selun is an autonomous crypto allocation agent built on Sagitta AAA’s quant allocation engine. It analyzes current market conditions and produces deterministic, risk-aligned portfolio allocations.",
+  title: siteTitle,
+  description: siteDescription,
   openGraph: {
     type: "website",
     url: "/",
     siteName: "Selun",
-    title: "Selun | Autonomous Portfolio Agent",
-    description:
-      "Simple crypto allocation powered by market intelligence.",
+    title: siteTitle,
+    description: siteDescription,
     images: [
       {
         url: "/opengraph-image",
         width: 1200,
         height: 630,
-        alt: "Selun - Autonomous Portfolio Agent",
+        alt: "Selun - Sagitta AAA Portfolio Infrastructure",
       },
     ],
   },
   twitter: {
     card: "summary_large_image",
-    title: "Selun | Autonomous Portfolio Agent",
-    description:
-      "Simple crypto allocation powered by market intelligence.",
+    title: siteTitle,
+    description: siteDescription,
     images: ["/twitter-image"],
   },
   icons: {

@@ -44,13 +44,13 @@ export default function OpenGraphImage() {
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             <div style={{ fontSize: 34, fontWeight: 700, letterSpacing: 6, color: "#0d4f84" }}>SELUN</div>
-            <div style={{ fontSize: 22, color: "#2e5270" }}>Autonomous Portfolio Agent</div>
+            <div style={{ fontSize: 22, color: "#2e5270" }}>Sagitta AAA Portfolio Infrastructure</div>
           </div>
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <div style={{ fontSize: 76, fontWeight: 700, lineHeight: 1.05 }}>Simple Crypto Allocation</div>
-          <div style={{ fontSize: 34, color: "#2b4f70" }}>Powered by market intelligence.</div>
+          <div style={{ fontSize: 72, fontWeight: 700, lineHeight: 1.05 }}>Payment-Gated x402 Endpoints</div>
+          <div style={{ fontSize: 32, color: "#2b4f70" }}>Allocation, regime, policy, scoring, and rebalance engines.</div>
         </div>
 
         <div
@@ -63,7 +63,7 @@ export default function OpenGraphImage() {
           }}
         >
           <span>selun.sagitta.systems</span>
-          <span>Built on AAA v4</span>
+          <span>Base x402 | Sagitta AAA</span>
         </div>
       </div>
     ),
