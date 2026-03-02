@@ -23,6 +23,7 @@ import { resolveBackendDataFilePath } from "../runtime-paths";
 
 const USDC_DECIMALS = 6;
 const RPC_READ_TIMEOUT_MS = 12_000;
+const BALANCE_CACHE_TTL_MS = 10_000;
 const IDENTITY_PATH = resolveBackendDataFilePath("agent-identity.json");
 const PROMO_CODE_REDEMPTIONS_PATH = resolveBackendDataFilePath("free-code-redemptions.json");
 const TRANSFER_EVENT = parseAbiItem("event Transfer(address indexed from, address indexed to, uint256 value)");
@@ -271,6 +272,22 @@ export type QuoteWizardPaymentResult = {
 };
 
 let cachedRuntime: AgentRuntimeContext | null = null;
+const balanceCache = new Map<
+  string,
+  {
+    expiresAt: number;
+    nativeBalance: bigint;
+    usdcBalance: bigint;
+  }
+>();
+
+function getBalanceCacheKey(address: Address, config = getConfig()): string {
+  return `${config.networkId}:${config.baseRpc.toLowerCase()}:${config.usdcContractAddress.toLowerCase()}:${address.toLowerCase()}`;
+}
+
+function invalidateBalanceCache(address: Address, config = getConfig()) {
+  balanceCache.delete(getBalanceCacheKey(address, config));
+}
 
 function ensureIdentityDir() {
   fs.mkdirSync(path.dirname(IDENTITY_PATH), { recursive: true });
@@ -701,6 +718,15 @@ function getCdpTransferNetwork(config = getConfig()): "base" | "base-sepolia" {
 }
 
 async function readWalletBalances(address: Address, config = getConfig()) {
+  const cacheKey = getBalanceCacheKey(address, config);
+  const cached = balanceCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return {
+      nativeBalance: cached.nativeBalance,
+      usdcBalance: cached.usdcBalance,
+    };
+  }
+
   const publicClient = createConfiguredPublicClient(config);
   const [nativeBalance, usdcBalance] = await Promise.all([
     publicClient.getBalance({ address }),
@@ -711,6 +737,12 @@ async function readWalletBalances(address: Address, config = getConfig()) {
       args: [address],
     }),
   ]);
+
+  balanceCache.set(cacheKey, {
+    expiresAt: Date.now() + BALANCE_CACHE_TTL_MS,
+    nativeBalance,
+    usdcBalance,
+  });
 
   return {
     nativeBalance,
@@ -1013,15 +1045,7 @@ export async function getAgentWalletSnapshot(): Promise<AgentWalletSnapshot> {
     transactionHash: null,
   });
 
-  const [nativeBalance, usdcBalance] = await Promise.all([
-    runtime.walletProvider.getBalance(),
-    runtime.walletProvider.readContract({
-      address: config.usdcContractAddress,
-      abi: ERC20_BALANCE_OF_ABI,
-      functionName: "balanceOf",
-      args: [runtime.identity.walletAddress],
-    }),
-  ]);
+  const { nativeBalance, usdcBalance } = await readWalletBalances(runtime.identity.walletAddress, config);
 
   emitExecutionLog({
     phase: "WALLET",
@@ -1045,7 +1069,6 @@ export async function getAgentWalletSnapshot(): Promise<AgentWalletSnapshot> {
 export async function listProjectSellerWalletSnapshots(): Promise<ProjectSellerWalletSnapshot[]> {
   const config = getConfig();
   const cdp = createConfiguredCdpClient(config);
-  const publicClient = createConfiguredPublicClient(config);
   const activeIdentity = await getAgentAddress().catch(() => null);
 
   const accounts: Array<{ name?: string; address: Address; policies?: string[] }> = [];
@@ -1066,32 +1089,22 @@ export async function listProjectSellerWalletSnapshots(): Promise<ProjectSellerW
     nextPageToken = page.nextPageToken;
   } while (nextPageToken);
 
-  const snapshots = await Promise.all(
-    accounts.map(async (account) => {
-      const [nativeBalance, usdcBalance] = await Promise.all([
-        publicClient.getBalance({ address: account.address }),
-        publicClient.readContract({
-          address: config.usdcContractAddress,
-          abi: ERC20_BALANCE_OF_ABI,
-          functionName: "balanceOf",
-          args: [account.address],
-        }),
-      ]);
-
-      return {
-        agentId: account.name || null,
-        walletAddress: account.address,
-        network: config.networkId,
-        usdcContractAddress: config.usdcContractAddress,
-        nativeBalance: formatUnits(nativeBalance, 18),
-        nativeBalanceBaseUnits: nativeBalance.toString(),
-        usdcBalance: formatUnits(usdcBalance, USDC_DECIMALS),
-        usdcBalanceBaseUnits: usdcBalance.toString(),
-        policies: account.policies ?? [],
-        active: activeIdentity?.walletAddress.toLowerCase() === account.address.toLowerCase(),
-      };
-    }),
-  );
+  const snapshots: ProjectSellerWalletSnapshot[] = [];
+  for (const account of accounts) {
+    const { nativeBalance, usdcBalance } = await readWalletBalances(account.address, config);
+    snapshots.push({
+      agentId: account.name || null,
+      walletAddress: account.address,
+      network: config.networkId,
+      usdcContractAddress: config.usdcContractAddress,
+      nativeBalance: formatUnits(nativeBalance, 18),
+      nativeBalanceBaseUnits: nativeBalance.toString(),
+      usdcBalance: formatUnits(usdcBalance, USDC_DECIMALS),
+      usdcBalanceBaseUnits: usdcBalance.toString(),
+      policies: account.policies ?? [],
+      active: activeIdentity?.walletAddress.toLowerCase() === account.address.toLowerCase(),
+    });
+  }
 
   return snapshots.sort((left, right) => {
     if (left.active && !right.active) return -1;
@@ -1664,6 +1677,8 @@ export async function transferSellerUsdc(input: SellerUsdcTransferInput): Promis
   const txHash = transferResult.transactionHash;
 
   await runtime.walletProvider.waitForTransactionReceipt(txHash);
+  invalidateBalanceCache(runtime.identity.walletAddress, config);
+  invalidateBalanceCache(toAddress, config);
 
   const [nativeBalanceAfter, usdcBalanceAfter] = await Promise.all([
     runtime.walletProvider.getBalance(),
@@ -1747,6 +1762,8 @@ export async function transferTreasuryUsdc(input: TreasuryUsdcTransferInput): Pr
     throw new Error(`Treasury transfer failed for user operation ${transferResult.userOpHash}.`);
   }
 
+  invalidateBalanceCache(smartAccount.address, config);
+  invalidateBalanceCache(toAddress, config);
   const balancesAfter = await readWalletBalances(smartAccount.address, config);
 
   emitExecutionLog({
@@ -1806,6 +1823,8 @@ export async function transferSellerNative(input: SellerNativeTransferInput): Pr
   });
 
   await runtime.walletProvider.waitForTransactionReceipt(txHash);
+  invalidateBalanceCache(runtime.identity.walletAddress, getConfig());
+  invalidateBalanceCache(toAddress, getConfig());
 
   const nativeBalanceAfter = await runtime.walletProvider.getBalance();
 
@@ -1876,6 +1895,7 @@ export async function transferNativeFromAdminWallet(input: Omit<SellerNativeTran
   });
 
   await publicClient.waitForTransactionReceipt({ hash: txHash });
+  invalidateBalanceCache(toAddress, config);
 
   const nativeBalanceAfter = await publicClient.getBalance({ address: account.address });
 

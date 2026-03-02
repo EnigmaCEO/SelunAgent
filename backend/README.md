@@ -11,7 +11,7 @@ Frontend should only keep `SELUN_BACKEND_URL` plus UI-safe vars in `.env.local`.
 - `COINBASE_API_SECRET`
 - `AGENT_WALLET_ID`
 - `NETWORK_ID` (`base-mainnet` or `base-sepolia`)
-- `BASE_MAINNET_RPC` (required when `NETWORK_ID=base-mainnet`)
+- `BASE_MAINNET_RPC` (required when `NETWORK_ID=base-mainnet`; use a dedicated RPC provider in production, not `https://mainnet.base.org`)
 - `BASE_SEPOLIA_RPC` (required when `NETWORK_ID=base-sepolia`)
 - `USDC_CONTRACT_ADDRESS`
 - `STRUCTURED_ALLOCATION_PRICE_USDC`
