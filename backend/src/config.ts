@@ -66,7 +66,8 @@ const parseOptionalAddress = (value: string | undefined, envName: string): Addre
   const trimmed = value?.trim();
   if (!trimmed) return null;
   if (!isAddress(trimmed)) {
-    throw new Error(`${envName} must be a valid EVM address when provided.`);
+    console.warn(`${envName} is set but is not a valid EVM address. Falling back to name-based treasury resolution.`);
+    return null;
   }
   return trimmed;
 };
