@@ -2,8 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { AgentKit, CdpEvmWalletProvider, walletActionProvider } from "@coinbase/agentkit";
+import { CdpClient } from "@coinbase/cdp-sdk";
 import {
   createPublicClient,
+  createWalletClient,
   formatUnits,
   http,
   isAddress,
@@ -13,6 +15,8 @@ import {
   type Address,
   type Hex,
 } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+import { base, baseSepolia } from "viem/chains";
 import { getConfig } from "../config";
 import { emitExecutionLog } from "../logging/execution-logs";
 import { resolveBackendDataFilePath } from "../runtime-paths";
@@ -31,7 +35,6 @@ const ERC20_BALANCE_OF_ABI = [
     outputs: [{ name: "balance", type: "uint256" }],
   },
 ] as const;
-
 type PersistedIdentity = {
   agentId: string;
   walletAddress: Address;
@@ -94,6 +97,135 @@ export type PaymentReceipt = {
 export type StoreDecisionHashInput = {
   decisionId: string;
   pdfHash: string;
+};
+
+export type AgentWalletSnapshot = {
+  agentId: string;
+  walletAddress: Address;
+  network: string;
+  usdcContractAddress: Address;
+  nativeBalance: string;
+  nativeBalanceBaseUnits: string;
+  usdcBalance: string;
+  usdcBalanceBaseUnits: string;
+};
+
+export type ProjectSellerWalletSnapshot = {
+  agentId: string | null;
+  walletAddress: Address;
+  network: string;
+  usdcContractAddress: Address;
+  nativeBalance: string;
+  nativeBalanceBaseUnits: string;
+  usdcBalance: string;
+  usdcBalanceBaseUnits: string;
+  policies: string[];
+  active: boolean;
+};
+
+export type TreasuryOwnerWalletSnapshot = {
+  name: string;
+  walletAddress: Address;
+  network: string;
+  usdcContractAddress: Address;
+  nativeBalance: string;
+  nativeBalanceBaseUnits: string;
+  usdcBalance: string;
+  usdcBalanceBaseUnits: string;
+  policies: string[];
+};
+
+export type TreasurySmartAccountSnapshot = {
+  name: string;
+  walletAddress: Address;
+  ownerAddresses: Address[];
+  network: string;
+  usdcContractAddress: Address;
+  nativeBalance: string;
+  nativeBalanceBaseUnits: string;
+  usdcBalance: string;
+  usdcBalanceBaseUnits: string;
+  policies: string[];
+  paymasterUrl: string | null;
+  sponsorshipMode: "configured_paymaster" | "manual";
+};
+
+export type TreasuryWalletSetupSnapshot = {
+  ownerName: string;
+  smartAccountName: string;
+  paymasterUrl: string | null;
+  owner: TreasuryOwnerWalletSnapshot | null;
+  smartAccount: TreasurySmartAccountSnapshot | null;
+};
+
+export type SellerUsdcTransferInput = {
+  sellerAddress?: string;
+  toAddress: string;
+  amountUsdc: number | string;
+  note?: string;
+};
+
+export type TreasuryUsdcTransferInput = {
+  toAddress: string;
+  amountUsdc: number | string;
+  note?: string;
+};
+
+export type SellerNativeTransferInput = {
+  fromSellerAddress?: string;
+  toAddress: string;
+  amountEth: number | string;
+  note?: string;
+};
+
+export type AdminNativeFundingWalletSnapshot = {
+  walletAddress: Address;
+  network: string;
+  nativeBalance: string;
+  nativeBalanceBaseUnits: string;
+};
+
+export type SellerUsdcTransferResult = {
+  sellerWalletAddress: Address;
+  network: string;
+  usdcContractAddress: Address;
+  toAddress: Address;
+  amountUsdc: string;
+  amountBaseUnits: string;
+  note?: string;
+  transactionHash: Hex;
+  nativeBalanceBefore: string;
+  nativeBalanceAfter: string;
+  usdcBalanceBefore: string;
+  usdcBalanceAfter: string;
+};
+
+export type TreasuryUsdcTransferResult = {
+  treasuryWalletAddress: Address;
+  network: string;
+  usdcContractAddress: Address;
+  toAddress: Address;
+  amountUsdc: string;
+  amountBaseUnits: string;
+  note?: string;
+  userOpHash: Hex;
+  transactionHash: Hex;
+  nativeBalanceBefore: string;
+  nativeBalanceAfter: string;
+  usdcBalanceBefore: string;
+  usdcBalanceAfter: string;
+};
+
+export type SellerNativeTransferResult = {
+  fromWalletAddress: Address;
+  network: string;
+  toAddress: Address;
+  amountEth: string;
+  amountBaseUnits: string;
+  note?: string;
+  transactionHash: Hex;
+  nativeBalanceBefore: string;
+  nativeBalanceAfter: string;
 };
 
 export type AuthorizeWizardPaymentInput = {
@@ -511,6 +643,15 @@ function normalizeExpectedUsdc(value: number | string): bigint {
   return parseUnits(valueAsString, USDC_DECIMALS);
 }
 
+function normalizeExpectedNativeAmount(value: number | string): bigint {
+  const valueAsString = typeof value === "number" ? value.toString() : value.trim();
+  const parsed = Number.parseFloat(valueAsString);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error("amountEth must be greater than zero.");
+  }
+  return parseUnits(valueAsString, 18);
+}
+
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -532,6 +673,164 @@ function calculateTotalPriceUsdcBaseUnits(includeCertifiedDecisionRecord: boolea
     ? parseUnits(config.certifiedDecisionRecordFeeUsdc.toString(), USDC_DECIMALS)
     : 0n;
   return basePrice + addOn;
+}
+
+function createConfiguredCdpClient(config = getConfig()): CdpClient {
+  return new CdpClient({
+    apiKeyId: config.coinbaseApiKey,
+    apiKeySecret: config.coinbaseApiSecret,
+    walletSecret: config.coinbaseWalletSecret,
+  });
+}
+
+function createConfiguredPublicClient(config = getConfig()) {
+  return createPublicClient({
+    transport: http(config.baseRpc, {
+      timeout: RPC_READ_TIMEOUT_MS,
+      retryCount: 1,
+    }),
+  });
+}
+
+function getConfiguredChain(config = getConfig()) {
+  return config.networkId === "base-mainnet" ? base : baseSepolia;
+}
+
+function getCdpTransferNetwork(config = getConfig()): "base" | "base-sepolia" {
+  return config.networkId === "base-mainnet" ? "base" : "base-sepolia";
+}
+
+async function readWalletBalances(address: Address, config = getConfig()) {
+  const publicClient = createConfiguredPublicClient(config);
+  const [nativeBalance, usdcBalance] = await Promise.all([
+    publicClient.getBalance({ address }),
+    publicClient.readContract({
+      address: config.usdcContractAddress,
+      abi: ERC20_BALANCE_OF_ABI,
+      functionName: "balanceOf",
+      args: [address],
+    }),
+  ]);
+
+  return {
+    nativeBalance,
+    usdcBalance,
+  };
+}
+
+async function findProjectServerAccountByName(name: string): Promise<{
+  name?: string;
+  address: Address;
+  policies?: string[];
+} | null> {
+  const cdp = createConfiguredCdpClient();
+  let nextPageToken: string | undefined;
+
+  do {
+    const page = await cdp.evm.listAccounts({
+      pageSize: 100,
+      ...(nextPageToken ? { pageToken: nextPageToken } : {}),
+    });
+    const match = page.accounts.find((account) => account.name === name);
+    if (match) {
+      return {
+        name: match.name,
+        address: match.address,
+        policies: Array.isArray(match.policies) ? match.policies : [],
+      };
+    }
+    nextPageToken = page.nextPageToken;
+  } while (nextPageToken);
+
+  return null;
+}
+
+async function buildTreasuryOwnerWalletSnapshot(account: {
+  name?: string;
+  address: Address;
+  policies?: string[];
+}): Promise<TreasuryOwnerWalletSnapshot> {
+  const config = getConfig();
+  const balances = await readWalletBalances(account.address, config);
+
+  return {
+    name: account.name || config.treasuryOwnerName,
+    walletAddress: account.address,
+    network: config.networkId,
+    usdcContractAddress: config.usdcContractAddress,
+    nativeBalance: formatUnits(balances.nativeBalance, 18),
+    nativeBalanceBaseUnits: balances.nativeBalance.toString(),
+    usdcBalance: formatUnits(balances.usdcBalance, USDC_DECIMALS),
+    usdcBalanceBaseUnits: balances.usdcBalance.toString(),
+    policies: account.policies ?? [],
+  };
+}
+
+async function buildTreasurySmartAccountSnapshot(account: {
+  name?: string;
+  address: Address;
+  owners: Address[];
+  policies?: string[];
+}): Promise<TreasurySmartAccountSnapshot> {
+  const config = getConfig();
+  const balances = await readWalletBalances(account.address, config);
+
+  return {
+    name: account.name || config.treasurySmartAccountName,
+    walletAddress: account.address,
+    ownerAddresses: account.owners,
+    network: config.networkId,
+    usdcContractAddress: config.usdcContractAddress,
+    nativeBalance: formatUnits(balances.nativeBalance, 18),
+    nativeBalanceBaseUnits: balances.nativeBalance.toString(),
+    usdcBalance: formatUnits(balances.usdcBalance, USDC_DECIMALS),
+    usdcBalanceBaseUnits: balances.usdcBalance.toString(),
+    policies: account.policies ?? [],
+    paymasterUrl: config.treasuryPaymasterUrl,
+    sponsorshipMode: config.treasuryPaymasterUrl ? "configured_paymaster" : "manual",
+  };
+}
+
+function getAdminFundingPrivateKey(): Hex | null {
+  const candidate = process.env.SELUN_ADMIN_FUNDING_PRIVATE_KEY?.trim();
+  if (!candidate) return null;
+  if (!/^0x[a-fA-F0-9]{64}$/.test(candidate)) {
+    throw new Error("SELUN_ADMIN_FUNDING_PRIVATE_KEY must be a valid 0x-prefixed 32-byte private key.");
+  }
+  return candidate as Hex;
+}
+
+async function getSellerWalletContext(sellerAddress?: Address): Promise<{
+  identity: AgentIdentity;
+  walletProvider: CdpEvmWalletProvider;
+}> {
+  const runtime = await getRuntimeContext();
+  if (!sellerAddress || runtime.identity.walletAddress.toLowerCase() === sellerAddress.toLowerCase()) {
+    return {
+      identity: runtime.identity,
+      walletProvider: runtime.walletProvider,
+    };
+  }
+
+  const config = getConfig();
+  const walletProvider = await CdpEvmWalletProvider.configureWithWallet({
+    apiKeyId: config.coinbaseApiKey,
+    apiKeySecret: config.coinbaseApiSecret,
+    walletSecret: config.coinbaseWalletSecret,
+    networkId: config.networkId,
+    rpcUrl: config.baseRpc,
+    address: sellerAddress,
+  });
+  const exportedWallet = await walletProvider.exportWallet();
+
+  return {
+    identity: {
+      agentId: exportedWallet.name || sellerAddress!,
+      walletAddress: exportedWallet.address,
+      network: walletProvider.getNetwork().networkId || config.networkId,
+    },
+    walletProvider,
+  };
 }
 
 const UUID_V4_REGEX =
@@ -700,6 +999,183 @@ export async function getAgentUSDCBalance(): Promise<{
     usdcContractAddress: config.usdcContractAddress,
     usdcBalance: formatUnits(balance, USDC_DECIMALS),
     usdcBalanceBaseUnits: balance.toString(),
+  };
+}
+
+export async function getAgentWalletSnapshot(): Promise<AgentWalletSnapshot> {
+  const runtime = await getRuntimeContext();
+  const config = getConfig();
+
+  emitExecutionLog({
+    phase: "WALLET",
+    action: "read_wallet_snapshot",
+    status: "started",
+    transactionHash: null,
+  });
+
+  const [nativeBalance, usdcBalance] = await Promise.all([
+    runtime.walletProvider.getBalance(),
+    runtime.walletProvider.readContract({
+      address: config.usdcContractAddress,
+      abi: ERC20_BALANCE_OF_ABI,
+      functionName: "balanceOf",
+      args: [runtime.identity.walletAddress],
+    }),
+  ]);
+
+  emitExecutionLog({
+    phase: "WALLET",
+    action: "read_wallet_snapshot",
+    status: "success",
+    transactionHash: null,
+  });
+
+  return {
+    agentId: runtime.identity.agentId,
+    walletAddress: runtime.identity.walletAddress,
+    network: runtime.identity.network,
+    usdcContractAddress: config.usdcContractAddress,
+    nativeBalance: formatUnits(nativeBalance, 18),
+    nativeBalanceBaseUnits: nativeBalance.toString(),
+    usdcBalance: formatUnits(usdcBalance, USDC_DECIMALS),
+    usdcBalanceBaseUnits: usdcBalance.toString(),
+  };
+}
+
+export async function listProjectSellerWalletSnapshots(): Promise<ProjectSellerWalletSnapshot[]> {
+  const config = getConfig();
+  const cdp = createConfiguredCdpClient(config);
+  const publicClient = createConfiguredPublicClient(config);
+  const activeIdentity = await getAgentAddress().catch(() => null);
+
+  const accounts: Array<{ name?: string; address: Address; policies?: string[] }> = [];
+  let nextPageToken: string | undefined;
+
+  do {
+    const page = await cdp.evm.listAccounts({
+      pageSize: 100,
+      ...(nextPageToken ? { pageToken: nextPageToken } : {}),
+    });
+    for (const account of page.accounts) {
+      accounts.push({
+        name: account.name,
+        address: account.address,
+        policies: Array.isArray(account.policies) ? account.policies : [],
+      });
+    }
+    nextPageToken = page.nextPageToken;
+  } while (nextPageToken);
+
+  const snapshots = await Promise.all(
+    accounts.map(async (account) => {
+      const [nativeBalance, usdcBalance] = await Promise.all([
+        publicClient.getBalance({ address: account.address }),
+        publicClient.readContract({
+          address: config.usdcContractAddress,
+          abi: ERC20_BALANCE_OF_ABI,
+          functionName: "balanceOf",
+          args: [account.address],
+        }),
+      ]);
+
+      return {
+        agentId: account.name || null,
+        walletAddress: account.address,
+        network: config.networkId,
+        usdcContractAddress: config.usdcContractAddress,
+        nativeBalance: formatUnits(nativeBalance, 18),
+        nativeBalanceBaseUnits: nativeBalance.toString(),
+        usdcBalance: formatUnits(usdcBalance, USDC_DECIMALS),
+        usdcBalanceBaseUnits: usdcBalance.toString(),
+        policies: account.policies ?? [],
+        active: activeIdentity?.walletAddress.toLowerCase() === account.address.toLowerCase(),
+      };
+    }),
+  );
+
+  return snapshots.sort((left, right) => {
+    if (left.active && !right.active) return -1;
+    if (!left.active && right.active) return 1;
+    const leftUsdc = Number(left.usdcBalance);
+    const rightUsdc = Number(right.usdcBalance);
+    if (Number.isFinite(leftUsdc) && Number.isFinite(rightUsdc) && rightUsdc !== leftUsdc) {
+      return rightUsdc - leftUsdc;
+    }
+    return left.walletAddress.localeCompare(right.walletAddress);
+  });
+}
+
+export async function getTreasuryWalletSetupSnapshot(): Promise<TreasuryWalletSetupSnapshot> {
+  const config = getConfig();
+  const ownerAccount = await findProjectServerAccountByName(config.treasuryOwnerName);
+  const cdp = createConfiguredCdpClient(config);
+  const smartAccountsPage = await cdp.evm.listSmartAccounts({
+    name: config.treasurySmartAccountName,
+    pageSize: 10,
+  });
+  const smartAccount = smartAccountsPage.accounts.find(
+    (account) => (account.name || config.treasurySmartAccountName) === config.treasurySmartAccountName,
+  ) ?? null;
+
+  return {
+    ownerName: config.treasuryOwnerName,
+    smartAccountName: config.treasurySmartAccountName,
+    paymasterUrl: config.treasuryPaymasterUrl,
+    owner: ownerAccount ? await buildTreasuryOwnerWalletSnapshot(ownerAccount) : null,
+    smartAccount: smartAccount
+      ? await buildTreasurySmartAccountSnapshot({
+        name: smartAccount.name,
+        address: smartAccount.address,
+        owners: smartAccount.owners,
+        policies: smartAccount.policies,
+      })
+      : null,
+  };
+}
+
+export async function ensureTreasurySmartAccount(): Promise<TreasuryWalletSetupSnapshot> {
+  const config = getConfig();
+  const cdp = createConfiguredCdpClient(config);
+  const ownerAccount = await cdp.evm.getOrCreateAccount({
+    name: config.treasuryOwnerName,
+  });
+  const smartAccount = await cdp.evm.getOrCreateSmartAccount({
+    name: config.treasurySmartAccountName,
+    owner: ownerAccount,
+  });
+
+  return {
+    ownerName: config.treasuryOwnerName,
+    smartAccountName: config.treasurySmartAccountName,
+    paymasterUrl: config.treasuryPaymasterUrl,
+    owner: await buildTreasuryOwnerWalletSnapshot({
+      name: ownerAccount.name,
+      address: ownerAccount.address,
+      policies: ownerAccount.policies,
+    }),
+    smartAccount: await buildTreasurySmartAccountSnapshot({
+      name: smartAccount.name,
+      address: smartAccount.address,
+      owners: smartAccount.owners.map((owner) => owner.address),
+      policies: smartAccount.policies,
+    }),
+  };
+}
+
+export async function getAdminFundingWalletSnapshot(): Promise<AdminNativeFundingWalletSnapshot | null> {
+  const privateKey = getAdminFundingPrivateKey();
+  if (!privateKey) return null;
+
+  const config = getConfig();
+  const publicClient = createConfiguredPublicClient(config);
+  const account = privateKeyToAccount(privateKey);
+  const nativeBalance = await publicClient.getBalance({ address: account.address });
+
+  return {
+    walletAddress: account.address,
+    network: config.networkId,
+    nativeBalance: formatUnits(nativeBalance, 18),
+    nativeBalanceBaseUnits: nativeBalance.toString(),
   };
 }
 
@@ -1137,5 +1613,288 @@ export async function storeDecisionHashOnChain(input: StoreDecisionHashInput): P
   return {
     hashStored: true,
     transactionHash: txHash,
+  };
+}
+
+export async function transferSellerUsdc(input: SellerUsdcTransferInput): Promise<SellerUsdcTransferResult> {
+  if (!isAddress(input.toAddress)) {
+    throw new Error("toAddress must be a valid EVM address.");
+  }
+
+  const sellerAddress =
+    typeof input.sellerAddress === "string" && isAddress(input.sellerAddress)
+      ? (input.sellerAddress as Address)
+      : undefined;
+  const runtime = await getSellerWalletContext(sellerAddress);
+  const config = getConfig();
+  const cdp = createConfiguredCdpClient(config);
+  const sellerAccount = await cdp.evm.getAccount({ address: runtime.identity.walletAddress });
+  const toAddress = input.toAddress as Address;
+  const amountBaseUnits = normalizeExpectedUsdc(input.amountUsdc);
+
+  emitExecutionLog({
+    phase: "WALLET",
+    action: "seller_usdc_transfer",
+    status: "started",
+    transactionHash: null,
+  });
+
+  const [nativeBalanceBefore, usdcBalanceBefore] = await Promise.all([
+    runtime.walletProvider.getBalance(),
+    runtime.walletProvider.readContract({
+      address: config.usdcContractAddress,
+      abi: ERC20_BALANCE_OF_ABI,
+      functionName: "balanceOf",
+      args: [runtime.identity.walletAddress],
+    }),
+  ]);
+
+  if (usdcBalanceBefore < amountBaseUnits) {
+    throw new Error(
+      `Seller wallet balance is too low. Balance: ${formatUnits(usdcBalanceBefore, USDC_DECIMALS)} USDC, requested transfer: ${formatUnits(amountBaseUnits, USDC_DECIMALS)} USDC.`,
+    );
+  }
+
+  const transferResult = await sellerAccount.transfer({
+    to: toAddress,
+    amount: amountBaseUnits,
+    token: "usdc",
+    network: getCdpTransferNetwork(config),
+  });
+  const txHash = transferResult.transactionHash;
+
+  await runtime.walletProvider.waitForTransactionReceipt(txHash);
+
+  const [nativeBalanceAfter, usdcBalanceAfter] = await Promise.all([
+    runtime.walletProvider.getBalance(),
+    runtime.walletProvider.readContract({
+      address: config.usdcContractAddress,
+      abi: ERC20_BALANCE_OF_ABI,
+      functionName: "balanceOf",
+      args: [runtime.identity.walletAddress],
+    }),
+  ]);
+
+  emitExecutionLog({
+    phase: "WALLET",
+    action: "seller_usdc_transfer",
+    status: "success",
+    transactionHash: txHash,
+  });
+
+  return {
+    sellerWalletAddress: runtime.identity.walletAddress,
+    network: runtime.identity.network,
+    usdcContractAddress: config.usdcContractAddress,
+    toAddress,
+    amountUsdc: formatUnits(amountBaseUnits, USDC_DECIMALS),
+    amountBaseUnits: amountBaseUnits.toString(),
+    ...(input.note?.trim() ? { note: input.note.trim() } : {}),
+    transactionHash: txHash,
+    nativeBalanceBefore: formatUnits(nativeBalanceBefore, 18),
+    nativeBalanceAfter: formatUnits(nativeBalanceAfter, 18),
+    usdcBalanceBefore: formatUnits(usdcBalanceBefore, USDC_DECIMALS),
+    usdcBalanceAfter: formatUnits(usdcBalanceAfter, USDC_DECIMALS),
+  };
+}
+
+export async function transferTreasuryUsdc(input: TreasuryUsdcTransferInput): Promise<TreasuryUsdcTransferResult> {
+  if (!isAddress(input.toAddress)) {
+    throw new Error("toAddress must be a valid EVM address.");
+  }
+
+  const config = getConfig();
+  const cdp = createConfiguredCdpClient(config);
+  const ownerAccount = await cdp.evm.getOrCreateAccount({
+    name: config.treasuryOwnerName,
+  });
+  const smartAccount = await cdp.evm.getOrCreateSmartAccount({
+    name: config.treasurySmartAccountName,
+    owner: ownerAccount,
+  });
+  const toAddress = input.toAddress as Address;
+  const amountBaseUnits = normalizeExpectedUsdc(input.amountUsdc);
+
+  emitExecutionLog({
+    phase: "WALLET",
+    action: "treasury_usdc_transfer",
+    status: "started",
+    transactionHash: null,
+  });
+
+  const balancesBefore = await readWalletBalances(smartAccount.address, config);
+  if (balancesBefore.usdcBalance < amountBaseUnits) {
+    throw new Error(
+      `Treasury smart account balance is too low. Balance: ${formatUnits(balancesBefore.usdcBalance, USDC_DECIMALS)} USDC, requested transfer: ${formatUnits(amountBaseUnits, USDC_DECIMALS)} USDC.`,
+    );
+  }
+
+  const scopedSmartAccount = await smartAccount.useNetwork(getCdpTransferNetwork(config));
+  const transferResult = await scopedSmartAccount.transfer({
+    to: toAddress,
+    amount: amountBaseUnits,
+    token: "usdc",
+    ...(config.treasuryPaymasterUrl ? { paymasterUrl: config.treasuryPaymasterUrl } : {}),
+  });
+  const completed = await scopedSmartAccount.waitForUserOperation({
+    userOpHash: transferResult.userOpHash,
+    waitOptions: {
+      timeoutSeconds: 90,
+    },
+  });
+
+  if (completed.status !== "complete") {
+    throw new Error(`Treasury transfer failed for user operation ${transferResult.userOpHash}.`);
+  }
+
+  const balancesAfter = await readWalletBalances(smartAccount.address, config);
+
+  emitExecutionLog({
+    phase: "WALLET",
+    action: "treasury_usdc_transfer",
+    status: "success",
+    transactionHash: completed.transactionHash as Hex,
+  });
+
+  return {
+    treasuryWalletAddress: smartAccount.address,
+    network: config.networkId,
+    usdcContractAddress: config.usdcContractAddress,
+    toAddress,
+    amountUsdc: formatUnits(amountBaseUnits, USDC_DECIMALS),
+    amountBaseUnits: amountBaseUnits.toString(),
+    ...(input.note?.trim() ? { note: input.note.trim() } : {}),
+    userOpHash: transferResult.userOpHash,
+    transactionHash: completed.transactionHash as Hex,
+    nativeBalanceBefore: formatUnits(balancesBefore.nativeBalance, 18),
+    nativeBalanceAfter: formatUnits(balancesAfter.nativeBalance, 18),
+    usdcBalanceBefore: formatUnits(balancesBefore.usdcBalance, USDC_DECIMALS),
+    usdcBalanceAfter: formatUnits(balancesAfter.usdcBalance, USDC_DECIMALS),
+  };
+}
+
+export async function transferSellerNative(input: SellerNativeTransferInput): Promise<SellerNativeTransferResult> {
+  if (!isAddress(input.toAddress)) {
+    throw new Error("toAddress must be a valid EVM address.");
+  }
+
+  const fromSellerAddress =
+    typeof input.fromSellerAddress === "string" && isAddress(input.fromSellerAddress)
+      ? (input.fromSellerAddress as Address)
+      : undefined;
+  const runtime = await getSellerWalletContext(fromSellerAddress);
+  const toAddress = input.toAddress as Address;
+  const amountBaseUnits = normalizeExpectedNativeAmount(input.amountEth);
+
+  emitExecutionLog({
+    phase: "WALLET",
+    action: "seller_native_transfer",
+    status: "started",
+    transactionHash: null,
+  });
+
+  const nativeBalanceBefore = await runtime.walletProvider.getBalance();
+  if (nativeBalanceBefore < amountBaseUnits) {
+    throw new Error(
+      `Seller wallet native balance is too low. Balance: ${formatUnits(nativeBalanceBefore, 18)} ETH, requested transfer: ${formatUnits(amountBaseUnits, 18)} ETH.`,
+    );
+  }
+
+  const txHash = await runtime.walletProvider.sendTransaction({
+    to: toAddress,
+    value: amountBaseUnits,
+  });
+
+  await runtime.walletProvider.waitForTransactionReceipt(txHash);
+
+  const nativeBalanceAfter = await runtime.walletProvider.getBalance();
+
+  emitExecutionLog({
+    phase: "WALLET",
+    action: "seller_native_transfer",
+    status: "success",
+    transactionHash: txHash,
+  });
+
+  return {
+    fromWalletAddress: runtime.identity.walletAddress,
+    network: runtime.identity.network,
+    toAddress,
+    amountEth: formatUnits(amountBaseUnits, 18),
+    amountBaseUnits: amountBaseUnits.toString(),
+    ...(input.note?.trim() ? { note: input.note.trim() } : {}),
+    transactionHash: txHash,
+    nativeBalanceBefore: formatUnits(nativeBalanceBefore, 18),
+    nativeBalanceAfter: formatUnits(nativeBalanceAfter, 18),
+  };
+}
+
+export async function transferNativeFromAdminWallet(input: Omit<SellerNativeTransferInput, "fromSellerAddress">): Promise<SellerNativeTransferResult> {
+  if (!isAddress(input.toAddress)) {
+    throw new Error("toAddress must be a valid EVM address.");
+  }
+
+  const privateKey = getAdminFundingPrivateKey();
+  if (!privateKey) {
+    throw new Error("SELUN_ADMIN_FUNDING_PRIVATE_KEY is not configured.");
+  }
+
+  const config = getConfig();
+  const chain = getConfiguredChain(config);
+  const account = privateKeyToAccount(privateKey);
+  const publicClient = createConfiguredPublicClient(config);
+  const walletClient = createWalletClient({
+    account,
+    chain,
+    transport: http(config.baseRpc, {
+      timeout: RPC_READ_TIMEOUT_MS,
+      retryCount: 1,
+    }),
+  });
+  const toAddress = input.toAddress as Address;
+  const amountBaseUnits = normalizeExpectedNativeAmount(input.amountEth);
+
+  emitExecutionLog({
+    phase: "WALLET",
+    action: "admin_native_transfer",
+    status: "started",
+    transactionHash: null,
+  });
+
+  const nativeBalanceBefore = await publicClient.getBalance({ address: account.address });
+  if (nativeBalanceBefore < amountBaseUnits) {
+    throw new Error(
+      `Admin funding wallet native balance is too low. Balance: ${formatUnits(nativeBalanceBefore, 18)} ETH, requested transfer: ${formatUnits(amountBaseUnits, 18)} ETH.`,
+    );
+  }
+
+  const txHash = await walletClient.sendTransaction({
+    account,
+    chain,
+    to: toAddress,
+    value: amountBaseUnits,
+  });
+
+  await publicClient.waitForTransactionReceipt({ hash: txHash });
+
+  const nativeBalanceAfter = await publicClient.getBalance({ address: account.address });
+
+  emitExecutionLog({
+    phase: "WALLET",
+    action: "admin_native_transfer",
+    status: "success",
+    transactionHash: txHash,
+  });
+
+  return {
+    fromWalletAddress: account.address,
+    network: config.networkId,
+    toAddress,
+    amountEth: formatUnits(amountBaseUnits, 18),
+    amountBaseUnits: amountBaseUnits.toString(),
+    ...(input.note?.trim() ? { note: input.note.trim() } : {}),
+    transactionHash: txHash,
+    nativeBalanceBefore: formatUnits(nativeBalanceBefore, 18),
+    nativeBalanceAfter: formatUnits(nativeBalanceAfter, 18),
   };
 }

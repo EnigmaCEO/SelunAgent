@@ -1,7 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { resolveBackendDataFilePath } from "../runtime-paths";
-import type { AllocateInputShape, X402AllocateRecord, X402ToolProductId, X402ToolRecord } from "./x402-state.types";
+import type {
+  AllocateInputShape,
+  X402AllocateRecord,
+  X402RefundRecord,
+  X402ToolProductId,
+  X402ToolRecord,
+} from "./x402-state.types";
 
 type PersistedX402State = {
   version: number;
@@ -76,6 +82,28 @@ function normalizeRecordPayload(value: unknown): Record<string, unknown> | null 
   );
 }
 
+function normalizeRefundRecord(value: unknown): X402RefundRecord | undefined {
+  if (!isObject(value)) return undefined;
+
+  const refundedAt = toIsoOrNow(value.refundedAt);
+  const transactionHash = typeof value.transactionHash === "string" ? value.transactionHash.trim() : "";
+  const toAddress = typeof value.toAddress === "string" ? value.toAddress.trim() : "";
+  const amountUsdc = typeof value.amountUsdc === "string" ? value.amountUsdc.trim() : "";
+  const note = typeof value.note === "string" && value.note.trim() ? value.note.trim() : undefined;
+
+  if (!transactionHash || !toAddress || !amountUsdc) {
+    return undefined;
+  }
+
+  return {
+    refundedAt,
+    transactionHash,
+    toAddress,
+    amountUsdc,
+    ...(note ? { note } : {}),
+  };
+}
+
 function normalizeAllocateRecord(decisionId: string, value: unknown): X402AllocateRecord | null {
   if (!isObject(value)) return null;
 
@@ -111,6 +139,8 @@ function normalizeAllocateRecord(decisionId: string, value: unknown): X402Alloca
     }
   }
 
+  const refund = normalizeRefundRecord(value.refund);
+
   return {
     decisionId: normalizedDecisionId,
     inputFingerprint,
@@ -123,6 +153,7 @@ function normalizeAllocateRecord(decisionId: string, value: unknown): X402Alloca
     updatedAt,
     ...(jobId ? { jobId } : {}),
     ...(payment ? { payment } : {}),
+    ...(refund ? { refund } : {}),
   };
 }
 
@@ -162,6 +193,8 @@ function normalizeToolRecord(key: string, value: unknown): X402ToolRecord | null
     }
   }
 
+  const refund = normalizeRefundRecord(value.refund);
+
   const expectedKey = `${productId}:${decisionId}`;
   if (key.trim() && key.trim() !== expectedKey) {
     return null;
@@ -180,6 +213,7 @@ function normalizeToolRecord(key: string, value: unknown): X402ToolRecord | null
     updatedAt,
     ...(responseData ? { responseData } : {}),
     ...(payment ? { payment } : {}),
+    ...(refund ? { refund } : {}),
   };
 }
 
@@ -220,6 +254,14 @@ export class X402StateStore {
     return this.toolByProductDecisionKey.get(`${productId}:${decisionId}`);
   }
 
+  listAllocateRecords(): X402AllocateRecord[] {
+    return Array.from(this.allocateByDecisionId.values());
+  }
+
+  listToolRecords(): X402ToolRecord[] {
+    return Array.from(this.toolByProductDecisionKey.values());
+  }
+
   setAllocateRecord(decisionId: string, record: X402AllocateRecord) {
     this.allocateByDecisionId.set(decisionId, record);
     if (record.jobId) {
@@ -236,6 +278,29 @@ export class X402StateStore {
     if (record.payment?.transactionHash) {
       this.consumedTransactionByHash.set(normalizeTransactionHash(record.payment.transactionHash), `${productId}:${decisionId}`);
     }
+    this.persist();
+  }
+
+  markAllocateRefund(decisionId: string, refund: X402RefundRecord) {
+    const record = this.allocateByDecisionId.get(decisionId);
+    if (!record) return;
+    this.allocateByDecisionId.set(decisionId, {
+      ...record,
+      updatedAt: refund.refundedAt,
+      refund,
+    });
+    this.persist();
+  }
+
+  markToolRefund(productId: X402ToolProductId, decisionId: string, refund: X402RefundRecord) {
+    const key = `${productId}:${decisionId}`;
+    const record = this.toolByProductDecisionKey.get(key);
+    if (!record) return;
+    this.toolByProductDecisionKey.set(key, {
+      ...record,
+      updatedAt: refund.refundedAt,
+      refund,
+    });
     this.persist();
   }
 

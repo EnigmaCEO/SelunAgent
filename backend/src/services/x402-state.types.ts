@@ -4,6 +4,14 @@ export type AllocateTimeframe = "<1_year" | "1-3_years" | "3+_years";
 
 export type X402ToolProductId = "market_regime" | "policy_envelope" | "asset_scorecard" | "rebalance";
 
+export type X402RefundRecord = {
+  refundedAt: string;
+  transactionHash: string;
+  toAddress: string;
+  amountUsdc: string;
+  note?: string;
+};
+
 export type AllocateInputShape = {
   riskTolerance: AllocateRiskTolerance;
   timeframe: AllocateTimeframe;
@@ -29,6 +37,7 @@ export type X402AllocateRecord = {
     network?: string;
     verifiedAt: string;
   };
+  refund?: X402RefundRecord;
 };
 
 export type X402ToolRecordState = "quoted" | "accepted";
@@ -51,4 +60,5 @@ export type X402ToolRecord = {
     network?: string;
     verifiedAt: string;
   };
+  refund?: X402RefundRecord;
 };

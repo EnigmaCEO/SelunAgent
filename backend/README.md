@@ -20,6 +20,9 @@ Frontend should only keep `SELUN_BACKEND_URL` plus UI-safe vars in `.env.local`.
 Optional:
 
 - `COINBASE_WALLET_SECRET` (falls back to `COINBASE_API_SECRET`)
+- `SELUN_TREASURY_OWNER_NAME` (optional stable CDP server-account name for the treasury owner; defaults to `selun-treasury-owner-<network>`)
+- `SELUN_TREASURY_SMART_ACCOUNT_NAME` (optional stable name for the treasury smart account; defaults to `selun-treasury-<network>`)
+- `SELUN_TREASURY_PAYMASTER_URL` (optional paymaster URL for future smart-account treasury operations)
 - `PAYMENT_CONFIRMATIONS` (default `2`, capped to `2`)
 - `PAYMENT_POLL_INTERVAL_MS` (default `4000`)
 - `PAYMENT_TIMEOUT_MS` (default `120000`)
@@ -46,6 +49,8 @@ Optional:
 - `SELUN_EMAIL_FROM` (sender email, e.g. `Selun <noreply@yourdomain.com>`)
 - `SELUN_ADMIN_USAGE_EMAILS_ENABLED` (default `0`)
 - `SELUN_ADMIN_USAGE_EMAILS` (CSV list of admin recipients)
+- `SELUN_ADMIN_API_TOKEN` (required for `/agent/admin/*` routes)
+- `SELUN_ADMIN_REFUND_ADDRESS` (required for admin sweeps; refunds only go to this address)
 - `SELUN_RESULT_EMAILS_ENABLED` (default `0`; enables user allocation summary emails after generation and report emails from the backend)
 - `PORT` (default `8787`)
 - `SELUN_FREE_CODES_JSON` (JSON array of promo code rules; supports `discountPercent` from `0 < x <= 100`)
@@ -91,8 +96,55 @@ fly scale count 1 --app selunagent
 - `POST /agent/pay`
 - `POST /agent/verify-payment`
 - `POST /agent/store-hash`
+- `GET /agent/admin/overview`
+- `POST /agent/admin/rollup-usdc`
+- `POST /agent/admin/rollup-usdc-to-treasury`
+- `POST /agent/admin/treasury-smart-account`
+- `POST /agent/admin/withdraw`
+- `POST /agent/admin/withdraw-treasury`
+- `POST /agent/admin/refund`
 
 Wizard UI can continue using `/agent/pay`, `/agent/verify-payment`, and `/agent/phase1..6` routes.
+
+## Admin Refunds
+
+Selun now exposes authenticated admin routes for treasury inspection and refund sweeps:
+
+- `GET /agent/admin/overview`
+- `POST /agent/admin/rollup-usdc`
+- `POST /agent/admin/rollup-usdc-to-treasury`
+- `POST /agent/admin/treasury-smart-account`
+- `POST /agent/admin/withdraw`
+- `POST /agent/admin/withdraw-treasury`
+- `POST /agent/admin/refund`
+
+Both require either:
+
+- `X-Selun-Admin-Token: <SELUN_ADMIN_API_TOKEN>`
+- or `Authorization: Bearer <SELUN_ADMIN_API_TOKEN>`
+
+`POST /agent/admin/withdraw` sweeps USDC from a selected seller wallet to `SELUN_ADMIN_WITHDRAW_ADDRESS` (or `SELUN_ADMIN_REFUND_ADDRESS` as a fallback).
+`POST /agent/admin/withdraw-treasury` sweeps USDC from Selun's treasury smart account to `SELUN_ADMIN_WITHDRAW_ADDRESS`.
+`POST /agent/admin/rollup-usdc` sweeps USDC from an older seller wallet into Selun's active wallet.
+`POST /agent/admin/rollup-usdc-to-treasury` sweeps USDC from a selected seller wallet into Selun's treasury smart account.
+`POST /agent/admin/treasury-smart-account` creates or reuses a named CDP treasury owner account and a named CDP smart account so Selun has a stable treasury identity for future paymaster-backed operations.
+`POST /agent/admin/refund` remains available for purchase-linked refund bookkeeping, but wallet operations should use treasury rollup plus `POST /agent/admin/withdraw-treasury`.
+`GET /agent/admin/overview` includes all CDP EVM server wallets visible to the configured project, the currently active wallet Selun is using for commerce, and the configured treasury smart-account status.
+If `SELUN_ADMIN_FUNDING_PRIVATE_KEY` is configured, seller-wallet rollups can use the admin wallet as the ETH top-up source when the selected seller wallet has no native balance. Otherwise Selun can optionally top up from another project wallet. The default top-up amount is controlled by `SELUN_ADMIN_GAS_TOP_UP_ETH`.
+Treasury smart-account creation does not make existing seller-wallet transfers gasless. It creates the dedicated smart-account primitive Selun can use for later treasury operations.
+
+Example payload:
+
+```json
+{
+  "sellerAddress": "0xac6aA71c4b48b75d2dFF70a4Bc7a0F5D547c302f",
+  "withdrawAll": true,
+  "ensureNativeTopUp": true,
+  "nativeTopUpFromSellerAddress": "0x123400000000000000000000000000000000abcd",
+  "nativeTopUpAmountEth": "0.00005",
+  "note": "mainnet treasury sweep"
+}
+```
 
 ## x402 Resource Catalog
 
@@ -244,6 +296,17 @@ Use the root script to trigger a real x402 payment flow that can seed facilitato
 npm run x402:bazaar:smoke
 ```
 
+Named smoke commands are available for each public endpoint:
+
+```bash
+npm run x402:smoke:allocate
+npm run x402:smoke:allocate-with-report
+npm run x402:smoke:market-regime
+npm run x402:smoke:policy-envelope
+npm run x402:smoke:asset-scorecard
+npm run x402:smoke:rebalance
+```
+
 Generate a throwaway buyer wallet first if needed:
 
 ```bash
@@ -256,6 +319,27 @@ Or generate one from a fresh mnemonic:
 npm run wallet:generate -- --mnemonic
 ```
 
+Recover an EVM private key from an existing mnemonic locally:
+
+```bash
+$env:MNEMONIC="word1 word2 ..."
+npm run wallet:derive -- --match=0xYourAddress --count=10
+```
+
+The derive script scans the standard EVM path template `m/44'/60'/0'/0/{index}` unless you provide an exact `--path`.
+
+Refund USDC from Selun's seller wallet after a paid smoke test:
+
+```bash
+node scripts/refund-usdc.mjs --to 0xBuyerAddress --amount 1 --network base-mainnet --seller 0xSellerAddress
+```
+
+Or via package script:
+
+```bash
+npm run wallet:refund-usdc -- --to=0xBuyerAddress --amount=1 --network=base-mainnet --seller=0xSellerAddress
+```
+
 Required environment:
 
 - `SELUN_X402_SMOKE_URL` or `SELUN_BACKEND_URL`
@@ -263,10 +347,13 @@ Required environment:
 
 Optional environment:
 
+- `SELUN_X402_SMOKE_ENDPOINT` (auto-set by the named smoke scripts; optional when using the generic runner)
 - `SELUN_X402_SMOKE_DECISION_ID`
 - `SELUN_X402_SMOKE_RISK_TOLERANCE` (default `Balanced`)
 - `SELUN_X402_SMOKE_TIMEFRAME` (default `1-3_years`)
 - `SELUN_X402_SMOKE_WITH_REPORT` (default `false`)
+- `SELUN_X402_SMOKE_ASSETS_JSON` (JSON array for `/agent/x402/asset-scorecard`)
+- `SELUN_X402_SMOKE_HOLDINGS_JSON` (JSON array for `/agent/x402/rebalance`)
 - `SELUN_X402_SMOKE_RESULT_EMAIL`
 - `SELUN_X402_SMOKE_PROMO_CODE`
 - `SELUN_X402_SMOKE_NETWORK` (default `eip155:*`)
@@ -282,3 +369,5 @@ The script:
 - optionally polls `statusPath` until Phase 6 completes
 
 When `SELUN_X402_SMOKE_WITH_REPORT=true`, the smoke script automatically targets `/agent/x402/allocate-with-report`.
+When `SELUN_X402_SMOKE_URL` targets `/agent/x402/rebalance`, the script sends a default holdings set unless `SELUN_X402_SMOKE_HOLDINGS_JSON` is provided.
+When `SELUN_X402_SMOKE_URL` targets `/agent/x402/asset-scorecard`, the script sends `["BTC","ETH","SOL"]` unless `SELUN_X402_SMOKE_ASSETS_JSON` is provided.

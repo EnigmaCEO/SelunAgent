@@ -154,3 +154,26 @@ test("tool records persist and survive restart", () => {
     assert.equal(restarted.getTransactionOwner(txHash), "rebalance:decision-tool-7");
   });
 });
+
+test("refund metadata persists for accepted tool records", () => {
+  withTempStateFile((stateFilePath) => {
+    const txHash = "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+    const record = buildToolRecord("decision-tool-refund", txHash);
+
+    const store = new X402StateStore(stateFilePath, 3);
+    store.setToolRecord(record.productId, record.decisionId, record);
+    store.markToolRefund(record.productId, record.decisionId, {
+      refundedAt: "2026-02-27T00:00:00.000Z",
+      transactionHash: "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      toAddress: "0xa8Aa37CC97B195B04dfcC0Ae13095608Db9674Eb",
+      amountUsdc: "1",
+      note: "admin sweep",
+    });
+
+    const restarted = new X402StateStore(stateFilePath, 3);
+    const restored = restarted.getToolRecord("rebalance", "decision-tool-refund");
+    assert.equal(restored?.refund?.transactionHash, "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
+    assert.equal(restored?.refund?.toAddress, "0xa8Aa37CC97B195B04dfcC0Ae13095608Db9674Eb");
+    assert.equal(restored?.refund?.amountUsdc, "1");
+  });
+});

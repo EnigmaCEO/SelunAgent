@@ -9,6 +9,9 @@ export type SelunBackendConfig = {
   coinbaseApiSecret: string;
   coinbaseWalletSecret: string;
   agentWalletId: string;
+  treasuryOwnerName: string;
+  treasurySmartAccountName: string;
+  treasuryPaymasterUrl: string | null;
   baseRpc: string;
   usdcContractAddress: Address;
   networkId: SupportedBaseNetwork;
@@ -52,6 +55,11 @@ const parseNonNegativeFloat = (value: string | undefined, fallback: number): num
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 };
 
+const parseOptionalText = (value: string | undefined): string | null => {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+};
+
 const parseNetwork = (value: string | undefined): SupportedBaseNetwork => {
   const candidate = value?.trim() as SupportedBaseNetwork | undefined;
   return candidate && SUPPORTED_BASE_NETWORKS.includes(candidate) ? candidate : "base-mainnet";
@@ -69,6 +77,9 @@ export function getConfig(): SelunBackendConfig {
       : requireEnv("BASE_SEPOLIA_RPC");
   const usdcContractRaw = requireEnv("USDC_CONTRACT_ADDRESS");
   const agentWalletId = process.env.AGENT_WALLET_ID?.trim() || `selun-agent-${networkId}`;
+  const treasuryOwnerName = process.env.SELUN_TREASURY_OWNER_NAME?.trim() || `selun-treasury-owner-${networkId}`;
+  const treasurySmartAccountName =
+    process.env.SELUN_TREASURY_SMART_ACCOUNT_NAME?.trim() || `selun-treasury-${networkId}`;
   const coinbaseWalletSecretRaw = process.env.COINBASE_WALLET_SECRET?.trim();
   const coinbaseWalletSecret = coinbaseWalletSecretRaw
     ? normalizeSecret(coinbaseWalletSecretRaw)
@@ -83,6 +94,9 @@ export function getConfig(): SelunBackendConfig {
     coinbaseApiSecret,
     coinbaseWalletSecret,
     agentWalletId,
+    treasuryOwnerName,
+    treasurySmartAccountName,
+    treasuryPaymasterUrl: parseOptionalText(process.env.SELUN_TREASURY_PAYMASTER_URL),
     baseRpc,
     usdcContractAddress: usdcContractRaw,
     networkId,

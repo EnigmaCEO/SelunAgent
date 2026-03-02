@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from "express";
-import { createHash } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { createFacilitatorConfig } from "@coinbase/x402";
 import { encodePaymentResponseHeader } from "@x402/core/http";
 import { HTTPFacilitatorClient, type HTTPRequestContext, type ProcessSettleSuccessResponse, type RouteConfig, x402ResourceServer } from "@x402/core/server";
@@ -7,7 +7,7 @@ import type { Network, PaymentRequirements } from "@x402/core/types";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { ExpressAdapter, x402HTTPResourceServer } from "@x402/express";
 import { bazaarResourceServerExtension, declareDiscoveryExtension } from "@x402/extensions/bazaar";
-import { isAddress, parseUnits } from "viem";
+import { formatUnits, isAddress, parseUnits } from "viem";
 import { EXECUTION_MODEL_VERSION, getConfig } from "../config";
 import { getExecutionLogs } from "../logging/execution-logs";
 import { getX402StateStore } from "../services/x402-state.service";
@@ -16,11 +16,20 @@ import { isValidEmail, sendAdminUsageEmail, sendUserReportEmail, sendUserSummary
 import {
   authorizeWizardPayment,
   getAgentAddress,
+  getAdminFundingWalletSnapshot,
+  getAgentWalletSnapshot,
+  getTreasuryWalletSetupSnapshot,
   getUSDCBalanceForAddress,
   getWizardPricing,
   initializeAgent,
+  listProjectSellerWalletSnapshots,
+  ensureTreasurySmartAccount,
   quoteWizardPayment,
   storeDecisionHashOnChain,
+  transferNativeFromAdminWallet,
+  transferSellerNative,
+  transferSellerUsdc,
+  transferTreasuryUsdc,
   verifyIncomingPayment,
 } from "../services/selun-agent.service";
 import {
@@ -41,6 +50,7 @@ import type {
   AllocateRiskTolerance,
   AllocateTimeframe,
   X402AllocateRecord,
+  X402ToolRecord,
   X402ToolProductId,
 } from "../services/x402-state.types";
 
@@ -141,6 +151,43 @@ type StoredToolResponseData = {
   result: Record<string, unknown>;
 };
 
+type AdminPurchaseRow = {
+  purchaseKey: string;
+  kind: "allocate" | "tool";
+  endpoint: string;
+  title: string;
+  decisionId: string;
+  productId: string;
+  chargedAmountUsdc: string;
+  fromAddress: string;
+  paymentTransactionHash: string;
+  paymentNetwork: string | null;
+  purchasedAt: string;
+  refunded: boolean;
+  refund: {
+    refundedAt: string;
+    transactionHash: string;
+    toAddress: string;
+    amountUsdc: string;
+    note: string | null;
+  } | null;
+};
+
+type AdminNativeTopUpSummary = {
+  transactionHash: string;
+  amountEth: string;
+  toAddress: string;
+  fromWalletAddress: string;
+  nativeBalanceBefore: string;
+  nativeBalanceAfter: string;
+};
+
+type AdminRefundReference = {
+  kind: "allocate" | "tool";
+  decisionId: string;
+  productId?: X402ToolProductId;
+};
+
 const ALLOCATE_PHASE_POLL_INTERVAL_MS = 2_000;
 const ALLOCATE_PHASE_TIMEOUT_MS = 20 * 60 * 1_000;
 const runningAllocateOrchestration = new Set<string>();
@@ -208,6 +255,69 @@ function toFiniteNumber(value: unknown): number | null {
     if (Number.isFinite(parsed)) return parsed;
   }
   return null;
+}
+
+function getAdminApiToken(): string | null {
+  const token = process.env.SELUN_ADMIN_API_TOKEN?.trim() || process.env.SELUN_ADMIN_TOKEN?.trim();
+  return token || null;
+}
+
+function getAdminWithdrawAddress(): string {
+  const candidate =
+    process.env.SELUN_ADMIN_WITHDRAW_ADDRESS?.trim() ||
+    process.env.SELUN_ADMIN_REFUND_ADDRESS?.trim() ||
+    process.env.SELUN_ADMIN_WALLET_ADDRESS?.trim();
+  if (!candidate || !isAddress(candidate)) {
+    throw new Error("SELUN_ADMIN_WITHDRAW_ADDRESS must be a valid EVM address.");
+  }
+  return candidate;
+}
+
+function getAdminGasTopUpAmountEth(): string {
+  const candidate = process.env.SELUN_ADMIN_GAS_TOP_UP_ETH?.trim();
+  if (!candidate) return "0.00005";
+  const parsed = Number.parseFloat(candidate);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error("SELUN_ADMIN_GAS_TOP_UP_ETH must be greater than zero.");
+  }
+  return candidate;
+}
+
+function extractAdminToken(req: Request): string {
+  const headerToken =
+    req.header("x-selun-admin-token")?.trim() ||
+    req.header("X-Selun-Admin-Token")?.trim();
+  if (headerToken) return headerToken;
+
+  const authorization = req.header("authorization")?.trim() || req.header("Authorization")?.trim();
+  if (!authorization) return "";
+  const match = authorization.match(/^Bearer\s+(.+)$/i);
+  return match?.[1]?.trim() || "";
+}
+
+function isAuthorizedAdminRequest(req: Request): boolean {
+  const expected = getAdminApiToken();
+  if (!expected) return false;
+  const provided = extractAdminToken(req);
+  if (!provided) return false;
+
+  const expectedBuffer = Buffer.from(expected);
+  const providedBuffer = Buffer.from(provided);
+  if (expectedBuffer.length !== providedBuffer.length) return false;
+  return timingSafeEqual(expectedBuffer, providedBuffer);
+}
+
+function requireAdminRequest(req: Request, res: Response): boolean {
+  const expected = getAdminApiToken();
+  if (!expected) {
+    failure(res, new Error("SELUN_ADMIN_API_TOKEN is not configured."), 503);
+    return false;
+  }
+  if (!isAuthorizedAdminRequest(req)) {
+    failure(res, new Error("Unauthorized admin request."), 401);
+    return false;
+  }
+  return true;
 }
 
 function toTitleCase(value: string): string {
@@ -1705,6 +1815,125 @@ export async function getX402CapabilitiesData() {
   return buildX402CapabilitiesData();
 }
 
+function getToolTitle(productId: X402ToolProductId): string {
+  return getX402ToolDefinitions().find((definition) => definition.productId === productId)?.title ?? toTitleCase(productId);
+}
+
+function getToolRoutePath(productId: X402ToolProductId): string {
+  return getX402ToolDefinitions().find((definition) => definition.productId === productId)?.routePath ?? `/agent/x402/${productId.replaceAll("_", "-")}`;
+}
+
+function buildAllocatePurchaseRow(record: X402AllocateRecord): AdminPurchaseRow | null {
+  if (record.state !== "accepted" || !record.payment?.transactionHash || !record.payment.fromAddress) {
+    return null;
+  }
+
+  const endpoint = record.inputs.withReport ? "/agent/x402/allocate-with-report" : "/agent/x402/allocate";
+  return {
+    purchaseKey: `allocate:${record.decisionId}`,
+    kind: "allocate",
+    endpoint,
+    title: record.inputs.withReport ? "Selun Allocation With Report" : "Selun Allocation",
+    decisionId: record.decisionId,
+    productId: record.inputs.withReport ? "allocate_with_report" : "allocate",
+    chargedAmountUsdc: record.chargedAmountUsdc,
+    fromAddress: record.payment.fromAddress,
+    paymentTransactionHash: record.payment.transactionHash,
+    paymentNetwork: record.payment.network ?? null,
+    purchasedAt: record.payment.verifiedAt,
+    refunded: Boolean(record.refund),
+    refund: record.refund
+      ? {
+        refundedAt: record.refund.refundedAt,
+        transactionHash: record.refund.transactionHash,
+        toAddress: record.refund.toAddress,
+        amountUsdc: record.refund.amountUsdc,
+        note: record.refund.note ?? null,
+      }
+      : null,
+  };
+}
+
+function buildToolPurchaseRow(record: X402ToolRecord): AdminPurchaseRow | null {
+  if (record.state !== "accepted" || !record.payment?.transactionHash || !record.payment.fromAddress) {
+    return null;
+  }
+
+  return {
+    purchaseKey: `tool:${record.productId}:${record.decisionId}`,
+    kind: "tool",
+    endpoint: getToolRoutePath(record.productId),
+    title: getToolTitle(record.productId),
+    decisionId: record.decisionId,
+    productId: record.productId,
+    chargedAmountUsdc: record.chargedAmountUsdc,
+    fromAddress: record.payment.fromAddress,
+    paymentTransactionHash: record.payment.transactionHash,
+    paymentNetwork: record.payment.network ?? null,
+    purchasedAt: record.payment.verifiedAt,
+    refunded: Boolean(record.refund),
+    refund: record.refund
+      ? {
+        refundedAt: record.refund.refundedAt,
+        transactionHash: record.refund.transactionHash,
+        toAddress: record.refund.toAddress,
+        amountUsdc: record.refund.amountUsdc,
+        note: record.refund.note ?? null,
+      }
+      : null,
+  };
+}
+
+function listAdminPurchases(): AdminPurchaseRow[] {
+  const stateStore = getX402StateStore();
+  const purchases = [
+    ...stateStore.listAllocateRecords().map(buildAllocatePurchaseRow),
+    ...stateStore.listToolRecords().map(buildToolPurchaseRow),
+  ].filter((row): row is AdminPurchaseRow => Boolean(row));
+
+  return purchases.sort((left, right) => right.purchasedAt.localeCompare(left.purchasedAt));
+}
+
+function normalizeRefundReferences(value: unknown): AdminRefundReference[] {
+  if (!Array.isArray(value)) return [];
+  const refs: AdminRefundReference[] = [];
+
+  for (const entry of value) {
+    if (!isRecord(entry)) continue;
+    const kind = entry.kind === "allocate" || entry.kind === "tool" ? entry.kind : null;
+    const decisionId = normalizeDecisionId(typeof entry.decisionId === "string" ? entry.decisionId : undefined);
+    const productId =
+      entry.productId === "market_regime" ||
+      entry.productId === "policy_envelope" ||
+      entry.productId === "asset_scorecard" ||
+      entry.productId === "rebalance"
+        ? entry.productId
+        : undefined;
+
+    if (!kind || !decisionId) continue;
+    if (kind === "tool" && !productId) continue;
+
+    const duplicate = refs.some((ref) =>
+      ref.kind === kind &&
+      ref.decisionId === decisionId &&
+      (kind === "allocate" || ref.productId === productId)
+    );
+    if (duplicate) continue;
+
+    refs.push({
+      kind,
+      decisionId,
+      ...(productId ? { productId } : {}),
+    });
+  }
+
+  return refs;
+}
+
+function sumPurchaseAmountBaseUnits(purchases: AdminPurchaseRow[]): bigint {
+  return purchases.reduce((sum, purchase) => sum + parseUnits(purchase.chargedAmountUsdc, 6), 0n);
+}
+
 async function verifyResultEmailPayment(params: {
   fromAddress: string;
   expectedAmountUSDC: number;
@@ -1998,6 +2227,664 @@ async function handleX402ToolRequest(
     runningAllocateOrchestration.delete(orchestrationKey);
   }
 }
+
+router.get("/admin/overview", async (req: Request, res: Response) => {
+  if (!requireAdminRequest(req, res)) return;
+
+  try {
+    const [wallet, wallets, purchases, adminFundingWallet, treasury] = await Promise.all([
+      getAgentWalletSnapshot(),
+      listProjectSellerWalletSnapshots(),
+      Promise.resolve(listAdminPurchases()),
+      getAdminFundingWalletSnapshot(),
+      getTreasuryWalletSetupSnapshot(),
+    ]);
+
+    return success(res, {
+      wallet,
+      wallets,
+      adminRefundAddress: getAdminWithdrawAddress(),
+      defaultGasTopUpAmountEth: getAdminGasTopUpAmountEth(),
+      transferMode: {
+        kind: "cdp_server_account_v2",
+        gaslessUsdc: false,
+        note: "CDP v2 server-account transfers currently execute as standard EVM sends in Selun. Gas is auto-funded when needed.",
+      },
+      treasury,
+      adminFundingWallet,
+      purchases,
+    });
+  } catch (error) {
+    return failure(res, error, 500);
+  }
+});
+
+router.post("/admin/treasury-smart-account", async (req: Request, res: Response) => {
+  if (!requireAdminRequest(req, res)) return;
+
+  try {
+    const treasury = await ensureTreasurySmartAccount();
+    return success(res, {
+      treasury,
+      message: "Treasury smart account is ready.",
+    });
+  } catch (error) {
+    return failure(res, error, 400);
+  }
+});
+
+router.post("/admin/rollup-usdc", async (req: Request, res: Response) => {
+  if (!requireAdminRequest(req, res)) return;
+
+  try {
+    const sellerAddress =
+      typeof req.body?.sellerAddress === "string" && isAddress(req.body.sellerAddress)
+        ? req.body.sellerAddress
+        : undefined;
+    if (!sellerAddress) {
+      return failure(res, new Error("sellerAddress is required and must be a valid EVM address."), 400);
+    }
+
+    const rollupAllNormalized = normalizeOptionalBoolean(req.body?.rollupAll);
+    if (!rollupAllNormalized.valid) {
+      return failure(res, new Error("rollupAll must be a boolean when provided."), 400);
+    }
+    const rollupAll = req.body?.rollupAll === undefined ? true : rollupAllNormalized.value;
+    const ensureNativeTopUpNormalized = normalizeOptionalBoolean(req.body?.ensureNativeTopUp);
+    if (!ensureNativeTopUpNormalized.valid) {
+      return failure(res, new Error("ensureNativeTopUp must be a boolean when provided."), 400);
+    }
+    const ensureNativeTopUp = req.body?.ensureNativeTopUp === undefined ? true : ensureNativeTopUpNormalized.value;
+    const requestedAmount = req.body?.amountUsdc;
+    const topUpFromSellerAddress =
+      typeof req.body?.nativeTopUpFromSellerAddress === "string" && isAddress(req.body.nativeTopUpFromSellerAddress)
+        ? req.body.nativeTopUpFromSellerAddress
+        : undefined;
+    const topUpAmountEth =
+      typeof req.body?.nativeTopUpAmountEth === "string" || typeof req.body?.nativeTopUpAmountEth === "number"
+        ? String(req.body.nativeTopUpAmountEth)
+        : getAdminGasTopUpAmountEth();
+    const note = toText(req.body?.note, "");
+
+    const [activeWallet, wallets] = await Promise.all([
+      getAgentWalletSnapshot(),
+      listProjectSellerWalletSnapshots(),
+    ]);
+
+    if (sellerAddress.toLowerCase() === activeWallet.walletAddress.toLowerCase()) {
+      return failure(res, new Error("Selected seller wallet is already the active wallet."), 400);
+    }
+
+    const sourceWallet = wallets.find(
+      (wallet) => wallet.walletAddress.toLowerCase() === sellerAddress.toLowerCase(),
+    );
+    if (!sourceWallet) {
+      return failure(res, new Error("Selected seller wallet was not found in the configured CDP project."), 404);
+    }
+
+    const availableUsdcBaseUnits = BigInt(sourceWallet.usdcBalanceBaseUnits);
+    if (availableUsdcBaseUnits <= 0n) {
+      return failure(res, new Error("Selected seller wallet has no USDC balance available to roll up."), 400);
+    }
+
+    let amountUsdc: string;
+    if (typeof requestedAmount === "string" || typeof requestedAmount === "number") {
+      amountUsdc = formatUsdcAmount(Number(formatUnits(parseUnits(String(requestedAmount), 6), 6)));
+    } else if (rollupAll) {
+      amountUsdc = formatUnits(availableUsdcBaseUnits, 6);
+    } else {
+      return failure(res, new Error("Provide amountUsdc or set rollupAll=true."), 400);
+    }
+
+    let nativeTopUp: AdminNativeTopUpSummary | null = null;
+    if (ensureNativeTopUp && BigInt(sourceWallet.nativeBalanceBaseUnits) === 0n) {
+      const adminFundingWallet = await getAdminFundingWalletSnapshot();
+      const topUpTransfer =
+        adminFundingWallet && BigInt(adminFundingWallet.nativeBalanceBaseUnits) > 0n
+          ? await transferNativeFromAdminWallet({
+            toAddress: sellerAddress,
+            amountEth: topUpAmountEth,
+            note: note ? `${note} | native top-up for rollup` : "admin native top-up for rollup",
+          })
+          : await (async () => {
+            const fundingWallet =
+              wallets.find((wallet) =>
+                wallet.walletAddress.toLowerCase() === (topUpFromSellerAddress ?? "").toLowerCase(),
+              ) ??
+              wallets.find((wallet) =>
+                wallet.walletAddress.toLowerCase() !== sellerAddress.toLowerCase() &&
+                BigInt(wallet.nativeBalanceBaseUnits) > 0n,
+              );
+
+            if (!fundingWallet) {
+              throw new Error("No admin funding wallet or project seller wallet with native balance is available to top up the selected rollup wallet.");
+            }
+
+            if (fundingWallet.walletAddress.toLowerCase() === sellerAddress.toLowerCase()) {
+              throw new Error("nativeTopUpFromSellerAddress must differ from the rollup source wallet.");
+            }
+
+            return transferSellerNative({
+              fromSellerAddress: fundingWallet.walletAddress,
+              toAddress: sellerAddress,
+              amountEth: topUpAmountEth,
+              note: note ? `${note} | native top-up for rollup` : "admin native top-up for rollup",
+            });
+          })();
+
+      nativeTopUp = {
+        transactionHash: topUpTransfer.transactionHash,
+        amountEth: topUpTransfer.amountEth,
+        toAddress: topUpTransfer.toAddress,
+        fromWalletAddress: topUpTransfer.fromWalletAddress,
+        nativeBalanceBefore: topUpTransfer.nativeBalanceBefore,
+        nativeBalanceAfter: topUpTransfer.nativeBalanceAfter,
+      };
+    }
+
+    const transfer = await transferSellerUsdc({
+      sellerAddress,
+      toAddress: activeWallet.walletAddress,
+      amountUsdc,
+      note: note || undefined,
+    });
+
+    return success(res, {
+      ...(nativeTopUp ? { nativeTopUp } : {}),
+      sourceWallet: {
+        walletAddress: sourceWallet.walletAddress,
+        usdcBalanceBefore: sourceWallet.usdcBalance,
+        nativeBalanceBefore: sourceWallet.nativeBalance,
+      },
+      destinationWallet: {
+        walletAddress: activeWallet.walletAddress,
+        usdcBalanceBefore: activeWallet.usdcBalance,
+        nativeBalanceBefore: activeWallet.nativeBalance,
+      },
+      transfer,
+    });
+  } catch (error) {
+    return failure(res, error, 400);
+  }
+});
+
+router.post("/admin/rollup-usdc-to-treasury", async (req: Request, res: Response) => {
+  if (!requireAdminRequest(req, res)) return;
+
+  try {
+    const sellerAddress =
+      typeof req.body?.sellerAddress === "string" && isAddress(req.body.sellerAddress)
+        ? req.body.sellerAddress
+        : undefined;
+    if (!sellerAddress) {
+      return failure(res, new Error("sellerAddress is required and must be a valid EVM address."), 400);
+    }
+
+    const rollupAllNormalized = normalizeOptionalBoolean(req.body?.rollupAll);
+    if (!rollupAllNormalized.valid) {
+      return failure(res, new Error("rollupAll must be a boolean when provided."), 400);
+    }
+    const rollupAll = req.body?.rollupAll === undefined ? true : rollupAllNormalized.value;
+    const ensureNativeTopUpNormalized = normalizeOptionalBoolean(req.body?.ensureNativeTopUp);
+    if (!ensureNativeTopUpNormalized.valid) {
+      return failure(res, new Error("ensureNativeTopUp must be a boolean when provided."), 400);
+    }
+    const ensureNativeTopUp = req.body?.ensureNativeTopUp === undefined ? true : ensureNativeTopUpNormalized.value;
+    const requestedAmount = req.body?.amountUsdc;
+    const topUpFromSellerAddress =
+      typeof req.body?.nativeTopUpFromSellerAddress === "string" && isAddress(req.body.nativeTopUpFromSellerAddress)
+        ? req.body.nativeTopUpFromSellerAddress
+        : undefined;
+    const topUpAmountEth =
+      typeof req.body?.nativeTopUpAmountEth === "string" || typeof req.body?.nativeTopUpAmountEth === "number"
+        ? String(req.body.nativeTopUpAmountEth)
+        : getAdminGasTopUpAmountEth();
+    const note = toText(req.body?.note, "");
+
+    const [treasury, wallets] = await Promise.all([
+      ensureTreasurySmartAccount(),
+      listProjectSellerWalletSnapshots(),
+    ]);
+
+    if (!treasury.smartAccount) {
+      return failure(res, new Error("Treasury smart account is not available."), 400);
+    }
+
+    if (sellerAddress.toLowerCase() === treasury.smartAccount.walletAddress.toLowerCase()) {
+      return failure(res, new Error("Selected wallet is already the treasury smart account."), 400);
+    }
+
+    const sourceWallet = wallets.find(
+      (wallet) => wallet.walletAddress.toLowerCase() === sellerAddress.toLowerCase(),
+    );
+    if (!sourceWallet) {
+      return failure(res, new Error("Selected seller wallet was not found in the configured CDP project."), 404);
+    }
+
+    const availableUsdcBaseUnits = BigInt(sourceWallet.usdcBalanceBaseUnits);
+    if (availableUsdcBaseUnits <= 0n) {
+      return failure(res, new Error("Selected seller wallet has no USDC balance available to roll up."), 400);
+    }
+
+    let amountUsdc: string;
+    if (typeof requestedAmount === "string" || typeof requestedAmount === "number") {
+      amountUsdc = formatUsdcAmount(Number(formatUnits(parseUnits(String(requestedAmount), 6), 6)));
+    } else if (rollupAll) {
+      amountUsdc = formatUnits(availableUsdcBaseUnits, 6);
+    } else {
+      return failure(res, new Error("Provide amountUsdc or set rollupAll=true."), 400);
+    }
+
+    let nativeTopUp: AdminNativeTopUpSummary | null = null;
+    if (ensureNativeTopUp && BigInt(sourceWallet.nativeBalanceBaseUnits) === 0n) {
+      const adminFundingWallet = await getAdminFundingWalletSnapshot();
+      const topUpTransfer =
+        adminFundingWallet && BigInt(adminFundingWallet.nativeBalanceBaseUnits) > 0n
+          ? await transferNativeFromAdminWallet({
+            toAddress: sellerAddress,
+            amountEth: topUpAmountEth,
+            note: note ? `${note} | native top-up for treasury rollup` : "admin native top-up for treasury rollup",
+          })
+          : await (async () => {
+            const fundingWallet =
+              wallets.find((wallet) =>
+                wallet.walletAddress.toLowerCase() === (topUpFromSellerAddress ?? "").toLowerCase(),
+              ) ??
+              wallets.find((wallet) =>
+                wallet.walletAddress.toLowerCase() !== sellerAddress.toLowerCase() &&
+                BigInt(wallet.nativeBalanceBaseUnits) > 0n,
+              );
+
+            if (!fundingWallet) {
+              throw new Error("No admin funding wallet or project seller wallet with native balance is available to top up the selected treasury rollup wallet.");
+            }
+
+            if (fundingWallet.walletAddress.toLowerCase() === sellerAddress.toLowerCase()) {
+              throw new Error("nativeTopUpFromSellerAddress must differ from the treasury rollup source wallet.");
+            }
+
+            return transferSellerNative({
+              fromSellerAddress: fundingWallet.walletAddress,
+              toAddress: sellerAddress,
+              amountEth: topUpAmountEth,
+              note: note ? `${note} | native top-up for treasury rollup` : "admin native top-up for treasury rollup",
+            });
+          })();
+
+      nativeTopUp = {
+        transactionHash: topUpTransfer.transactionHash,
+        amountEth: topUpTransfer.amountEth,
+        toAddress: topUpTransfer.toAddress,
+        fromWalletAddress: topUpTransfer.fromWalletAddress,
+        nativeBalanceBefore: topUpTransfer.nativeBalanceBefore,
+        nativeBalanceAfter: topUpTransfer.nativeBalanceAfter,
+      };
+    }
+
+    const transfer = await transferSellerUsdc({
+      sellerAddress,
+      toAddress: treasury.smartAccount.walletAddress,
+      amountUsdc,
+      note: note || undefined,
+    });
+
+    return success(res, {
+      ...(nativeTopUp ? { nativeTopUp } : {}),
+      sourceWallet: {
+        walletAddress: sourceWallet.walletAddress,
+        usdcBalanceBefore: sourceWallet.usdcBalance,
+        nativeBalanceBefore: sourceWallet.nativeBalance,
+      },
+      destinationWallet: {
+        walletAddress: treasury.smartAccount.walletAddress,
+        usdcBalanceBefore: treasury.smartAccount.usdcBalance,
+        nativeBalanceBefore: treasury.smartAccount.nativeBalance,
+      },
+      transfer,
+    });
+  } catch (error) {
+    return failure(res, error, 400);
+  }
+});
+
+router.post("/admin/withdraw", async (req: Request, res: Response) => {
+  if (!requireAdminRequest(req, res)) return;
+
+  try {
+    const adminWithdrawAddress = getAdminWithdrawAddress();
+    const sellerAddress =
+      typeof req.body?.sellerAddress === "string" && isAddress(req.body.sellerAddress)
+        ? req.body.sellerAddress
+        : undefined;
+    if (!sellerAddress) {
+      return failure(res, new Error("sellerAddress is required and must be a valid EVM address."), 400);
+    }
+
+    const withdrawAllNormalized = normalizeOptionalBoolean(req.body?.withdrawAll);
+    if (!withdrawAllNormalized.valid) {
+      return failure(res, new Error("withdrawAll must be a boolean when provided."), 400);
+    }
+    const withdrawAll = req.body?.withdrawAll === undefined ? true : withdrawAllNormalized.value;
+
+    const ensureNativeTopUpNormalized = normalizeOptionalBoolean(req.body?.ensureNativeTopUp);
+    if (!ensureNativeTopUpNormalized.valid) {
+      return failure(res, new Error("ensureNativeTopUp must be a boolean when provided."), 400);
+    }
+    const ensureNativeTopUp = req.body?.ensureNativeTopUp === undefined ? true : ensureNativeTopUpNormalized.value;
+
+    const requestedAmount = req.body?.amountUsdc;
+    const topUpFromSellerAddress =
+      typeof req.body?.nativeTopUpFromSellerAddress === "string" && isAddress(req.body.nativeTopUpFromSellerAddress)
+        ? req.body.nativeTopUpFromSellerAddress
+        : undefined;
+    const topUpAmountEth =
+      typeof req.body?.nativeTopUpAmountEth === "string" || typeof req.body?.nativeTopUpAmountEth === "number"
+        ? String(req.body.nativeTopUpAmountEth)
+        : getAdminGasTopUpAmountEth();
+    const note = toText(req.body?.note, "");
+
+    const wallets = await listProjectSellerWalletSnapshots();
+    const targetWallet = wallets.find(
+      (wallet) => wallet.walletAddress.toLowerCase() === sellerAddress.toLowerCase(),
+    );
+
+    if (!targetWallet) {
+      return failure(res, new Error("Selected seller wallet was not found in the configured CDP project."), 404);
+    }
+
+    const availableUsdcBaseUnits = BigInt(targetWallet.usdcBalanceBaseUnits);
+    if (availableUsdcBaseUnits <= 0n) {
+      return failure(res, new Error("Selected seller wallet has no USDC balance available to withdraw."), 400);
+    }
+
+    let amountUsdc: string;
+    if (typeof requestedAmount === "string" || typeof requestedAmount === "number") {
+      const normalized = formatUsdcAmount(Number(formatUnits(parseUnits(String(requestedAmount), 6), 6)));
+      amountUsdc = normalized;
+    } else if (withdrawAll) {
+      amountUsdc = formatUnits(availableUsdcBaseUnits, 6);
+    } else {
+      return failure(res, new Error("Provide amountUsdc or set withdrawAll=true."), 400);
+    }
+
+    let nativeTopUp: AdminNativeTopUpSummary | null = null;
+    if (ensureNativeTopUp && BigInt(targetWallet.nativeBalanceBaseUnits) === 0n) {
+      const adminFundingWallet = await getAdminFundingWalletSnapshot();
+      const topUpTransfer =
+        adminFundingWallet && BigInt(adminFundingWallet.nativeBalanceBaseUnits) > 0n
+          ? await transferNativeFromAdminWallet({
+            toAddress: sellerAddress,
+            amountEth: topUpAmountEth,
+            note: note ? `${note} | native top-up` : "admin native top-up",
+          })
+          : await (async () => {
+            const fundingWallet =
+              wallets.find((wallet) =>
+                wallet.walletAddress.toLowerCase() === (topUpFromSellerAddress ?? "").toLowerCase(),
+              ) ??
+              wallets.find((wallet) =>
+                wallet.walletAddress.toLowerCase() !== sellerAddress.toLowerCase() &&
+                BigInt(wallet.nativeBalanceBaseUnits) > 0n,
+              );
+
+            if (!fundingWallet) {
+              throw new Error("No admin funding wallet or project seller wallet with native balance is available to top up the selected withdrawal wallet.");
+            }
+
+            if (fundingWallet.walletAddress.toLowerCase() === sellerAddress.toLowerCase()) {
+              throw new Error("nativeTopUpFromSellerAddress must differ from the withdrawal seller wallet.");
+            }
+
+            return transferSellerNative({
+              fromSellerAddress: fundingWallet.walletAddress,
+              toAddress: sellerAddress,
+              amountEth: topUpAmountEth,
+              note: note ? `${note} | native top-up` : "admin native top-up",
+            });
+          })();
+
+      nativeTopUp = {
+        transactionHash: topUpTransfer.transactionHash,
+        amountEth: topUpTransfer.amountEth,
+        toAddress: topUpTransfer.toAddress,
+        fromWalletAddress: topUpTransfer.fromWalletAddress,
+        nativeBalanceBefore: topUpTransfer.nativeBalanceBefore,
+        nativeBalanceAfter: topUpTransfer.nativeBalanceAfter,
+      };
+    }
+
+    const transfer = await transferSellerUsdc({
+      sellerAddress,
+      toAddress: adminWithdrawAddress,
+      amountUsdc,
+      note: note || undefined,
+    });
+
+    return success(res, {
+      ...(nativeTopUp ? { nativeTopUp } : {}),
+      transfer,
+      sourceWallet: {
+        walletAddress: targetWallet.walletAddress,
+        usdcBalanceBefore: targetWallet.usdcBalance,
+        nativeBalanceBefore: targetWallet.nativeBalance,
+      },
+    });
+  } catch (error) {
+    return failure(res, error, 400);
+  }
+});
+
+router.post("/admin/withdraw-treasury", async (req: Request, res: Response) => {
+  if (!requireAdminRequest(req, res)) return;
+
+  try {
+    const adminWithdrawAddress = getAdminWithdrawAddress();
+    const withdrawAllNormalized = normalizeOptionalBoolean(req.body?.withdrawAll);
+    if (!withdrawAllNormalized.valid) {
+      return failure(res, new Error("withdrawAll must be a boolean when provided."), 400);
+    }
+    const withdrawAll = req.body?.withdrawAll === undefined ? true : withdrawAllNormalized.value;
+    const requestedAmount = req.body?.amountUsdc;
+    const note = toText(req.body?.note, "");
+
+    const treasury = await ensureTreasurySmartAccount();
+    if (!treasury.smartAccount) {
+      return failure(res, new Error("Treasury smart account is not available."), 400);
+    }
+
+    const availableUsdcBaseUnits = BigInt(treasury.smartAccount.usdcBalanceBaseUnits);
+    if (availableUsdcBaseUnits <= 0n) {
+      return failure(res, new Error("Treasury smart account has no USDC balance available to withdraw."), 400);
+    }
+
+    let amountUsdc: string;
+    if (typeof requestedAmount === "string" || typeof requestedAmount === "number") {
+      amountUsdc = formatUsdcAmount(Number(formatUnits(parseUnits(String(requestedAmount), 6), 6)));
+    } else if (withdrawAll) {
+      amountUsdc = formatUnits(availableUsdcBaseUnits, 6);
+    } else {
+      return failure(res, new Error("Provide amountUsdc or set withdrawAll=true."), 400);
+    }
+
+    const transfer = await transferTreasuryUsdc({
+      toAddress: adminWithdrawAddress,
+      amountUsdc,
+      note: note || undefined,
+    });
+
+    return success(res, {
+      sourceWallet: {
+        walletAddress: treasury.smartAccount.walletAddress,
+        usdcBalanceBefore: treasury.smartAccount.usdcBalance,
+        nativeBalanceBefore: treasury.smartAccount.nativeBalance,
+      },
+      destinationWallet: {
+        walletAddress: adminWithdrawAddress,
+      },
+      transfer,
+    });
+  } catch (error) {
+    return failure(res, error, 400);
+  }
+});
+
+router.post("/admin/refund", async (req: Request, res: Response) => {
+  if (!requireAdminRequest(req, res)) return;
+
+  try {
+    const adminRefundAddress = getAdminWithdrawAddress();
+    const ensureNativeTopUpNormalized = normalizeOptionalBoolean(req.body?.ensureNativeTopUp);
+    if (!ensureNativeTopUpNormalized.valid) {
+      return failure(res, new Error("ensureNativeTopUp must be a boolean when provided."), 400);
+    }
+    const ensureNativeTopUp = req.body?.ensureNativeTopUp === undefined ? true : ensureNativeTopUpNormalized.value;
+    const requestedAmount = req.body?.amountUsdc;
+    const sellerAddress =
+      typeof req.body?.sellerAddress === "string" && isAddress(req.body.sellerAddress)
+        ? req.body.sellerAddress
+        : undefined;
+    const topUpFromSellerAddress =
+      typeof req.body?.nativeTopUpFromSellerAddress === "string" && isAddress(req.body.nativeTopUpFromSellerAddress)
+        ? req.body.nativeTopUpFromSellerAddress
+        : undefined;
+    const topUpAmountEth =
+      typeof req.body?.nativeTopUpAmountEth === "string" || typeof req.body?.nativeTopUpAmountEth === "number"
+        ? String(req.body.nativeTopUpAmountEth)
+        : getAdminGasTopUpAmountEth();
+    const refs = normalizeRefundReferences(req.body?.refunds);
+    const note = toText(req.body?.note, "");
+    const purchases = listAdminPurchases();
+
+    const selectedPurchases = refs.length > 0
+      ? refs.map((ref) => {
+        const purchaseKey = ref.kind === "allocate"
+          ? `allocate:${ref.decisionId}`
+          : `tool:${ref.productId}:${ref.decisionId}`;
+        return purchases.find((purchase) => purchase.purchaseKey === purchaseKey) ?? null;
+      }).filter((purchase): purchase is AdminPurchaseRow => Boolean(purchase))
+      : [];
+
+    if (refs.length > 0 && selectedPurchases.length !== refs.length) {
+      return failure(res, new Error("One or more selected purchases could not be found."), 404);
+    }
+
+    if (selectedPurchases.some((purchase) => purchase.refunded)) {
+      return failure(res, new Error("One or more selected purchases were already refunded."), 409);
+    }
+
+    let amountUsdc: string;
+    if (typeof requestedAmount === "string" || typeof requestedAmount === "number") {
+      const normalized = formatUsdcAmount(Number(formatUnits(parseUnits(String(requestedAmount), 6), 6)));
+      amountUsdc = normalized;
+    } else if (selectedPurchases.length > 0) {
+      amountUsdc = formatUnits(sumPurchaseAmountBaseUnits(selectedPurchases), 6);
+    } else {
+      return failure(res, new Error("Provide amountUsdc or select purchases to refund."), 400);
+    }
+
+    if (selectedPurchases.length > 0) {
+      const selectedTotal = formatUnits(sumPurchaseAmountBaseUnits(selectedPurchases), 6);
+      if (amountUsdc !== selectedTotal) {
+        return failure(res, new Error("amountUsdc must match the total of selected purchases."), 400);
+      }
+    }
+
+    let nativeTopUp: AdminNativeTopUpSummary | null = null;
+    if (ensureNativeTopUp) {
+      const [activeWallet, wallets] = await Promise.all([
+        getAgentWalletSnapshot(),
+        listProjectSellerWalletSnapshots(),
+      ]);
+      const refundSellerAddress = sellerAddress ?? activeWallet.walletAddress;
+      const targetWallet = wallets.find(
+        (wallet) => wallet.walletAddress.toLowerCase() === refundSellerAddress.toLowerCase(),
+      );
+
+      if (!targetWallet) {
+        return failure(res, new Error("Selected seller wallet was not found in the configured CDP project."), 404);
+      }
+
+      const targetNativeBalance = BigInt(targetWallet.nativeBalanceBaseUnits);
+      if (targetNativeBalance === 0n) {
+        const fundingWallet =
+          wallets.find((wallet) =>
+            wallet.walletAddress.toLowerCase() === (topUpFromSellerAddress ?? "").toLowerCase(),
+          ) ??
+          wallets.find((wallet) =>
+            wallet.walletAddress.toLowerCase() !== refundSellerAddress.toLowerCase() &&
+            BigInt(wallet.nativeBalanceBaseUnits) > 0n,
+          );
+
+        if (!fundingWallet) {
+          return failure(
+            res,
+            new Error("No project seller wallet with native balance is available to top up the selected refund wallet."),
+            400,
+          );
+        }
+
+        if (fundingWallet.walletAddress.toLowerCase() === refundSellerAddress.toLowerCase()) {
+          return failure(res, new Error("nativeTopUpFromSellerAddress must differ from the refund seller wallet."), 400);
+        }
+
+        const topUpTransfer = await transferSellerNative({
+          fromSellerAddress: fundingWallet.walletAddress,
+          toAddress: refundSellerAddress,
+          amountEth: topUpAmountEth,
+          note: note ? `${note} | native top-up` : "admin native top-up",
+        });
+
+        nativeTopUp = {
+          transactionHash: topUpTransfer.transactionHash,
+          amountEth: topUpTransfer.amountEth,
+          toAddress: topUpTransfer.toAddress,
+          fromWalletAddress: topUpTransfer.fromWalletAddress,
+          nativeBalanceBefore: topUpTransfer.nativeBalanceBefore,
+          nativeBalanceAfter: topUpTransfer.nativeBalanceAfter,
+        };
+      }
+    }
+
+    const transfer = await transferSellerUsdc({
+      ...(sellerAddress ? { sellerAddress } : {}),
+      toAddress: adminRefundAddress,
+      amountUsdc,
+      note: note || undefined,
+    });
+
+    if (selectedPurchases.length > 0) {
+      const stateStore = getX402StateStore();
+      for (const purchase of selectedPurchases) {
+        const refund = {
+          refundedAt: nowIso(),
+          transactionHash: transfer.transactionHash,
+          toAddress: adminRefundAddress,
+          amountUsdc: purchase.chargedAmountUsdc,
+          ...(note ? { note } : {}),
+        };
+
+        if (purchase.kind === "allocate") {
+          stateStore.markAllocateRefund(purchase.decisionId, refund);
+        } else {
+          stateStore.markToolRefund(purchase.productId as X402ToolProductId, purchase.decisionId, refund);
+        }
+      }
+    }
+
+    return success(res, {
+      ...(nativeTopUp ? { nativeTopUp } : {}),
+      transfer,
+      refundedPurchases: selectedPurchases.map((purchase) => ({
+        purchaseKey: purchase.purchaseKey,
+        decisionId: purchase.decisionId,
+        productId: purchase.productId,
+        chargedAmountUsdc: purchase.chargedAmountUsdc,
+      })),
+    });
+  } catch (error) {
+    return failure(res, error, 400);
+  }
+});
 
 router.post("/init", async (_req: Request, res: Response) => {
   try {

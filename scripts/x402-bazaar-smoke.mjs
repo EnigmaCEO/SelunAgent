@@ -26,23 +26,18 @@ if (process.argv.includes("--help") || process.argv.includes("-h")) {
 const privateKey = readRequiredEnv(["SELUN_X402_SMOKE_PRIVATE_KEY", "EVM_PRIVATE_KEY"]);
 const account = privateKeyToAccount(privateKey);
 const withReport = readBooleanEnv("SELUN_X402_SMOKE_WITH_REPORT", false);
-const allocateUrl = resolveAllocateUrl(withReport);
+const targetEndpoint = resolveTargetEndpoint(withReport);
+const targetUrl = resolveTargetUrl(targetEndpoint);
+const targetPathname = new URL(targetUrl).pathname;
 const shouldPoll = readBooleanEnv("SELUN_X402_SMOKE_POLL", true);
 const pollIntervalMs = readPositiveIntEnv("SELUN_X402_SMOKE_POLL_INTERVAL_MS", 5000);
 const pollTimeoutMs = readPositiveIntEnv("SELUN_X402_SMOKE_POLL_TIMEOUT_MS", 10 * 60 * 1000);
 const decisionId = process.env.SELUN_X402_SMOKE_DECISION_ID?.trim() || `bazaar-smoke-${Date.now()}`;
-const requestBody = {
+const requestBody = buildRequestBody({
   decisionId,
-  riskTolerance: process.env.SELUN_X402_SMOKE_RISK_TOLERANCE?.trim() || "Balanced",
-  timeframe: process.env.SELUN_X402_SMOKE_TIMEFRAME?.trim() || "1-3_years",
+  targetPathname,
   withReport,
-  ...(process.env.SELUN_X402_SMOKE_RESULT_EMAIL?.trim()
-    ? { resultEmail: process.env.SELUN_X402_SMOKE_RESULT_EMAIL.trim() }
-    : {}),
-  ...(process.env.SELUN_X402_SMOKE_PROMO_CODE?.trim()
-    ? { promoCode: process.env.SELUN_X402_SMOKE_PROMO_CODE.trim() }
-    : {}),
-};
+});
 
 const fetchWithPayment = wrapFetchWithPaymentFromConfig(fetch, {
   schemes: [
@@ -57,10 +52,10 @@ await main();
 
 async function main() {
   console.log(`[smoke] buyer wallet: ${account.address}`);
-  console.log(`[smoke] target: ${allocateUrl}`);
+  console.log(`[smoke] target: ${targetUrl}`);
   console.log(`[smoke] decisionId: ${requestBody.decisionId}`);
 
-  const probeResponse = await fetch(allocateUrl, {
+  const probeResponse = await fetch(targetUrl, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -81,7 +76,7 @@ async function main() {
   const selectedAmountUsdc = probeBody?.x402?.amountUsdc ?? "unknown";
   console.log(`[smoke] probe ok: 402 PAYMENT-REQUIRED (${selectedOptionId}, ${selectedAmountUsdc} USDC)`);
 
-  const paidResponse = await fetchWithPayment(allocateUrl, {
+  const paidResponse = await fetchWithPayment(targetUrl, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -111,10 +106,13 @@ async function main() {
   }
 
   if (!shouldPoll || !statusPath) {
+    if (paidResponse.status === 200 && paidBody?.data?.result) {
+      console.log(`[smoke] result: ${stringify(paidBody.data.result)}`);
+    }
     return;
   }
 
-  const statusUrl = new URL(statusPath, allocateUrl).toString();
+  const statusUrl = new URL(statusPath, targetUrl).toString();
   console.log(`[smoke] polling: ${statusUrl}`);
 
   const finalStatus = await pollExecutionStatus(statusUrl, pollIntervalMs, pollTimeoutMs);
@@ -170,7 +168,19 @@ function loadEnvFiles(paths) {
   }
 }
 
-function resolveAllocateUrl(withReport) {
+function resolveTargetEndpoint(withReport) {
+  const explicit = process.env.SELUN_X402_SMOKE_ENDPOINT?.trim().toLowerCase();
+  if (explicit) {
+    const normalized = explicit
+      .replace(/^\/+/, "")
+      .replace(/^agent\/x402\//, "")
+      .replace(/^x402\//, "");
+    if (normalized) return normalized;
+  }
+  return withReport ? "allocate-with-report" : "allocate";
+}
+
+function resolveTargetUrl(targetEndpoint) {
   const direct = process.env.SELUN_X402_SMOKE_URL?.trim();
   if (direct) return direct;
 
@@ -181,8 +191,66 @@ function resolveAllocateUrl(withReport) {
     );
   }
 
-  const routePath = withReport ? "/agent/x402/allocate-with-report" : "/agent/x402/allocate";
+  const routePath = `/agent/x402/${targetEndpoint}`;
   return new URL(routePath, ensureTrailingSlash(backendBaseUrl)).toString();
+}
+
+function buildRequestBody({ decisionId, targetPathname, withReport }) {
+  const riskTolerance = process.env.SELUN_X402_SMOKE_RISK_TOLERANCE?.trim() || "Balanced";
+  const timeframe = process.env.SELUN_X402_SMOKE_TIMEFRAME?.trim() || "1-3_years";
+  const base = {
+    decisionId,
+    riskTolerance,
+    timeframe,
+    ...(process.env.SELUN_X402_SMOKE_RESULT_EMAIL?.trim()
+      ? { resultEmail: process.env.SELUN_X402_SMOKE_RESULT_EMAIL.trim() }
+      : {}),
+    ...(process.env.SELUN_X402_SMOKE_PROMO_CODE?.trim()
+      ? { promoCode: process.env.SELUN_X402_SMOKE_PROMO_CODE.trim() }
+      : {}),
+  };
+
+  if (targetPathname.endsWith("/allocate-with-report")) {
+    return { ...base, withReport: true };
+  }
+
+  if (targetPathname.endsWith("/allocate")) {
+    return { ...base, withReport };
+  }
+
+  if (targetPathname.endsWith("/rebalance")) {
+    return {
+      ...base,
+      holdings: parseJsonEnv("SELUN_X402_SMOKE_HOLDINGS_JSON", defaultHoldings()),
+    };
+  }
+
+  if (targetPathname.endsWith("/asset-scorecard")) {
+    return {
+      ...base,
+      assets: parseJsonEnv("SELUN_X402_SMOKE_ASSETS_JSON", ["BTC", "ETH", "SOL"]),
+    };
+  }
+
+  return base;
+}
+
+function parseJsonEnv(name, fallback) {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`${name} must be valid JSON. ${error instanceof Error ? error.message : "Parse failed."}`);
+  }
+}
+
+function defaultHoldings() {
+  return [
+    { asset: "BTC", usdValue: 4300 },
+    { asset: "ETH", usdValue: 3700 },
+    { asset: "USDC", usdValue: 2000 },
+  ];
 }
 
 function ensureTrailingSlash(value) {
@@ -250,15 +318,24 @@ Required env:
   SELUN_X402_SMOKE_PRIVATE_KEY or EVM_PRIVATE_KEY
 
 Optional env:
+  SELUN_X402_SMOKE_ENDPOINT (allocate | allocate-with-report | market-regime | policy-envelope | asset-scorecard | rebalance)
   SELUN_X402_SMOKE_DECISION_ID
   SELUN_X402_SMOKE_RISK_TOLERANCE (default: Balanced)
   SELUN_X402_SMOKE_TIMEFRAME (default: 1-3_years)
   SELUN_X402_SMOKE_WITH_REPORT (default: false)
+  SELUN_X402_SMOKE_ASSETS_JSON (JSON array for /asset-scorecard)
+  SELUN_X402_SMOKE_HOLDINGS_JSON (JSON array for /rebalance)
   SELUN_X402_SMOKE_RESULT_EMAIL
   SELUN_X402_SMOKE_PROMO_CODE
   SELUN_X402_SMOKE_NETWORK (default: eip155:*)
   SELUN_X402_SMOKE_POLL (default: true)
   SELUN_X402_SMOKE_POLL_INTERVAL_MS (default: 5000)
   SELUN_X402_SMOKE_POLL_TIMEOUT_MS (default: 600000)
+
+Examples:
+  node scripts/x402-bazaar-smoke.mjs
+  $env:SELUN_X402_SMOKE_URL=\"https://selun.sagitta.systems/agent/x402/rebalance\"
+  $env:SELUN_X402_SMOKE_HOLDINGS_JSON='[{"asset":"BTC","usdValue":4300},{"asset":"ETH","usdValue":3700},{"asset":"USDC","usdValue":2000}]'
+  node scripts/x402-bazaar-smoke.mjs
 `);
 }

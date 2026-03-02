@@ -1,0 +1,288 @@
+.page {
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top left, rgba(33, 150, 243, 0.14), transparent 28%),
+    linear-gradient(180deg, #eef4fb 0%, #dce8f6 100%);
+  color: #102a43;
+}
+
+.shell {
+  width: min(1180px, calc(100vw - 48px));
+  margin: 0 auto;
+  padding: 40px 0 64px;
+}
+
+.header,
+.authPanel,
+.refundPanel,
+.tableSection,
+.metricCard {
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(160, 182, 205, 0.5);
+  box-shadow: 0 18px 40px rgba(15, 35, 55, 0.08);
+  backdrop-filter: blur(14px);
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  border-radius: 28px;
+  padding: 28px 32px;
+}
+
+.eyebrow {
+  margin: 0 0 8px;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: #0f7cc0;
+  font-weight: 700;
+}
+
+.header h1,
+.tableHeader h2 {
+  margin: 0;
+  font-size: clamp(2rem, 4vw, 3.2rem);
+  line-height: 0.94;
+}
+
+.subhead {
+  max-width: 760px;
+  margin: 14px 0 0;
+  font-size: 1.05rem;
+  line-height: 1.55;
+  color: #486581;
+}
+
+.actions {
+  display: flex;
+  align-items: flex-start;
+}
+
+.link {
+  color: #0f7cc0;
+  text-decoration: none;
+  font-weight: 700;
+}
+
+.authPanel,
+.refundPanel,
+.tableSection {
+  margin-top: 24px;
+  border-radius: 24px;
+  padding: 24px 28px;
+}
+
+.label {
+  display: block;
+  margin: 0 0 10px;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: #0f7cc0;
+  font-weight: 700;
+}
+
+.authRow,
+.refundControls,
+.tableHeader {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.input {
+  width: 100%;
+  border-radius: 16px;
+  border: 1px solid rgba(164, 184, 204, 0.75);
+  background: rgba(240, 247, 255, 0.9);
+  color: #102a43;
+  padding: 14px 16px;
+  font-size: 0.98rem;
+}
+
+.primaryButton,
+.secondaryButton {
+  border: 0;
+  border-radius: 16px;
+  padding: 14px 18px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.primaryButton {
+  background: linear-gradient(135deg, #0f7cc0 0%, #0cb4d9 100%);
+  color: #fff;
+}
+
+.secondaryButton {
+  background: rgba(232, 241, 251, 0.95);
+  color: #123150;
+}
+
+.primaryButton:disabled,
+.secondaryButton:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.walletGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 24px;
+}
+
+.metricCard {
+  border-radius: 22px;
+  padding: 20px;
+}
+
+.metricCard span {
+  display: block;
+  color: #627d98;
+  font-size: 0.88rem;
+}
+
+.metricCard strong {
+  display: block;
+  margin-top: 8px;
+  font-size: 1.02rem;
+  word-break: break-all;
+}
+
+.metricCard small {
+  display: block;
+  margin-top: 8px;
+  color: #486581;
+}
+
+.selectionText {
+  margin: 4px 0 0;
+  color: #486581;
+}
+
+.toggleRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+  color: #243b53;
+  font-weight: 600;
+}
+
+.toggleRow input {
+  width: 16px;
+  height: 16px;
+}
+
+.tableHeader {
+  margin-bottom: 18px;
+}
+
+.tableHeader h2 {
+  font-size: 1.8rem;
+}
+
+.tableWrapper {
+  overflow-x: auto;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.table th,
+.table td {
+  padding: 14px 10px;
+  border-top: 1px solid rgba(201, 215, 228, 0.85);
+  text-align: left;
+  vertical-align: top;
+}
+
+.table th {
+  color: #627d98;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+.muted {
+  margin-top: 4px;
+  color: #627d98;
+  font-size: 0.9rem;
+}
+
+.pending,
+.refunded {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 4px;
+  border-radius: 999px;
+  padding: 7px 12px;
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.pending {
+  background: rgba(225, 245, 255, 0.9);
+  color: #0b6d8f;
+}
+
+.refunded {
+  background: rgba(226, 246, 233, 0.9);
+  color: #1b6b38;
+}
+
+.error,
+.success {
+  margin: 12px 0 0;
+  padding: 12px 14px;
+  border-radius: 14px;
+}
+
+.error {
+  background: rgba(255, 232, 232, 0.95);
+  color: #9b1c1c;
+}
+
+.success {
+  background: rgba(228, 247, 234, 0.95);
+  color: #17683a;
+}
+
+@media (max-width: 980px) {
+  .walletGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .header,
+  .authRow,
+  .refundControls,
+  .tableHeader {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+@media (max-width: 640px) {
+  .shell {
+    width: min(100vw - 24px, 100%);
+    padding: 24px 0 40px;
+  }
+
+  .header,
+  .authPanel,
+  .refundPanel,
+  .tableSection {
+    padding: 20px;
+    border-radius: 20px;
+  }
+
+  .walletGrid {
+    grid-template-columns: 1fr;
+  }
+}
