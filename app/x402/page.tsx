@@ -78,7 +78,10 @@ const FALLBACK_CAPABILITIES: CapabilitiesPayload = {
       title: "Selun Allocation",
       description: PUBLIC_RESOURCE_DESCRIPTIONS["/agent/x402/allocate"],
       pricing: { amountUsdc: "19", price: "$19.00" },
-      inputSchema: { required: ["decisionId", "riskTolerance", "timeframe"] },
+      inputSchema: {
+        required: ["decisionId", "riskTolerance", "timeframe"],
+        properties: { portfolioSegment: { enum: ["Bluechips", "Memecoins", "Gaming", "Yield Farm"] } },
+      },
     },
     {
       endpoint: "/agent/x402/allocate-with-report",
@@ -87,7 +90,10 @@ const FALLBACK_CAPABILITIES: CapabilitiesPayload = {
       title: "Selun Allocation With Report",
       description: PUBLIC_RESOURCE_DESCRIPTIONS["/agent/x402/allocate-with-report"],
       pricing: { amountUsdc: "34", price: "$34.00" },
-      inputSchema: { required: ["decisionId", "riskTolerance", "timeframe"] },
+      inputSchema: {
+        required: ["decisionId", "riskTolerance", "timeframe"],
+        properties: { portfolioSegment: { enum: ["Bluechips", "Memecoins", "Gaming", "Yield Farm"] } },
+      },
     },
     {
       endpoint: "/agent/x402/market-regime",
@@ -96,7 +102,10 @@ const FALLBACK_CAPABILITIES: CapabilitiesPayload = {
       title: "Selun Market Regime",
       description: PUBLIC_RESOURCE_DESCRIPTIONS["/agent/x402/market-regime"],
       pricing: { amountUsdc: "0.25", price: "$0.25" },
-      inputSchema: { required: ["decisionId", "riskTolerance", "timeframe"] },
+      inputSchema: {
+        required: ["decisionId", "riskTolerance", "timeframe"],
+        properties: { portfolioSegment: { enum: ["Bluechips", "Memecoins", "Gaming", "Yield Farm"] } },
+      },
     },
     {
       endpoint: "/agent/x402/policy-envelope",
@@ -105,7 +114,10 @@ const FALLBACK_CAPABILITIES: CapabilitiesPayload = {
       title: "Selun Policy Envelope",
       description: PUBLIC_RESOURCE_DESCRIPTIONS["/agent/x402/policy-envelope"],
       pricing: { amountUsdc: "0.25", price: "$0.25" },
-      inputSchema: { required: ["decisionId", "riskTolerance", "timeframe"] },
+      inputSchema: {
+        required: ["decisionId", "riskTolerance", "timeframe"],
+        properties: { portfolioSegment: { enum: ["Bluechips", "Memecoins", "Gaming", "Yield Farm"] } },
+      },
     },
     {
       endpoint: "/agent/x402/asset-scorecard",
@@ -114,7 +126,13 @@ const FALLBACK_CAPABILITIES: CapabilitiesPayload = {
       title: "Selun Asset Scorecard",
       description: PUBLIC_RESOURCE_DESCRIPTIONS["/agent/x402/asset-scorecard"],
       pricing: { amountUsdc: "0.5", price: "$0.50" },
-      inputSchema: { required: ["decisionId", "riskTolerance", "timeframe"] },
+      inputSchema: {
+        required: ["decisionId", "riskTolerance", "timeframe"],
+        properties: {
+          portfolioSegment: { enum: ["Bluechips", "Memecoins", "Gaming", "Yield Farm"] },
+          assets: { type: "array" },
+        },
+      },
     },
     {
       endpoint: "/agent/x402/rebalance",
@@ -123,7 +141,13 @@ const FALLBACK_CAPABILITIES: CapabilitiesPayload = {
       title: "Selun Rebalance",
       description: PUBLIC_RESOURCE_DESCRIPTIONS["/agent/x402/rebalance"],
       pricing: { amountUsdc: "1", price: "$1.00" },
-      inputSchema: { required: ["decisionId", "riskTolerance", "timeframe", "holdings"] },
+      inputSchema: {
+        required: ["decisionId", "riskTolerance", "timeframe", "holdings"],
+        properties: {
+          portfolioSegment: { enum: ["Bluechips", "Memecoins", "Gaming", "Yield Farm"] },
+          holdings: { type: "array" },
+        },
+      },
     },
   ],
 };
@@ -157,6 +181,14 @@ function publicDescriptionFor(resource: ResourceCard): string {
 function requiredFields(resource: ResourceCard): string[] {
   const required = resource.inputSchema?.required;
   return Array.isArray(required) ? required : [];
+}
+
+function optionalFields(resource: ResourceCard): string[] {
+  const properties = resource.inputSchema?.properties;
+  if (!properties || typeof properties !== "object") return [];
+
+  const required = new Set(requiredFields(resource));
+  return Object.keys(properties).filter((key) => !required.has(key));
 }
 
 export default function X402Page() {
@@ -279,6 +311,18 @@ export default function X402Page() {
           <div className={styles.cardGrid}>
             {resources.map((resource) => (
               <article key={resource.endpoint} className={styles.card}>
+                {(() => {
+                  const required = requiredFields(resource);
+                  const optional = optionalFields(resource);
+                  const inputSummary = [
+                    required.length ? required.join(", ") : "See capabilities",
+                    optional.length ? `optional: ${optional.join(", ")}` : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" | ");
+
+                  return (
+                    <>
                 <div className={styles.cardTop}>
                   <div>
                     <span className={styles.method}>{resource.method}</span>
@@ -300,13 +344,16 @@ export default function X402Page() {
                 <div className={styles.metaRow}>
                   <div>
                     <span className={styles.metaLabel}>Inputs</span>
-                    <p>{requiredFields(resource).join(", ") || "See capabilities"}</p>
+                    <p>{inputSummary}</p>
                   </div>
                   <div>
                     <span className={styles.metaLabel}>Product ID</span>
                     <p>{resource.productId}</p>
                   </div>
                 </div>
+                    </>
+                  );
+                })()}
               </article>
             ))}
           </div>

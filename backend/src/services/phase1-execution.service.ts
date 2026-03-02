@@ -6,6 +6,12 @@ import { z } from "zod";
 import { EXECUTION_MODEL_VERSION } from "../config";
 import { emitExecutionLog } from "../logging/execution-logs";
 import { resolveBackendDataFilePath } from "../runtime-paths";
+import {
+  normalizePortfolioSegment,
+  portfolioSegmentKey,
+  PORTFOLIO_SEGMENTS,
+  type PortfolioSegment,
+} from "./portfolio-segments";
 import { initializeAgent } from "./selun-agent.service";
 
 export const REVIEW_MARKET_CONDITIONS_PHASE = "review_market_conditions" as const;
@@ -377,6 +383,7 @@ type CorrelationState = "compression" | "expansion" | "stable";
 type AllocationAuthorizationStatus = "AUTHORIZED" | "DEFERRED" | "PROHIBITED";
 type UserRiskTolerance = "Conservative" | "Balanced" | "Growth" | "Aggressive";
 type UserInvestmentTimeframe = "<1_year" | "1-3_years" | "3+_years";
+type UserPortfolioSegment = PortfolioSegment;
 type LiquidityFloorRequirement = "tier_1_only" | "tier_1_plus_tier_2" | "broad_liquidity_ok";
 type AllocationPolicyMode = "capital_preservation" | "balanced_defensive" | "balanced_growth" | "offensive_growth";
 type Phase2AuthorizationStatus = "AUTHORIZED" | "RESTRICTED" | "PROHIBITED";
@@ -387,6 +394,7 @@ export type Phase1RunInput = {
   riskMode?: string;
   riskTolerance?: string;
   investmentTimeframe?: string;
+  portfolioSegment?: string;
   timeWindow?: string;
   walletAddress?: string;
 };
@@ -398,6 +406,7 @@ type NormalizedPhase1Input = {
   userProfile: {
     riskTolerance: UserRiskTolerance;
     investmentTimeframe: UserInvestmentTimeframe;
+    portfolioSegment: UserPortfolioSegment;
   };
   timeWindow: string;
   walletAddress?: string;
@@ -623,6 +632,7 @@ const phase2OutputSchema = z
           .object({
             risk_tolerance: z.enum(["Conservative", "Balanced", "Growth", "Aggressive"]),
             investment_timeframe: z.enum(["<1_year", "1-3_years", "3+_years"]),
+            portfolio_segment: z.enum(PORTFOLIO_SEGMENTS),
           })
           .strict(),
       })
@@ -708,6 +718,7 @@ const phase3OutputSchema = z
           .object({
             risk_tolerance: z.enum(["Conservative", "Balanced", "Growth", "Aggressive"]),
             investment_timeframe: z.enum(["<1_year", "1-3_years", "3+_years"]),
+            portfolio_segment: z.enum(PORTFOLIO_SEGMENTS),
           })
           .strict(),
         top_volume_target: z.number().int().min(50).max(500),
@@ -806,6 +817,7 @@ const phase4OutputSchema = z
           .object({
             risk_tolerance: z.enum(["Conservative", "Balanced", "Growth", "Aggressive"]),
             investment_timeframe: z.enum(["<1_year", "1-3_years", "3+_years"]),
+            portfolio_segment: z.enum(PORTFOLIO_SEGMENTS),
           })
           .strict(),
         screening_thresholds: z
@@ -932,6 +944,7 @@ const phase5OutputSchema = z
           .object({
             risk_tolerance: z.enum(["Conservative", "Balanced", "Growth", "Aggressive"]),
             investment_timeframe: z.enum(["<1_year", "1-3_years", "3+_years"]),
+            portfolio_segment: z.enum(PORTFOLIO_SEGMENTS),
           })
           .strict(),
         portfolio_constraints: z
@@ -1030,6 +1043,7 @@ const phase6OutputSchema = z
           .object({
             risk_tolerance: z.enum(["Conservative", "Balanced", "Growth", "Aggressive"]),
             investment_timeframe: z.enum(["<1_year", "1-3_years", "3+_years"]),
+            portfolio_segment: z.enum(PORTFOLIO_SEGMENTS),
           })
           .strict(),
         portfolio_constraints: z
@@ -2078,6 +2092,10 @@ function parseInvestmentTimeframe(value: string | undefined, fallbackTimeWindow:
   return "1-3_years";
 }
 
+function parsePortfolioSegment(value: string | undefined): UserPortfolioSegment {
+  return normalizePortfolioSegment(value) ?? "Bluechips";
+}
+
 function parseTimeWindow(value: string | undefined): { label: string } {
   const normalized = value?.trim().toLowerCase() || "30d";
   if (normalized.includes("7")) return { label: "7d" };
@@ -2097,6 +2115,7 @@ function normalizeRunInput(input: string | Phase1RunInput): NormalizedPhase1Inpu
       userProfile: {
         riskTolerance: canonicalRiskToleranceFromRiskMode(riskMode),
         investmentTimeframe: parseInvestmentTimeframe(undefined, label),
+        portfolioSegment: "Bluechips",
       },
       timeWindow: label,
     };
@@ -2111,6 +2130,7 @@ function normalizeRunInput(input: string | Phase1RunInput): NormalizedPhase1Inpu
     userProfile: {
       riskTolerance: parseRiskTolerance(input.riskTolerance, riskMode),
       investmentTimeframe: parseInvestmentTimeframe(input.investmentTimeframe, label),
+      portfolioSegment: parsePortfolioSegment(input.portfolioSegment),
     },
     timeWindow: label,
     walletAddress: normalizeWalletKey(input.walletAddress) ?? undefined,
@@ -4605,6 +4625,7 @@ function derivePhase2PolicyEnvelope(
     `phase2_prompt_hash:${hashPhase2SystemPrompt()}`,
     `baseline_risk_tolerance:${input.userProfile.riskTolerance}`,
     `baseline_investment_timeframe:${input.userProfile.investmentTimeframe}`,
+    `baseline_portfolio_segment:${portfolioSegmentKey(input.userProfile.portfolioSegment)}`,
     `phase1_authorization:${phase1.allocation_authorization.status}`,
     `market_volatility_state:${market.volatility_state}`,
     `market_liquidity_state:${market.liquidity_state}`,
@@ -5077,6 +5098,7 @@ function derivePhase2PolicyEnvelope(
       user_profile: {
         risk_tolerance: input.userProfile.riskTolerance,
         investment_timeframe: input.userProfile.investmentTimeframe,
+        portfolio_segment: input.userProfile.portfolioSegment,
       },
     },
     allocation_policy: {
@@ -5135,6 +5157,7 @@ function sanitizePhase2ForSchema(output: Phase2Output): Phase2Output {
       user_profile: {
         risk_tolerance: output.inputs.user_profile.risk_tolerance,
         investment_timeframe: output.inputs.user_profile.investment_timeframe,
+        portfolio_segment: output.inputs.user_profile.portfolio_segment,
       },
     },
     allocation_policy: {
@@ -5590,6 +5613,65 @@ function buildPhase3ProfileReasonMap(
     );
   }
 
+  const portfolioSegment = phase2Output.inputs.user_profile.portfolio_segment;
+  const segmentReason = `portfolio_segment:${portfolioSegmentKey(portfolioSegment)}`;
+  if (portfolioSegment === "Bluechips") {
+    addMany(
+      pickPhase3ReasonCandidates(
+        pool,
+        16,
+        (token) => isBluechipToken(token),
+        (token) => isLargeLiquid(token) && !isMeme(token),
+      ),
+      segmentReason,
+    );
+  } else if (portfolioSegment === "Memecoins") {
+    addMany(
+      pickPhase3ReasonCandidates(
+        pool,
+        18,
+        (token) => isMeme(token),
+      ),
+      segmentReason,
+    );
+  } else if (portfolioSegment === "Gaming") {
+    addMany(
+      pickPhase3ReasonCandidates(
+        pool,
+        24,
+        (token) => isGamingToken(token),
+      ),
+      segmentReason,
+    );
+  } else if (portfolioSegment === "Yield Farm") {
+    addMany(
+      pickPhase3ReasonCandidates(
+        pool,
+        8,
+        (token) => isYieldFarmWrappedReserveToken(token),
+        (token) => isLargeLiquid(token) && !isStable(token) && !isMeme(token),
+      ),
+      `${segmentReason}:reserve_anchor`,
+    );
+    addMany(
+      pickPhase3ReasonCandidates(
+        pool,
+        20,
+        (token) => isYieldFarmCarryToken(token),
+        (token) => isYieldFarmToken(token),
+      ),
+      `${segmentReason}:carry_focus`,
+    );
+    addMany(
+      pickPhase3ReasonCandidates(
+        pool,
+        24,
+        (token) => isYieldFarmToken(token),
+      ),
+      segmentReason,
+    );
+  }
+
   const policyMode = phase2Output.allocation_policy.mode;
   const policyReason = `policy_mode:${policyMode}`;
   const policyTarget = PHASE3_POLICY_REASON_TARGETS[policyMode];
@@ -5737,6 +5819,90 @@ const PHASE3_MEME_PATTERNS = [
   /dogwif/i,
 ];
 
+const PHASE3_GAMING_PATTERNS = [
+  /\bgame\b/i,
+  /gaming/i,
+  /metaverse/i,
+  /\bplay\b/i,
+  /sandbox/i,
+  /gala/i,
+  /axie/i,
+  /immutable/i,
+  /\bimx\b/i,
+  /ronin/i,
+  /\bron\b/i,
+  /\bmana\b/i,
+  /beam/i,
+  /superverse/i,
+  /pixels?/i,
+  /illuvium/i,
+  /\bilv\b/i,
+];
+
+const PHASE3_YIELD_FARM_WRAPPED_RESERVE_SYMBOLS = new Set([
+  "WBTC",
+  "WETH",
+  "CBETH",
+  "STETH",
+  "WSTETH",
+  "RETH",
+  "WEETH",
+]);
+
+const PHASE3_YIELD_FARM_SYMBOL_ALLOWLIST = new Set([
+  "AAVE",
+  "AERO",
+  "CAKE",
+  "COMP",
+  "CRV",
+  "CVX",
+  "ENA",
+  "ETHFI",
+  "EIGEN",
+  "GMX",
+  "LDO",
+  "MKR",
+  "MORPHO",
+  "PENDLE",
+  "SKY",
+  "SUSHI",
+  "UNI",
+  ...PHASE3_YIELD_FARM_WRAPPED_RESERVE_SYMBOLS,
+]);
+
+const PHASE3_YIELD_FARM_CARRY_SYMBOL_ALLOWLIST = new Set(
+  [...PHASE3_YIELD_FARM_SYMBOL_ALLOWLIST].filter((symbol) => !PHASE3_YIELD_FARM_WRAPPED_RESERVE_SYMBOLS.has(symbol)),
+);
+
+const PHASE3_YIELD_FARM_EXCLUDED_SYMBOLS = new Set(["HTX"]);
+
+const PHASE3_YIELD_FARM_PATTERNS = [
+  /liquid staking/i,
+  /restaking/i,
+  /staking/i,
+  /lending/i,
+  /\byield\b/i,
+  /aerodrome/i,
+  /aave/i,
+  /compound/i,
+  /convex/i,
+  /curve/i,
+  /ether\.?fi/i,
+  /gmx/i,
+  /lido/i,
+  /maker/i,
+  /morpho/i,
+  /pancakeswap/i,
+  /pendle/i,
+  /rocket ?pool/i,
+  /sky/i,
+  /staked ether/i,
+  /sushi/i,
+  /uniswap/i,
+  /wrapped bitcoin/i,
+  /wrapped ether/i,
+];
+
 function isPhase3RetailFilterEnabled(): boolean {
   return readBooleanEnv("PHASE3_RETAIL_FILTER_ENABLED", true);
 }
@@ -5745,10 +5911,26 @@ function isPhase4MemeAllowed(): boolean {
   return readBooleanEnv("PHASE4_ALLOW_MEME_TOKENS", false);
 }
 
-function getPhase3NonRetailReason(token: Phase3UniverseToken): "wrapped_token" | "non_retail_proxy" | null {
+function isYieldFarmWrappedReserveToken(token: Phase3UniverseToken): boolean {
+  const symbol = token.symbol.toUpperCase();
+  return (
+    PHASE3_YIELD_FARM_WRAPPED_RESERVE_SYMBOLS.has(symbol) &&
+    getPhase3TokenRank(token) <= 150 &&
+    token.volume24hUsd >= 1_000_000
+  );
+}
+
+function getPhase3NonRetailReason(
+  token: Phase3UniverseToken,
+  segment?: PortfolioSegment,
+): "wrapped_token" | "non_retail_proxy" | null {
   const id = token.coingeckoId.toLowerCase();
   const name = token.name.toLowerCase();
   const symbol = token.symbol.toUpperCase();
+
+  if (segment === "Yield Farm" && isYieldFarmWrappedReserveToken(token)) {
+    return null;
+  }
 
   if (PHASE3_WRAPPED_SYMBOLS.has(symbol)) return "wrapped_token";
   if (PHASE3_NON_RETAIL_ID_PATTERNS.some((pattern) => pattern.test(id))) {
@@ -5766,6 +5948,7 @@ function filterPhase3TokensForRetail(
   tokens: Phase3UniverseToken[],
   selectionRules: Set<string>,
   scope: "top_volume" | "profile_match",
+  segment?: PortfolioSegment,
 ): Phase3UniverseToken[] {
   const enabled = isPhase3RetailFilterEnabled();
   selectionRules.add(`phase3_retail_filter_enabled:${enabled}`);
@@ -5775,7 +5958,7 @@ function filterPhase3TokensForRetail(
   const removedByReason = new Map<string, number>();
 
   for (const token of tokens) {
-    const reason = getPhase3NonRetailReason(token);
+    const reason = getPhase3NonRetailReason(token, segment);
     if (!reason) {
       kept.push(token);
       continue;
@@ -5802,6 +5985,91 @@ function isMemeToken(token: Phase3UniverseToken): boolean {
   const name = token.name.toLowerCase();
   const symbol = token.symbol.toLowerCase();
   return PHASE3_MEME_PATTERNS.some((pattern) => pattern.test(id) || pattern.test(name) || pattern.test(symbol));
+}
+
+function isGamingToken(token: Phase3UniverseToken): boolean {
+  return PHASE3_GAMING_PATTERNS.some(
+    (pattern) => pattern.test(token.coingeckoId) || pattern.test(token.name) || pattern.test(token.symbol),
+  );
+}
+
+function isYieldFarmToken(token: Phase3UniverseToken): boolean {
+  const symbol = token.symbol.toUpperCase();
+  if (PHASE3_YIELD_FARM_EXCLUDED_SYMBOLS.has(symbol)) return false;
+  if (PHASE3_YIELD_FARM_SYMBOL_ALLOWLIST.has(symbol)) return true;
+  return PHASE3_YIELD_FARM_PATTERNS.some(
+    (pattern) => pattern.test(token.coingeckoId) || pattern.test(token.name) || pattern.test(token.symbol),
+  );
+}
+
+function isYieldFarmCarryToken(token: Phase3UniverseToken): boolean {
+  const symbol = token.symbol.toUpperCase();
+  if (PHASE3_YIELD_FARM_EXCLUDED_SYMBOLS.has(symbol)) return false;
+  if (PHASE3_YIELD_FARM_WRAPPED_RESERVE_SYMBOLS.has(symbol)) return false;
+  if (PHASE3_YIELD_FARM_CARRY_SYMBOL_ALLOWLIST.has(symbol)) return true;
+  return PHASE3_YIELD_FARM_PATTERNS.some(
+    (pattern) => pattern.test(token.coingeckoId) || pattern.test(token.name) || pattern.test(token.symbol),
+  );
+}
+
+function isYieldFarmPhase4ReserveToken(token: Phase4OutputToken): boolean {
+  return PHASE3_YIELD_FARM_WRAPPED_RESERVE_SYMBOLS.has(token.symbol.toUpperCase());
+}
+
+function isYieldFarmPhase4CarryToken(token: Phase4OutputToken): boolean {
+  const symbol = token.symbol.toUpperCase();
+  if (PHASE3_YIELD_FARM_EXCLUDED_SYMBOLS.has(symbol)) return false;
+  if (isYieldFarmPhase4ReserveToken(token)) return false;
+  if (PHASE3_YIELD_FARM_CARRY_SYMBOL_ALLOWLIST.has(symbol)) return true;
+  const text = `${token.coingecko_id} ${token.name} ${token.symbol}`.toLowerCase();
+  return PHASE3_YIELD_FARM_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function isBluechipToken(token: Phase3UniverseToken): boolean {
+  return !isMemeToken(token) && (isStablecoinToken(token) || getPhase3TokenRank(token) <= 25);
+}
+
+function matchesPortfolioSegmentPreference(token: Phase3UniverseToken, segment: PortfolioSegment): boolean {
+  switch (segment) {
+    case "Bluechips":
+      return isBluechipToken(token);
+    case "Memecoins":
+      return isMemeToken(token);
+    case "Gaming":
+      return isGamingToken(token);
+    case "Yield Farm":
+      return isYieldFarmToken(token);
+  }
+}
+
+function applyPhase3PortfolioSegmentFilter(
+  tokens: Phase3UniverseToken[],
+  segment: PortfolioSegment,
+  selectionRules: Set<string>,
+  missingDomains: Set<string>,
+): Phase3UniverseToken[] {
+  const segmentKey = portfolioSegmentKey(segment);
+  selectionRules.add(`phase3_portfolio_segment:${segmentKey}`);
+
+  if (segment === "Bluechips") {
+    selectionRules.add("phase3_segment_filter:disabled:bluechips");
+    return tokens;
+  }
+
+  const segmentMatches = tokens.filter((token) => matchesPortfolioSegmentPreference(token, segment));
+  selectionRules.add(`phase3_segment_filter_matches:${segmentKey}:${segmentMatches.length}/${tokens.length}`);
+
+  if (segmentMatches.length === 0) {
+    selectionRules.add(`phase3_segment_filter_no_matches:${segmentKey}`);
+    missingDomains.add(`phase3_segment_filter_no_matches:${segmentKey}`);
+    return [];
+  }
+
+  const filtered = tokens.filter((token) => matchesPortfolioSegmentPreference(token, segment) || isStablecoinToken(token));
+  const preservedStablecoinCount = filtered.filter((token) => isStablecoinToken(token)).length;
+  selectionRules.add(`phase3_segment_filter_stablecoins_preserved:${segmentKey}:${preservedStablecoinCount}`);
+
+  return filtered;
 }
 
 function getProfileReasonFallbackCandidates(
@@ -5888,6 +6156,7 @@ function deriveExchangeDepthProxy(token: Phase3UniverseToken): "high" | "medium"
 
 function derivePhase3TokenOutput(
   token: Phase3UniverseToken,
+  segment?: PortfolioSegment,
 ): {
   coingecko_id: string;
   symbol: string;
@@ -5917,7 +6186,7 @@ function derivePhase3TokenOutput(
   const unresolvedByRank = token.marketCapRank === null;
   const unresolvedByVolume = token.volume24hUsd <= 0;
   const unresolved = unresolvedByRank || unresolvedByVolume;
-  const nonRetailReason = getPhase3NonRetailReason(token);
+  const nonRetailReason = getPhase3NonRetailReason(token, segment);
   const proxyOrWrappedDetected = Boolean(nonRetailReason);
   const memeTokenDetected = isMemeToken(token);
   const stablecoin = isStablecoinToken(token);
@@ -6544,6 +6813,7 @@ function sanitizePhase3ForSchema(output: Phase3Output): Phase3Output {
       user_profile: {
         risk_tolerance: output.inputs.user_profile.risk_tolerance,
         investment_timeframe: output.inputs.user_profile.investment_timeframe,
+        portfolio_segment: output.inputs.user_profile.portfolio_segment,
       },
       top_volume_target: Math.min(500, Math.max(50, Math.floor(output.inputs.top_volume_target))),
       volume_window_days: [7, 30],
@@ -7196,6 +7466,85 @@ function applyPhase4EligibilityLanesAndGuards(
   };
 }
 
+function derivePhase4SegmentMinimumThemedEligibleCount(
+  segment: PortfolioSegment,
+  policyMode: AllocationPolicyMode,
+): number {
+  if (segment === "Bluechips") return 0;
+  if (segment === "Gaming") {
+    if (policyMode === "capital_preservation") return 4;
+    if (policyMode === "balanced_defensive") return 5;
+    if (policyMode === "balanced_growth") return 6;
+    return 7;
+  }
+  if (segment === "Yield Farm") {
+    if (policyMode === "capital_preservation") return 4;
+    if (policyMode === "balanced_defensive") return 5;
+    if (policyMode === "balanced_growth") return 6;
+    return 7;
+  }
+  if (policyMode === "capital_preservation") return 3;
+  if (policyMode === "balanced_defensive") return 4;
+  if (policyMode === "balanced_growth") return 5;
+  return 6;
+}
+
+function applyPhase4SegmentBreadthGuard(
+  tokens: Phase4OutputToken[],
+  segment: PortfolioSegment,
+  policyMode: AllocationPolicyMode,
+): { tokens: Phase4OutputToken[]; promotedCount: number; targetCount: number } {
+  const targetCount = derivePhase4SegmentMinimumThemedEligibleCount(segment, policyMode);
+  if (targetCount <= 0) {
+    return { tokens, promotedCount: 0, targetCount: 0 };
+  }
+
+  const themedEligibleCount = tokens.filter((token) => token.eligible && token.token_category !== "stablecoin").length;
+  if (themedEligibleCount >= targetCount) {
+    return { tokens, promotedCount: 0, targetCount };
+  }
+
+  const promotable = [...tokens]
+    .filter((token) => !token.eligible && token.token_category !== "stablecoin")
+    .sort((left, right) => {
+      if (segment === "Yield Farm") {
+        const reserveDelta = Number(isYieldFarmPhase4ReserveToken(right)) - Number(isYieldFarmPhase4ReserveToken(left));
+        if (reserveDelta !== 0) return reserveDelta;
+
+        const carryDelta = Number(isYieldFarmPhase4CarryToken(right)) - Number(isYieldFarmPhase4CarryToken(left));
+        if (carryDelta !== 0) return carryDelta;
+      }
+      return phase4PrioritySort(left, right);
+    });
+  if (promotable.length === 0) {
+    return { tokens, promotedCount: 0, targetCount };
+  }
+
+  const promoteIds = new Set(
+    promotable
+      .slice(0, Math.max(0, targetCount - themedEligibleCount))
+      .map((token) => token.coingecko_id),
+  );
+  if (promoteIds.size === 0) {
+    return { tokens, promotedCount: 0, targetCount };
+  }
+
+  return {
+    tokens: tokens.map((token) =>
+      promoteIds.has(token.coingecko_id)
+        ? {
+            ...token,
+            eligible: true,
+            exclusion_reasons: [],
+            source_tags: uniqueSorted([...token.source_tags, "phase4_segment_breadth_lane"]),
+          }
+        : token,
+    ),
+    promotedCount: promoteIds.size,
+    targetCount,
+  };
+}
+
 function relaxPhase4Thresholds(base: Phase4Thresholds, step: Phase4CoverageRecoveryStep): Phase4Thresholds {
   return {
     minLiquidityScore: clamp(base.minLiquidityScore - step.minLiquidityDelta, PHASE4_RECOVERY_MIN_LIQUIDITY_FLOOR, 1),
@@ -7215,8 +7564,10 @@ function validatePhase4Output(output: Phase4Output): Phase4Output {
   throw new Error(`Phase 4 output validation failed: ${firstError?.message ?? "unknown_error"}`);
 }
 
-function riskBucketScore(token: Phase4OutputToken): number {
+function riskBucketScore(token: Phase4OutputToken, portfolioSegment?: PortfolioSegment): number {
   if (token.token_category === "stablecoin") return 0.15;
+  if (portfolioSegment === "Yield Farm" && isYieldFarmPhase4ReserveToken(token)) return 0.34;
+  if (portfolioSegment === "Yield Farm" && isYieldFarmPhase4CarryToken(token)) return 0.48;
   if (token.token_category === "core") return 0.3;
   if (token.token_category === "alt") return 0.55;
   if (token.token_category === "meme") return 0.9;
@@ -7696,9 +8047,13 @@ function deriveDeterministicPhase5RiskClass(
   token: Phase4OutputToken,
   riskScore: number,
   volatilityProxyScore: number,
+  portfolioSegment?: PortfolioSegment,
 ): Phase5RiskClass {
   if (token.token_category === "stablecoin") return "stablecoin";
   if (token.token_category === "unknown") return "unclassified";
+  if (portfolioSegment === "Yield Farm" && isYieldFarmPhase4ReserveToken(token)) {
+    return "large_cap_crypto";
+  }
   if (token.token_category === "meme" || token.token_category === "proxy_or_wrapped") return "speculative";
   if (token.rank_bucket === "long_tail" || riskScore >= 0.8 || volatilityProxyScore >= 0.82) return "high_risk";
   if (
@@ -7734,6 +8089,7 @@ function deriveDeterministicPhase5Bucket(
   token: Phase4OutputToken,
   riskClass: Phase5RiskClass,
   riskScore: number,
+  portfolioSegment?: PortfolioSegment,
 ): Phase5PortfolioBucket {
   const isCoreAnchor =
     riskClass === "large_cap_crypto" &&
@@ -7745,6 +8101,7 @@ function deriveDeterministicPhase5Bucket(
     token.structural_score >= 0.9 &&
     riskScore <= 0.24;
   if (riskClass === "stablecoin") return "stablecoin";
+  if (portfolioSegment === "Yield Farm" && isYieldFarmPhase4ReserveToken(token)) return "core";
   if (isCoreAnchor) return "core";
   if (riskClass === "high_risk" || riskClass === "speculative" || riskScore >= 0.62 || token.rank_bucket === "long_tail") {
     return "high_volatility";
@@ -7799,6 +8156,7 @@ function deriveDeterministicPhase5Role(
   qualityScore: number,
   profitability: number,
   riskTolerance: UserRiskTolerance,
+  portfolioSegment?: PortfolioSegment,
 ): Phase5Role {
   const policy = PHASE5_ROLE_POLICY_BY_RISK[riskTolerance];
   const isCoreAnchor =
@@ -7818,9 +8176,21 @@ function deriveDeterministicPhase5Role(
     if (riskScore <= policy.defensiveStableRiskCeiling) return "defensive";
     return "liquidity";
   }
+  if (portfolioSegment === "Yield Farm" && isYieldFarmPhase4ReserveToken(token)) {
+    return "core";
+  }
   if (isCoreAnchor) return "core";
   if (riskClass === "high_risk" || riskClass === "speculative" || bucket === "high_volatility" || riskScore >= policy.speculativeRiskThreshold) {
     return "speculative";
+  }
+  if (
+    portfolioSegment === "Yield Farm" &&
+    isYieldFarmPhase4CarryToken(token) &&
+    profitability >= 0.42 &&
+    qualityScore >= Math.max(0.54, policy.carryMinQuality - 0.08) &&
+    riskScore <= Math.min(0.68, policy.carryMaxRisk + 0.12)
+  ) {
+    return "carry";
   }
   if (
     profitability >= policy.carryMinProfitability &&
@@ -7886,6 +8256,7 @@ function runPhase5DeterministicScoring(
   qualified: Phase4OutputToken[],
   riskTolerance: UserRiskTolerance,
   investmentTimeframe: UserInvestmentTimeframe,
+  portfolioSegment: PortfolioSegment,
 ): Phase5ScoredCandidate[] {
   const stablecoinRiskContext = buildStablecoinRiskContext(qualified);
   return qualified
@@ -7904,7 +8275,7 @@ function runPhase5DeterministicScoring(
       const drawdownProxyScore = deriveDrawdownProxyScore(token, volatilityProxyScore);
       const stablecoinRiskModifier = deriveStablecoinRiskModifier(token, stablecoinRiskContext);
       const baseRiskScore = clamp(
-        0.25 * riskBucketScore(token) +
+        0.25 * riskBucketScore(token, portfolioSegment) +
           0.15 * rankRiskScore(token.rank_bucket) +
           0.15 * rankPositionRiskScore(token.market_cap_rank) +
           0.15 * depthRiskScore(token.exchange_depth_proxy) +
@@ -7926,8 +8297,8 @@ function runPhase5DeterministicScoring(
       const volatility = token.token_category === "stablecoin"
         ? clamp(volatilityBase * 0.6 + (token.stablecoin_validation_state === "trusted_stablecoin" ? -0.03 : 0.04), 0, 1)
         : volatilityBase;
-      const riskClass = deriveDeterministicPhase5RiskClass(token, riskScore, volatilityProxyScore);
-      const bucket = deriveDeterministicPhase5Bucket(token, riskClass, riskScore);
+      const riskClass = deriveDeterministicPhase5RiskClass(token, riskScore, volatilityProxyScore, portfolioSegment);
+      const bucket = deriveDeterministicPhase5Bucket(token, riskClass, riskScore, portfolioSegment);
       const role = deriveDeterministicPhase5Role(
         token,
         riskClass,
@@ -7936,6 +8307,7 @@ function runPhase5DeterministicScoring(
         qualityScore,
         profitability,
         riskTolerance,
+        portfolioSegment,
       );
       return {
         token,
@@ -8056,6 +8428,7 @@ async function runPhase5AgentScoringProcess(
   qualified: Phase4OutputToken[],
   riskTolerance: UserRiskTolerance,
   investmentTimeframe: UserInvestmentTimeframe,
+  portfolioSegment: PortfolioSegment,
   constraints: Phase5AgentScoringConstraints,
 ): Promise<Phase5AgentScoringRun> {
   const instructionPack = buildPhase5AgentScoringInstructionPack(
@@ -8068,7 +8441,7 @@ async function runPhase5AgentScoringProcess(
   if (providerMode === "deterministic") {
     return {
       instructionPack,
-      scoredCandidates: runPhase5DeterministicScoring(qualified, riskTolerance, investmentTimeframe),
+      scoredCandidates: runPhase5DeterministicScoring(qualified, riskTolerance, investmentTimeframe, portfolioSegment),
       provider: "deterministic-ruleset:v4",
       transport: "deterministic_rules",
     };
@@ -8207,10 +8580,25 @@ function derivePhase5SelectionTarget(riskTolerance: UserRiskTolerance): number {
   return 12;
 }
 
+function derivePhase5SelectionTargetForSegment(
+  riskTolerance: UserRiskTolerance,
+  portfolioSegment: PortfolioSegment,
+): number {
+  const baseTarget = derivePhase5SelectionTarget(riskTolerance);
+  if (portfolioSegment === "Gaming") {
+    return Math.min(12, baseTarget + 1);
+  }
+  if (portfolioSegment === "Yield Farm") {
+    return Math.min(12, baseTarget + 2);
+  }
+  return baseTarget;
+}
+
 function selectPhase5CandidatesWithStablecoinCap(
   shortlist: Phase5ScoredCandidate[],
   targetSelection: number,
   maxSelectedStablecoins: number,
+  portfolioSegment?: PortfolioSegment,
 ): {
   selectedIds: Set<string>;
   selectedCount: number;
@@ -8242,6 +8630,23 @@ function selectPhase5CandidatesWithStablecoinCap(
     if (!preferredStablecoinIds.has(candidate.token.coingecko_id)) continue;
     selectedIds.add(candidate.token.coingecko_id);
     selectedStablecoinCount += 1;
+  }
+
+  if (portfolioSegment === "Yield Farm") {
+    const reserveCandidates = shortlist
+      .filter((candidate) => isYieldFarmPhase4ReserveToken(candidate.token))
+      .sort(
+        (left, right) =>
+          right.qualityScore - left.qualityScore ||
+          right.token.liquidity_score - left.token.liquidity_score ||
+          right.compositeScore - left.compositeScore ||
+          left.riskScore - right.riskScore,
+      );
+    for (const candidate of reserveCandidates.slice(0, 2)) {
+      if (selectedIds.size >= desiredCount) break;
+      if (selectedIds.has(candidate.token.coingecko_id)) continue;
+      selectedIds.add(candidate.token.coingecko_id);
+    }
   }
 
   for (const candidate of shortlist) {
@@ -8403,10 +8808,118 @@ function finalizeAllocationMap(
   allocations.set(targetId, round(Math.max(0, (allocations.get(targetId) ?? 0) + delta), 6));
 }
 
+function derivePhase6AllocationPreferenceScore(
+  candidate: Phase6AllocationCandidate,
+  riskTolerance: UserRiskTolerance,
+  policyMode: AllocationPolicyMode,
+  portfolioSegment: PortfolioSegment,
+): number {
+  const baseScore = Math.max(0.0001, candidate.compositeScore);
+  const qualityTilt = 0.72 + candidate.qualityScore * 0.28;
+  const liquidityTilt = 0.76 + candidate.token.liquidity_score * 0.24;
+  const structuralTilt = 0.78 + candidate.token.structural_score * 0.22;
+  const stabilityTilt =
+    policyMode === "capital_preservation"
+      ? clamp(
+          1.42 - candidate.riskScore * 0.95 - (1 - candidate.token.structural_score) * 0.22 - (1 - candidate.token.liquidity_score) * 0.2,
+          0.32,
+          1.52,
+        )
+      : policyMode === "balanced_defensive"
+        ? clamp(
+            1.24 - candidate.riskScore * 0.7 - (1 - candidate.token.structural_score) * 0.14 - (1 - candidate.token.liquidity_score) * 0.12,
+            0.42,
+            1.34,
+          )
+        : policyMode === "balanced_growth"
+          ? clamp(1.05 - candidate.riskScore * 0.34 - (1 - candidate.token.structural_score) * 0.06, 0.62, 1.18)
+          : clamp(0.96 - candidate.riskScore * 0.12 + candidate.qualityScore * 0.06, 0.72, 1.14);
+
+  const stablecoinBias =
+    candidate.bucket === "stablecoin"
+      ? policyMode === "capital_preservation"
+        ? 1.08
+        : policyMode === "balanced_defensive"
+          ? 1.04
+          : 1
+      : 1;
+
+  const riskToleranceBias =
+    riskTolerance === "Conservative"
+      ? clamp(1.12 - candidate.riskScore * 0.18, 0.86, 1.12)
+      : riskTolerance === "Balanced"
+        ? clamp(1.08 - candidate.riskScore * 0.12, 0.9, 1.08)
+        : riskTolerance === "Growth"
+          ? clamp(1.02 - candidate.riskScore * 0.05, 0.94, 1.04)
+          : 1;
+  const candidateSymbol = candidate.token.symbol.toUpperCase();
+  const yieldReserveBias =
+    portfolioSegment === "Yield Farm" && PHASE3_YIELD_FARM_WRAPPED_RESERVE_SYMBOLS.has(candidateSymbol)
+      ? clamp(1.08 + candidate.qualityScore * 0.04 + candidate.token.liquidity_score * 0.04, 1.08, 1.18)
+      : 1;
+  const yieldCarryBias =
+    portfolioSegment === "Yield Farm" && PHASE3_YIELD_FARM_CARRY_SYMBOL_ALLOWLIST.has(candidateSymbol)
+      ? clamp(
+          1.03 +
+            candidate.qualityScore * 0.04 +
+            candidate.token.liquidity_score * 0.04 +
+            candidate.token.structural_score * 0.03 -
+            candidate.riskScore * 0.03,
+          1,
+          1.14,
+        )
+      : 1;
+
+  return Math.max(
+    0.0001,
+    baseScore *
+      qualityTilt *
+      liquidityTilt *
+      structuralTilt *
+      stabilityTilt *
+      stablecoinBias *
+      riskToleranceBias *
+      yieldReserveBias *
+      yieldCarryBias,
+  );
+}
+
+function deriveMemecoinStablecoinTarget(
+  baseStablecoinTarget: number,
+  policyMode: AllocationPolicyMode,
+  riskTolerance: UserRiskTolerance,
+  investmentTimeframe: UserInvestmentTimeframe,
+): number {
+  const isAggressiveShortTerm = riskTolerance === "Aggressive" && investmentTimeframe === "<1_year";
+  const isGrowthShortTerm =
+    (riskTolerance === "Growth" || riskTolerance === "Aggressive") && investmentTimeframe === "<1_year";
+
+  let adjustedTarget = baseStablecoinTarget;
+  if (isAggressiveShortTerm) {
+    adjustedTarget = clamp(baseStablecoinTarget - 0.08, 0, 1);
+  } else if (isGrowthShortTerm) {
+    adjustedTarget = clamp(baseStablecoinTarget - 0.04, 0, 1);
+  }
+
+  if (policyMode === "capital_preservation") {
+    return clamp(adjustedTarget, isAggressiveShortTerm ? 0.25 : 0.4, isAggressiveShortTerm ? 0.5 : 0.65);
+  }
+  if (policyMode === "balanced_defensive") {
+    return clamp(adjustedTarget, isAggressiveShortTerm ? 0.22 : 0.3, isAggressiveShortTerm ? 0.45 : 0.55);
+  }
+  if (policyMode === "balanced_growth") {
+    return clamp(adjustedTarget, isAggressiveShortTerm ? 0.15 : 0.2, isAggressiveShortTerm ? 0.35 : 0.45);
+  }
+  return clamp(adjustedTarget, isAggressiveShortTerm ? 0.08 : 0.1, isAggressiveShortTerm ? 0.22 : 0.3);
+}
+
 function buildPhase6Portfolio(
   candidates: Phase6AllocationCandidate[],
   constraints: Phase6Output["inputs"]["portfolio_constraints"],
   riskTolerance: UserRiskTolerance,
+  policyMode: AllocationPolicyMode,
+  portfolioSegment: PortfolioSegment,
+  investmentTimeframe: UserInvestmentTimeframe,
 ): {
   allocations: Phase6Output["allocation"]["allocations"];
   selectedIds: Set<string>;
@@ -8453,7 +8966,10 @@ function buildPhase6Portfolio(
     };
   }
 
-  const targetCount = Math.min(sorted.length, Math.max(3, derivePhase5SelectionTarget(riskTolerance)));
+  const targetCount = Math.min(
+    sorted.length,
+    Math.max(3, derivePhase5SelectionTargetForSegment(riskTolerance, portfolioSegment)),
+  );
   const selectedIds: string[] = [];
   const selectedIdSet = new Set<string>();
 
@@ -8478,6 +8994,27 @@ function buildPhase6Portfolio(
     selectedIdSet.add(anchor.token.coingecko_id);
   }
 
+  if (portfolioSegment === "Yield Farm") {
+    const reserveAnchors = coreCandidates
+      .filter(
+        (candidate) =>
+          PHASE3_YIELD_FARM_WRAPPED_RESERVE_SYMBOLS.has(candidate.token.symbol.toUpperCase()) &&
+          !selectedIdSet.has(candidate.token.coingecko_id),
+      )
+      .sort(
+        (left, right) =>
+          right.qualityScore - left.qualityScore ||
+          right.token.liquidity_score - left.token.liquidity_score ||
+          right.compositeScore - left.compositeScore ||
+          left.riskScore - right.riskScore,
+      );
+    for (const anchor of reserveAnchors.slice(0, 2)) {
+      if (selectedIds.length >= targetCount) break;
+      selectedIds.push(anchor.token.coingecko_id);
+      selectedIdSet.add(anchor.token.coingecko_id);
+    }
+  }
+
   for (const candidate of sorted) {
     if (selectedIds.length >= targetCount) break;
     if (selectedIdSet.has(candidate.token.coingecko_id)) continue;
@@ -8491,9 +9028,14 @@ function buildPhase6Portfolio(
 
   const selected = sorted.filter((candidate) => selectedIdSet.has(candidate.token.coingecko_id));
   const selectedById = new Map(selected.map((candidate) => [candidate.token.coingecko_id, candidate]));
-  const scoreById = new Map(selected.map((candidate) => [candidate.token.coingecko_id, Math.max(0.0001, candidate.compositeScore)]));
+  const scoreById = new Map(
+    selected.map((candidate) => [
+      candidate.token.coingecko_id,
+      derivePhase6AllocationPreferenceScore(candidate, riskTolerance, policyMode, portfolioSegment),
+    ]),
+  );
   const maxSingleCap = clamp(constraints.max_single_asset_exposure, 0.05, 1);
-  const highVolCap = clamp(constraints.high_volatility_asset_cap, 0, 1);
+  let highVolCap = clamp(constraints.high_volatility_asset_cap, 0, 1);
 
   const selectedStableIds = selected
     .filter((candidate) => candidate.bucket === "stablecoin")
@@ -8520,8 +9062,19 @@ function buildPhase6Portfolio(
     selectedStableIds.length > 0
       ? clamp(Math.max(constraints.stablecoin_minimum, deriveStablecoinBaseline(riskTolerance)), 0, 0.65)
       : 0;
+  if (portfolioSegment === "Memecoins" && stablecoinTarget > 0) {
+    stablecoinTarget = deriveMemecoinStablecoinTarget(
+      stablecoinTarget,
+      policyMode,
+      riskTolerance,
+      investmentTimeframe,
+    );
+  }
   if (selectedNonStableIds.length === 0 && selectedStableIds.length > 0) {
     stablecoinTarget = 1;
+  }
+  if (portfolioSegment === "Memecoins" && selectedNonStableIds.length > 0) {
+    highVolCap = clamp(Math.max(highVolCap, 1 - stablecoinTarget), 0, 1);
   }
 
   const allocations = new Map<string, number>();
@@ -8988,6 +9541,7 @@ async function executePhase3(jobId: string): Promise<void> {
         reason_codes: [
           `risk_tolerance:${phase2Output.inputs.user_profile.risk_tolerance.toLowerCase()}`,
           `investment_timeframe:${phase2Output.inputs.user_profile.investment_timeframe}`,
+          `portfolio_segment:${portfolioSegmentKey(phase2Output.inputs.user_profile.portfolio_segment)}`,
           `policy_mode:${phase2Output.allocation_policy.mode}`,
           `authorization_status:${phase2Output.allocation_authorization.status.toLowerCase()}`,
         ],
@@ -9034,7 +9588,12 @@ async function executePhase3(jobId: string): Promise<void> {
     }
 
     let topVolumeTokens = sortUniverseTokens(
-      filterPhase3TokensForRetail(collectedTopVolumeTokens, selectionRules, "top_volume"),
+      filterPhase3TokensForRetail(
+        collectedTopVolumeTokens,
+        selectionRules,
+        "top_volume",
+        phase2Output.inputs.user_profile.portfolio_segment,
+      ),
     ).slice(0, topVolumeTarget);
     if (topVolumeTokens.length === 0) {
       missingDomains.add("phase3_top_volume_retail_unavailable");
@@ -9068,6 +9627,7 @@ async function executePhase3(jobId: string): Promise<void> {
       collectedProfileMatchTokens,
       selectionRules,
       "profile_match",
+      phase2Output.inputs.user_profile.portfolio_segment,
     );
     for (const token of profileMatchTokens) {
       mergeUniverseTokens(universeMap, token);
@@ -9084,8 +9644,16 @@ async function executePhase3(jobId: string): Promise<void> {
       status: "in_progress",
     });
     const mergedTokens = sortUniverseTokens(Array.from(universeMap.values()));
-    const profileMatchCount = mergedTokens.filter((token) => token.profileMatchReasons.size > 0).length;
-    const phase3Tokens = mergedTokens.map((token) => derivePhase3TokenOutput(token));
+    const filteredMergedTokens = applyPhase3PortfolioSegmentFilter(
+      mergedTokens,
+      phase2Output.inputs.user_profile.portfolio_segment,
+      selectionRules,
+      missingDomains,
+    );
+    const profileMatchCount = filteredMergedTokens.filter((token) => token.profileMatchReasons.size > 0).length;
+    const phase3Tokens = filteredMergedTokens.map((token) =>
+      derivePhase3TokenOutput(token, phase2Output.inputs.user_profile.portfolio_segment),
+    );
     for (const token of phase3Tokens) {
       if (token.status === "UNRESOLVED") {
         missingDomains.add(`phase3_token_unresolved:${token.coingecko_id}`);
@@ -9115,6 +9683,7 @@ async function executePhase3(jobId: string): Promise<void> {
         user_profile: {
           risk_tolerance: phase2Output.inputs.user_profile.risk_tolerance,
           investment_timeframe: phase2Output.inputs.user_profile.investment_timeframe,
+          portfolio_segment: phase2Output.inputs.user_profile.portfolio_segment,
         },
         top_volume_target: topVolumeTarget,
         volume_window_days: [7, 30] as const,
@@ -9122,7 +9691,7 @@ async function executePhase3(jobId: string): Promise<void> {
       universe: {
         top_volume_candidates_count: topVolumeTokens.length,
         profile_match_candidates_count: profileMatchCount,
-        total_candidates_count: mergedTokens.length,
+        total_candidates_count: filteredMergedTokens.length,
         tokens: phase3Tokens,
       },
       phase_boundaries: {
@@ -9377,6 +9946,13 @@ async function executePhase4(jobId: string): Promise<void> {
         if (eligibleCount >= desiredCoverageTarget) break;
       }
     }
+    const segmentBreadthGuard = applyPhase4SegmentBreadthGuard(
+      screenedTokens,
+      phase2Output.inputs.user_profile.portfolio_segment,
+      phase2Output.allocation_policy.mode,
+    );
+    screenedTokens = segmentBreadthGuard.tokens;
+    eligibleCount = screenedTokens.filter((token) => token.eligible).length;
     appendJobLog(jobId, {
       phase: SCREEN_LIQUIDITY_AND_STRUCTURAL_STABILITY_PHASE,
       subPhase: PHASE4_SUB_PHASES[2],
@@ -9396,6 +9972,14 @@ async function executePhase4(jobId: string): Promise<void> {
     selectionRules.add(`phase4_allow_low_depth:${thresholds.allowLowDepth}`);
     selectionRules.add(`phase4_total_candidates:${screenedTokens.length}`);
     selectionRules.add(`phase4_eligible_candidates:${eligibleCount}`);
+    if (segmentBreadthGuard.targetCount > 0) {
+      selectionRules.add(
+        `phase4_segment_minimum_themed_candidates:${portfolioSegmentKey(phase2Output.inputs.user_profile.portfolio_segment)}:${segmentBreadthGuard.targetCount}`,
+      );
+      if (segmentBreadthGuard.promotedCount > 0) {
+        selectionRules.add(`phase4_segment_breadth_promotions:${segmentBreadthGuard.promotedCount}`);
+      }
+    }
     selectionRules.add(`phase4_core_eligible_candidates:${laneDiagnostics.coreEligibleCount}`);
     selectionRules.add(`phase4_coverage_fill_candidates:${laneDiagnostics.coverageFillEligibleCount}`);
     selectionRules.add(`phase4_coverage_fill_quota:${laneDiagnostics.coverageFillCap}`);
@@ -9427,6 +10011,7 @@ async function executePhase4(jobId: string): Promise<void> {
         user_profile: {
           risk_tolerance: phase2Output.inputs.user_profile.risk_tolerance,
           investment_timeframe: phase2Output.inputs.user_profile.investment_timeframe,
+          portfolio_segment: phase2Output.inputs.user_profile.portfolio_segment,
         },
         screening_thresholds: {
           min_liquidity_score: round(thresholds.minLiquidityScore, 6),
@@ -9586,6 +10171,7 @@ async function executePhase5(jobId: string): Promise<void> {
       qualified,
       phase2Output.inputs.user_profile.risk_tolerance,
       phase2Output.inputs.user_profile.investment_timeframe,
+      phase2Output.inputs.user_profile.portfolio_segment,
       {
         riskBudget: portfolioConstraints.risk_budget,
         stablecoinMinimum: portfolioConstraints.stablecoin_minimum,
@@ -9623,13 +10209,17 @@ async function executePhase5(jobId: string): Promise<void> {
       subPhase: PHASE5_SUB_PHASES[2],
       status: "in_progress",
     });
-    const targetSelection = derivePhase5SelectionTarget(phase2Output.inputs.user_profile.risk_tolerance);
+    const targetSelection = derivePhase5SelectionTargetForSegment(
+      phase2Output.inputs.user_profile.risk_tolerance,
+      phase2Output.inputs.user_profile.portfolio_segment,
+    );
     const shortlistCount = Math.min(scoredCandidates.length, Math.max(targetSelection * 4, 20));
     const shortlist = scoredCandidates.slice(0, shortlistCount);
     const selectionResult = selectPhase5CandidatesWithStablecoinCap(
       shortlist,
       targetSelection,
       PHASE5_MAX_SELECTED_STABLECOINS,
+      phase2Output.inputs.user_profile.portfolio_segment,
     );
     const selectedCount = selectionResult.selectedCount;
     const selectedIds = selectionResult.selectedIds;
@@ -9695,6 +10285,7 @@ async function executePhase5(jobId: string): Promise<void> {
         user_profile: {
           risk_tolerance: phase2Output.inputs.user_profile.risk_tolerance,
           investment_timeframe: phase2Output.inputs.user_profile.investment_timeframe,
+          portfolio_segment: phase2Output.inputs.user_profile.portfolio_segment,
         },
         portfolio_constraints: portfolioConstraints,
       },
@@ -9921,6 +10512,9 @@ async function executePhase6(jobId: string): Promise<void> {
       allocationCandidates,
       phase5Output.inputs.portfolio_constraints,
       phase2Output.inputs.user_profile.risk_tolerance,
+      phase2Output.allocation_policy.mode,
+      phase2Output.inputs.user_profile.portfolio_segment,
+      phase2Output.inputs.user_profile.investment_timeframe,
     );
     appendJobLog(jobId, {
       phase: CONSTRUCT_PORTFOLIO_ALLOCATION_PHASE,
@@ -9939,6 +10533,11 @@ async function executePhase6(jobId: string): Promise<void> {
     selectionRules.add(`phase6_target_selection:${derivePhase5SelectionTarget(phase2Output.inputs.user_profile.risk_tolerance)}`);
     selectionRules.add(`phase6_stablecoin_minimum:${phase5Output.inputs.portfolio_constraints.stablecoin_minimum}`);
     selectionRules.add(`phase6_risk_budget:${phase5Output.inputs.portfolio_constraints.risk_budget}`);
+    if (phase2Output.inputs.user_profile.portfolio_segment === "Memecoins") {
+      selectionRules.add("phase6_segment_policy:memecoins");
+      selectionRules.add(`phase6_segment_policy_stablecoin_allocation:${round(portfolio.stablecoinAllocation, 6)}`);
+      selectionRules.add(`phase6_segment_policy_high_volatility_allocation:${round(1 - portfolio.stablecoinAllocation, 6)}`);
+    }
     selectionRules.add("phase6_stablecoin_diversification_guard:issuer_concentration_and_cluster_correlation");
     selectionRules.add("phase6_stablecoin_correlation_model:clustered_not_independent");
     selectionRules.add(
@@ -9988,6 +10587,7 @@ async function executePhase6(jobId: string): Promise<void> {
         user_profile: {
           risk_tolerance: phase2Output.inputs.user_profile.risk_tolerance,
           investment_timeframe: phase2Output.inputs.user_profile.investment_timeframe,
+          portfolio_segment: phase2Output.inputs.user_profile.portfolio_segment,
         },
         portfolio_constraints: phase5Output.inputs.portfolio_constraints,
       },

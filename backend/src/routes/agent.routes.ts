@@ -12,6 +12,11 @@ import { EXECUTION_MODEL_VERSION, getConfig } from "../config";
 import { getExecutionLogs } from "../logging/execution-logs";
 import { getX402StateStore } from "../services/x402-state.service";
 import { isExpiredIsoTimestamp, normalizeOptionalBoolean } from "../services/x402-utils";
+import {
+  normalizePortfolioSegment,
+  portfolioSegmentKey,
+  PORTFOLIO_SEGMENTS,
+} from "../services/portfolio-segments";
 import { isValidEmail, sendAdminUsageEmail, sendUserReportEmail, sendUserSummaryEmail } from "../services/email.service";
 import {
   authorizeWizardPayment,
@@ -50,6 +55,7 @@ import type {
   AllocateInputShape,
   AllocateRiskTolerance,
   AllocateTimeframe,
+  PortfolioSegment,
   X402AllocateRecord,
   X402ToolRecord,
   X402ToolProductId,
@@ -119,6 +125,7 @@ type X402ToolDefinition = {
 type X402ToolBaseInput = {
   riskTolerance: AllocateRiskTolerance;
   timeframe: AllocateTimeframe;
+  portfolioSegment: PortfolioSegment;
 };
 
 type AssetScorecardInput = X402ToolBaseInput & {
@@ -666,17 +673,17 @@ function getX402ToolPriceUsdc(productId: X402ToolProductId): string {
 
 const X402_PUBLIC_DESCRIPTIONS = {
   allocate:
-    "Portfolio allocation engine. Call this when an automated portfolio workflow needs a target crypto allocation for a specified risk tolerance and timeframe. Returns an accepted allocation job with a statusPath for asynchronous completion.",
+    "Portfolio allocation engine. Call this when an automated portfolio workflow needs a target crypto allocation for a specified risk tolerance, timeframe, and optional portfolio segment. Returns an accepted allocation job with a statusPath for asynchronous completion.",
   allocateWithReport:
-    "Portfolio allocation and report engine. Call this when an automated portfolio workflow needs the target allocation plus a certified decision record. Returns an accepted allocation job with a statusPath for asynchronous completion.",
+    "Portfolio allocation and report engine. Call this when an automated portfolio workflow needs the target allocation plus a certified decision record for a specified risk tolerance, timeframe, and optional portfolio segment. Returns an accepted allocation job with a statusPath for asynchronous completion.",
   marketRegime:
-    "Market regime classifier. Call this before allocation or rebalancing. Returns volatility, liquidity, sentiment, and allocation authorization inputs for automated portfolio workflows.",
+    "Market regime classifier. Call this before allocation or rebalancing. Returns volatility, liquidity, sentiment, and allocation authorization inputs for automated portfolio workflows, plus the requested portfolio segment context.",
   policyEnvelope:
-    "Risk policy engine. Call this when portfolio constraints must be computed for a supplied risk tolerance and timeframe. Returns exposure caps, stablecoin floor, risk budget, and authorization constraints.",
+    "Risk policy engine. Call this when portfolio constraints and segment filters must be computed for a supplied risk tolerance, timeframe, and optional portfolio segment. Returns exposure caps, stablecoin floor, risk budget, authorization constraints, and segment-aware universe guidance.",
   assetScorecard:
-    "Asset scoring engine. Call this before asset selection or allocation. Returns liquidity, structural stability, role classification, and composite quality scores for candidate assets.",
+    "Asset scoring engine. Call this before asset selection or allocation. Returns liquidity, structural stability, role classification, and composite quality scores for candidate assets, shaped by the requested portfolio segment.",
   rebalance:
-    "Portfolio rebalance engine. Call this after allocation or on a monitoring schedule with current holdings. Returns target-vs-current drift and the adjustments required to rebalance within policy constraints.",
+    "Portfolio rebalance engine. Call this after allocation or on a monitoring schedule with current holdings. Returns target-vs-current drift and the adjustments required to rebalance within policy constraints for the requested portfolio segment.",
 } as const;
 
 const X402_SERVER_METADATA = {
@@ -714,6 +721,7 @@ function getX402ToolDefinitions(): X402ToolDefinition[] {
           decisionId: { type: "string" },
           riskTolerance: { enum: ["Conservative", "Balanced", "Growth", "Aggressive"] },
           timeframe: { enum: ["<1_year", "1-3_years", "3+_years"] },
+          portfolioSegment: { enum: [...PORTFOLIO_SEGMENTS] },
         },
         required: ["decisionId", "riskTolerance", "timeframe"],
       },
@@ -721,6 +729,7 @@ function getX402ToolDefinitions(): X402ToolDefinition[] {
         decisionId: "market-regime-001",
         riskTolerance: "Balanced",
         timeframe: "1-3_years",
+        portfolioSegment: "Bluechips",
       },
       exampleOutput: {
         status: "completed",
@@ -752,6 +761,7 @@ function getX402ToolDefinitions(): X402ToolDefinition[] {
           decisionId: { type: "string" },
           riskTolerance: { enum: ["Conservative", "Balanced", "Growth", "Aggressive"] },
           timeframe: { enum: ["<1_year", "1-3_years", "3+_years"] },
+          portfolioSegment: { enum: [...PORTFOLIO_SEGMENTS] },
         },
         required: ["decisionId", "riskTolerance", "timeframe"],
       },
@@ -759,6 +769,7 @@ function getX402ToolDefinitions(): X402ToolDefinition[] {
         decisionId: "policy-envelope-001",
         riskTolerance: "Growth",
         timeframe: "3+_years",
+        portfolioSegment: "Yield Farm",
       },
       exampleOutput: {
         status: "completed",
@@ -788,6 +799,7 @@ function getX402ToolDefinitions(): X402ToolDefinition[] {
           decisionId: { type: "string" },
           riskTolerance: { enum: ["Conservative", "Balanced", "Growth", "Aggressive"] },
           timeframe: { enum: ["<1_year", "1-3_years", "3+_years"] },
+          portfolioSegment: { enum: [...PORTFOLIO_SEGMENTS] },
           assets: {
             type: "array",
             items: { type: "string" },
@@ -800,6 +812,7 @@ function getX402ToolDefinitions(): X402ToolDefinition[] {
         decisionId: "scorecard-001",
         riskTolerance: "Balanced",
         timeframe: "1-3_years",
+        portfolioSegment: "Gaming",
         assets: ["BTC", "ETH", "SOL"],
       },
       exampleOutput: {
@@ -833,6 +846,7 @@ function getX402ToolDefinitions(): X402ToolDefinition[] {
           decisionId: { type: "string" },
           riskTolerance: { enum: ["Conservative", "Balanced", "Growth", "Aggressive"] },
           timeframe: { enum: ["<1_year", "1-3_years", "3+_years"] },
+          portfolioSegment: { enum: [...PORTFOLIO_SEGMENTS] },
           holdings: {
             type: "array",
             minItems: 1,
@@ -854,6 +868,7 @@ function getX402ToolDefinitions(): X402ToolDefinition[] {
         decisionId: "rebalance-001",
         riskTolerance: "Balanced",
         timeframe: "1-3_years",
+        portfolioSegment: "Bluechips",
         holdings: [
           { asset: "BTC", usdValue: 4300 },
           { asset: "ETH", usdValue: 3700 },
@@ -970,6 +985,7 @@ function buildAllocateDiscoveryExtension() {
       decisionId: "agent-run-001",
       riskTolerance: "Balanced",
       timeframe: "1-3_years",
+      portfolioSegment: "Bluechips",
     },
     inputSchema: {
       type: "object",
@@ -977,6 +993,7 @@ function buildAllocateDiscoveryExtension() {
         decisionId: { type: "string" },
         riskTolerance: { enum: ["Conservative", "Balanced", "Growth", "Aggressive"] },
         timeframe: { enum: ["<1_year", "1-3_years", "3+_years"] },
+        portfolioSegment: { enum: [...PORTFOLIO_SEGMENTS] },
       },
       required: ["decisionId", "riskTolerance", "timeframe"],
     },
@@ -1003,6 +1020,7 @@ function buildAllocateWithReportDiscoveryExtension() {
       decisionId: "agent-run-001",
       riskTolerance: "Balanced",
       timeframe: "1-3_years",
+      portfolioSegment: "Bluechips",
     },
     inputSchema: {
       type: "object",
@@ -1010,6 +1028,7 @@ function buildAllocateWithReportDiscoveryExtension() {
         decisionId: { type: "string" },
         riskTolerance: { enum: ["Conservative", "Balanced", "Growth", "Aggressive"] },
         timeframe: { enum: ["<1_year", "1-3_years", "3+_years"] },
+        portfolioSegment: { enum: [...PORTFOLIO_SEGMENTS] },
       },
       required: ["decisionId", "riskTolerance", "timeframe"],
     },
@@ -1589,6 +1608,7 @@ async function buildMarketRegimeResult(jobId: string): Promise<Record<string, un
   return {
     snapshotAt: phase1.timestamp,
     regime: mapMarketRegimeLabel(context),
+    portfolioSegment: phase2.inputs.user_profile.portfolio_segment,
     marketCondition: phase1.market_condition,
     authorization: phase1.allocation_authorization,
     policyMode: phase2.allocation_policy.mode,
@@ -1605,6 +1625,7 @@ async function buildPolicyEnvelopeResult(jobId: string): Promise<Record<string, 
   const phase2 = context.phase2.output!;
   return {
     snapshotAt: phase2.timestamp,
+    portfolioSegment: phase2.inputs.user_profile.portfolio_segment,
     policyMode: phase2.allocation_policy.mode,
     defensiveBiasAdjustment: phase2.allocation_policy.defensive_bias_adjustment,
     policyEnvelope: phase2.policy_envelope,
@@ -1643,6 +1664,7 @@ async function buildAssetScorecardResult(jobId: string, input: AssetScorecardInp
 
   return {
     snapshotAt: phase5.timestamp,
+    portfolioSegment: phase5.inputs.user_profile.portfolio_segment,
     screenedCandidatesCount: phase5.evaluation.screened_candidates_count,
     qualifiedCandidatesCount: phase5.evaluation.qualified_candidates_count,
     selectedCandidatesCount: phase5.evaluation.selected_candidates_count,
@@ -1694,6 +1716,7 @@ async function buildRebalanceResult(jobId: string, input: RebalanceInput): Promi
   return {
     snapshotAt: phase6.timestamp,
     currentPortfolioUsd: Number(totalUsd.toFixed(2)),
+    portfolioSegment: phase6.inputs.user_profile.portfolio_segment,
     policyMode: phase2.allocation_policy.mode,
     policyEnvelope: phase2.policy_envelope,
     targetPortfolio: {
@@ -2172,6 +2195,7 @@ async function handleX402ToolRequest(
       riskMode: deriveRiskMode(normalizedInput.riskTolerance as AllocateRiskTolerance),
       riskTolerance: normalizedInput.riskTolerance as string,
       investmentTimeframe: normalizedInput.timeframe as string,
+      portfolioSegment: normalizedInput.portfolioSegment as string,
       walletAddress: payer,
     });
 
@@ -3303,8 +3327,10 @@ async function handleX402AllocateRequest(
   const hasPaymentSignature = Boolean(paymentSignatureHeader);
   const riskTolerance = normalizeRiskTolerance(req.body?.riskTolerance);
   const timeframe = normalizeTimeframe(req.body?.timeframe);
+  const portfolioSegment = normalizePortfolioSegment(req.body?.portfolioSegment);
   const riskToleranceProvided = req.body?.riskTolerance !== undefined;
   const timeframeProvided = req.body?.timeframe !== undefined;
+  const portfolioSegmentProvided = req.body?.portfolioSegment !== undefined;
   if (riskToleranceProvided && !riskTolerance) {
     return failure(
       res,
@@ -3316,6 +3342,13 @@ async function handleX402AllocateRequest(
     return failure(
       res,
       new Error("timeframe must be one of <1_year | 1-3_years | 3+_years."),
+      400,
+    );
+  }
+  if (portfolioSegmentProvided && !portfolioSegment) {
+    return failure(
+      res,
+      new Error(`portfolioSegment must be one of ${PORTFOLIO_SEGMENTS.join(" | ")}.`),
       400,
     );
   }
@@ -3373,6 +3406,7 @@ async function handleX402AllocateRequest(
   const inputShape: AllocateInputShape = {
     riskTolerance: riskTolerance ?? "Balanced",
     timeframe: timeframe ?? "1-3_years",
+    portfolioSegment: portfolioSegment ?? "Bluechips",
     withReport,
   };
   const inputFingerprint = computeAllocateInputFingerprint(inputShape);
@@ -3448,6 +3482,7 @@ async function handleX402AllocateRequest(
           riskMode: deriveRiskMode(inputShape.riskTolerance),
           riskTolerance: inputShape.riskTolerance,
           investmentTimeframe: inputShape.timeframe,
+          portfolioSegment: inputShape.portfolioSegment,
         });
 
         void orchestrateAllocateJob(jobId).catch((error) => {
@@ -3587,6 +3622,7 @@ async function handleX402AllocateRequest(
         riskMode: deriveRiskMode(inputShape.riskTolerance),
         riskTolerance: inputShape.riskTolerance,
         investmentTimeframe: inputShape.timeframe,
+        portfolioSegment: inputShape.portfolioSegment,
         walletAddress: payer,
       });
 
@@ -3695,14 +3731,19 @@ router.post("/x402/market-regime", async (req: Request, res: Response) => {
   const isProbe = !paymentSignatureHeader;
   const riskTolerance = normalizeRiskTolerance(req.body?.riskTolerance) ?? (isProbe ? "Balanced" : null);
   const timeframe = normalizeTimeframe(req.body?.timeframe) ?? (isProbe ? "1-3_years" : null);
+  const portfolioSegmentProvided = req.body?.portfolioSegment !== undefined;
+  const portfolioSegment = normalizePortfolioSegment(req.body?.portfolioSegment) ?? "Bluechips";
   if (!riskTolerance) {
     return failure(res, new Error("riskTolerance must be one of Conservative | Balanced | Growth | Aggressive."), 400);
   }
   if (!timeframe) {
     return failure(res, new Error("timeframe must be one of <1_year | 1-3_years | 3+_years."), 400);
   }
+  if (portfolioSegmentProvided && !normalizePortfolioSegment(req.body?.portfolioSegment)) {
+    return failure(res, new Error(`portfolioSegment must be one of ${PORTFOLIO_SEGMENTS.join(" | ")}.`), 400);
+  }
 
-  const input: X402ToolBaseInput = { riskTolerance, timeframe };
+  const input: X402ToolBaseInput = { riskTolerance, timeframe, portfolioSegment };
   return handleX402ToolRequest(req, res, "market_regime", input, (jobId) =>
     executeToolProduct("market_regime", jobId, input)
   );
@@ -3713,14 +3754,19 @@ router.post("/x402/policy-envelope", async (req: Request, res: Response) => {
   const isProbe = !paymentSignatureHeader;
   const riskTolerance = normalizeRiskTolerance(req.body?.riskTolerance) ?? (isProbe ? "Balanced" : null);
   const timeframe = normalizeTimeframe(req.body?.timeframe) ?? (isProbe ? "1-3_years" : null);
+  const portfolioSegmentProvided = req.body?.portfolioSegment !== undefined;
+  const portfolioSegment = normalizePortfolioSegment(req.body?.portfolioSegment) ?? "Bluechips";
   if (!riskTolerance) {
     return failure(res, new Error("riskTolerance must be one of Conservative | Balanced | Growth | Aggressive."), 400);
   }
   if (!timeframe) {
     return failure(res, new Error("timeframe must be one of <1_year | 1-3_years | 3+_years."), 400);
   }
+  if (portfolioSegmentProvided && !normalizePortfolioSegment(req.body?.portfolioSegment)) {
+    return failure(res, new Error(`portfolioSegment must be one of ${PORTFOLIO_SEGMENTS.join(" | ")}.`), 400);
+  }
 
-  const input: X402ToolBaseInput = { riskTolerance, timeframe };
+  const input: X402ToolBaseInput = { riskTolerance, timeframe, portfolioSegment };
   return handleX402ToolRequest(req, res, "policy_envelope", input, (jobId) =>
     executeToolProduct("policy_envelope", jobId, input)
   );
@@ -3731,16 +3777,22 @@ router.post("/x402/asset-scorecard", async (req: Request, res: Response) => {
   const isProbe = !paymentSignatureHeader;
   const riskTolerance = normalizeRiskTolerance(req.body?.riskTolerance) ?? (isProbe ? "Balanced" : null);
   const timeframe = normalizeTimeframe(req.body?.timeframe) ?? (isProbe ? "1-3_years" : null);
+  const portfolioSegmentProvided = req.body?.portfolioSegment !== undefined;
+  const portfolioSegment = normalizePortfolioSegment(req.body?.portfolioSegment) ?? "Bluechips";
   if (!riskTolerance) {
     return failure(res, new Error("riskTolerance must be one of Conservative | Balanced | Growth | Aggressive."), 400);
   }
   if (!timeframe) {
     return failure(res, new Error("timeframe must be one of <1_year | 1-3_years | 3+_years."), 400);
   }
+  if (portfolioSegmentProvided && !normalizePortfolioSegment(req.body?.portfolioSegment)) {
+    return failure(res, new Error(`portfolioSegment must be one of ${PORTFOLIO_SEGMENTS.join(" | ")}.`), 400);
+  }
 
   const input: AssetScorecardInput = {
     riskTolerance,
     timeframe,
+    portfolioSegment,
     assets: normalizeStringArray(req.body?.assets, 12),
   };
   return handleX402ToolRequest(req, res, "asset_scorecard", input, (jobId) =>
@@ -3753,11 +3805,16 @@ router.post("/x402/rebalance", async (req: Request, res: Response) => {
   const isProbe = !paymentSignatureHeader;
   const riskTolerance = normalizeRiskTolerance(req.body?.riskTolerance) ?? (isProbe ? "Balanced" : null);
   const timeframe = normalizeTimeframe(req.body?.timeframe) ?? (isProbe ? "1-3_years" : null);
+  const portfolioSegmentProvided = req.body?.portfolioSegment !== undefined;
+  const portfolioSegment = normalizePortfolioSegment(req.body?.portfolioSegment) ?? "Bluechips";
   if (!riskTolerance) {
     return failure(res, new Error("riskTolerance must be one of Conservative | Balanced | Growth | Aggressive."), 400);
   }
   if (!timeframe) {
     return failure(res, new Error("timeframe must be one of <1_year | 1-3_years | 3+_years."), 400);
+  }
+  if (portfolioSegmentProvided && !normalizePortfolioSegment(req.body?.portfolioSegment)) {
+    return failure(res, new Error(`portfolioSegment must be one of ${PORTFOLIO_SEGMENTS.join(" | ")}.`), 400);
   }
 
   const holdings = normalizeRebalanceHoldings(req.body?.holdings) ?? (isProbe ? [{ asset: "BTC", name: "Bitcoin", usdValue: 1000, allocationPct: 100 }] : null);
@@ -3772,6 +3829,7 @@ router.post("/x402/rebalance", async (req: Request, res: Response) => {
   const input: RebalanceInput = {
     riskTolerance,
     timeframe,
+    portfolioSegment,
     holdings,
   };
   return handleX402ToolRequest(req, res, "rebalance", input, (jobId) =>
@@ -3795,6 +3853,7 @@ router.post("/phase1/run", (req: Request, res: Response) => {
   const investmentTimeframe = typeof req.body?.investmentTimeframe === "string"
     ? req.body.investmentTimeframe
     : undefined;
+  const portfolioSegment = typeof req.body?.portfolioSegment === "string" ? req.body.portfolioSegment : undefined;
   const walletAddress = typeof req.body?.walletAddress === "string" ? req.body.walletAddress : undefined;
 
   try {
@@ -3804,6 +3863,7 @@ router.post("/phase1/run", (req: Request, res: Response) => {
       riskMode,
       riskTolerance,
       investmentTimeframe,
+      portfolioSegment,
       timeWindow,
       walletAddress,
     });

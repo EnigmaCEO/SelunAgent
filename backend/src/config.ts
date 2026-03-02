@@ -10,7 +10,9 @@ export type SelunBackendConfig = {
   coinbaseWalletSecret: string;
   agentWalletId: string;
   treasuryOwnerName: string;
+  treasuryOwnerAddress: Address | null;
   treasurySmartAccountName: string;
+  treasurySmartAccountAddress: Address | null;
   treasuryPaymasterUrl: string | null;
   baseRpc: string;
   usdcContractAddress: Address;
@@ -60,6 +62,15 @@ const parseOptionalText = (value: string | undefined): string | null => {
   return trimmed ? trimmed : null;
 };
 
+const parseOptionalAddress = (value: string | undefined, envName: string): Address | null => {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  if (!isAddress(trimmed)) {
+    throw new Error(`${envName} must be a valid EVM address when provided.`);
+  }
+  return trimmed;
+};
+
 const parseNetwork = (value: string | undefined): SupportedBaseNetwork => {
   const candidate = value?.trim() as SupportedBaseNetwork | undefined;
   return candidate && SUPPORTED_BASE_NETWORKS.includes(candidate) ? candidate : "base-mainnet";
@@ -78,8 +89,16 @@ export function getConfig(): SelunBackendConfig {
   const usdcContractRaw = requireEnv("USDC_CONTRACT_ADDRESS");
   const agentWalletId = process.env.AGENT_WALLET_ID?.trim() || `selun-agent-${networkId}`;
   const treasuryOwnerName = process.env.SELUN_TREASURY_OWNER_NAME?.trim() || `selun-treasury-owner-${networkId}`;
+  const treasuryOwnerAddress = parseOptionalAddress(
+    process.env.SELUN_TREASURY_OWNER_ADDRESS,
+    "SELUN_TREASURY_OWNER_ADDRESS",
+  );
   const treasurySmartAccountName =
     process.env.SELUN_TREASURY_SMART_ACCOUNT_NAME?.trim() || `selun-treasury-${networkId}`;
+  const treasurySmartAccountAddress = parseOptionalAddress(
+    process.env.SELUN_TREASURY_SMART_ACCOUNT_ADDRESS,
+    "SELUN_TREASURY_SMART_ACCOUNT_ADDRESS",
+  );
   const coinbaseWalletSecretRaw = process.env.COINBASE_WALLET_SECRET?.trim();
   const coinbaseWalletSecret = coinbaseWalletSecretRaw
     ? normalizeSecret(coinbaseWalletSecretRaw)
@@ -95,7 +114,9 @@ export function getConfig(): SelunBackendConfig {
     coinbaseWalletSecret,
     agentWalletId,
     treasuryOwnerName,
+    treasuryOwnerAddress,
     treasurySmartAccountName,
+    treasurySmartAccountAddress,
     treasuryPaymasterUrl: parseOptionalText(process.env.SELUN_TREASURY_PAYMASTER_URL),
     baseRpc,
     usdcContractAddress: usdcContractRaw,

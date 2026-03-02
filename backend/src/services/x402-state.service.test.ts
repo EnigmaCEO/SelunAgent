@@ -24,6 +24,7 @@ function buildAcceptedRecord(decisionId: string, transactionHash: string): X402A
     inputs: {
       riskTolerance: "Balanced",
       timeframe: "1-3_years",
+      portfolioSegment: "Bluechips",
       withReport: false,
     },
     chargedAmountUsdc: "19",

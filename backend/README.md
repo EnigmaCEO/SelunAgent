@@ -21,7 +21,9 @@ Optional:
 
 - `COINBASE_WALLET_SECRET` (falls back to `COINBASE_API_SECRET`)
 - `SELUN_TREASURY_OWNER_NAME` (optional stable CDP server-account name for the treasury owner; defaults to `selun-treasury-owner-<network>`)
+- `SELUN_TREASURY_OWNER_ADDRESS` (optional exact treasury owner EOA address; use this to pin the treasury owner in CDP instead of resolving by name)
 - `SELUN_TREASURY_SMART_ACCOUNT_NAME` (optional stable name for the treasury smart account; defaults to `selun-treasury-<network>`)
+- `SELUN_TREASURY_SMART_ACCOUNT_ADDRESS` (optional exact treasury smart-account address; use this to pin the treasury smart account in CDP instead of resolving by name)
 - `SELUN_TREASURY_PAYMASTER_URL` (optional paymaster URL for future smart-account treasury operations)
 - `PAYMENT_CONFIRMATIONS` (default `2`, capped to `2`)
 - `PAYMENT_POLL_INTERVAL_MS` (default `4000`)

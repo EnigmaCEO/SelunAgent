@@ -19,6 +19,8 @@ type RiskMode = "Conservative" | "Balanced" | "Growth" | "Aggressive";
 
 type InvestmentHorizon = "< 1 Year" | "1-3 Years" | "3+ Years";
 
+type PortfolioSegment = "Bluechips" | "Memecoins" | "Gaming" | "Yield Farm";
+
 type AllocationRow = {
   asset: string;
   name: string;
@@ -226,6 +228,7 @@ type Phase2Output = {
     user_profile: {
       risk_tolerance: "Conservative" | "Balanced" | "Growth" | "Aggressive";
       investment_timeframe: "<1_year" | "1-3_years" | "3+_years";
+      portfolio_segment: PortfolioSegment;
     };
   };
   allocation_policy: {
@@ -278,6 +281,7 @@ type Phase3Output = {
     user_profile: {
       risk_tolerance: "Conservative" | "Balanced" | "Growth" | "Aggressive";
       investment_timeframe: "<1_year" | "1-3_years" | "3+_years";
+      portfolio_segment: PortfolioSegment;
     };
     top_volume_target: number;
     volume_window_days: [7, 30];
@@ -331,6 +335,7 @@ type Phase4Output = {
     user_profile: {
       risk_tolerance: "Conservative" | "Balanced" | "Growth" | "Aggressive";
       investment_timeframe: "<1_year" | "1-3_years" | "3+_years";
+      portfolio_segment: PortfolioSegment;
     };
     screening_thresholds: {
       min_liquidity_score: number;
@@ -390,6 +395,7 @@ type Phase5Output = {
     user_profile: {
       risk_tolerance: "Conservative" | "Balanced" | "Growth" | "Aggressive";
       investment_timeframe: "<1_year" | "1-3_years" | "3+_years";
+      portfolio_segment: PortfolioSegment;
     };
     portfolio_constraints: {
       risk_budget: number;
@@ -575,8 +581,10 @@ declare global {
 
 const RISK_MODES: RiskMode[] = ["Conservative", "Balanced", "Growth", "Aggressive"];
 const HORIZONS: InvestmentHorizon[] = ["< 1 Year", "1-3 Years", "3+ Years"];
+const PORTFOLIO_SEGMENTS: PortfolioSegment[] = ["Bluechips", "Memecoins", "Gaming", "Yield Farm"];
 const DEFAULT_RISK_MODE: RiskMode = "Balanced";
 const DEFAULT_HORIZON: InvestmentHorizon = "1-3 Years";
+const DEFAULT_PORTFOLIO_SEGMENT: PortfolioSegment = "Bluechips";
 const PROCESSING_POLL_INTERVAL_MS = 1500;
 const WIZARD_FLOW: WizardState[] = ["CONFIGURE", "REVIEW", "PROCESSING", "COMPLETE"];
 const FALLBACK_BASE_PRICE_USDC = 19;
@@ -634,6 +642,46 @@ const BUCKET_LABELS: Record<Phase6Output["allocation"]["allocations"][number]["b
   core: "Core",
   satellite: "Satellite",
   high_volatility: "High Volatility",
+};
+
+const PORTFOLIO_SEGMENT_METADATA: Record<
+  PortfolioSegment,
+  {
+    title: string;
+    summary: string;
+    riskTendency: string;
+    volatility: string;
+    examples: string[];
+  }
+> = {
+  Bluechips: {
+    title: "Bluechips",
+    summary: "Well-known, high-liquidity crypto leaders. Designed as the default starting point.",
+    riskTendency: "More established holdings",
+    volatility: "Lower relative volatility",
+    examples: ["BTC", "ETH", "SOL"],
+  },
+  Memecoins: {
+    title: "Memecoins",
+    summary: "Community-led tokens that can move quickly when attention and sentiment shift. Best suited for higher risk tolerance.",
+    riskTendency: "Higher risk exposure",
+    volatility: "High",
+    examples: ["PEPE", "WIF", "FLOKI"],
+  },
+  Gaming: {
+    title: "Gaming",
+    summary: "Tokens tied to gaming ecosystems and player-driven economies.",
+    riskTendency: "Theme-focused growth exposure",
+    volatility: "Moderate to High",
+    examples: ["IMX", "RON", "GALA"],
+  },
+  "Yield Farm": {
+    title: "Yield Farm",
+    summary: "Tokens linked to staking, lending, or other income-focused crypto strategies. Designed for income-oriented exposure.",
+    riskTendency: "Income-focused exposure",
+    volatility: "Stable to Moderate",
+    examples: ["AAVE", "LDO", "GMX"],
+  },
 };
 
 const STABILITY_RISK_CLASSES = new Set(["stablecoin", "cash_equivalent", "defensive_stablecoin", "treasury"]);
@@ -988,12 +1036,12 @@ function toAllocationRows(
   phase6AaaAllocate: AaaAllocateDispatch | null,
 ): AllocationRow[] {
   const metadataByAsset = buildAllocationMetadata(phase5Output, phase6Output, phase6AaaAllocate);
-  const aaaRows = aggregateAllocationEntries(parseAaaAllocationEntries(phase6AaaAllocate, metadataByAsset));
-  if (aaaRows.length > 0) {
-    return aaaRows;
+  const phase6Rows = aggregateAllocationEntries(parsePhase6AllocationEntries(phase6Output, metadataByAsset));
+  if (phase6Rows.length > 0) {
+    return phase6Rows;
   }
 
-  return aggregateAllocationEntries(parsePhase6AllocationEntries(phase6Output, metadataByAsset));
+  return aggregateAllocationEntries(parseAaaAllocationEntries(phase6AaaAllocate, metadataByAsset));
 }
 
 function roundPercentage(weight: number): number {
@@ -1285,6 +1333,7 @@ async function startPhase1Execution(params: {
   riskMode: string;
   riskTolerance: string;
   investmentTimeframe: string;
+  portfolioSegment: string;
   timeWindow: string;
   walletAddress?: string;
 }): Promise<void> {
@@ -1387,6 +1436,10 @@ function toBackendInvestmentTimeframe(horizon: InvestmentHorizon): "<1_year" | "
   if (horizon === "< 1 Year") return "<1_year";
   if (horizon === "3+ Years") return "3+_years";
   return "1-3_years";
+}
+
+function toBackendPortfolioSegment(segment: PortfolioSegment): PortfolioSegment {
+  return segment;
 }
 
 function parseUsdcToBaseUnits(value: string): bigint {
@@ -1682,8 +1735,10 @@ function isZeroAmount(value: unknown): boolean {
 type ConfigureStepProps = {
   riskMode: RiskMode | null;
   investmentHorizon: InvestmentHorizon | null;
+  portfolioSegment: PortfolioSegment | null;
   onRiskModeSelect: (mode: RiskMode) => void;
   onInvestmentHorizonSelect: (horizon: InvestmentHorizon) => void;
+  onPortfolioSegmentSelect: (segment: PortfolioSegment) => void;
   onContinue: () => void;
 };
 
@@ -1695,14 +1750,9 @@ type SliderSelectorProps<T extends string> = {
 };
 
 function SliderSelector<T extends string>({ title, options, value, onSelect }: SliderSelectorProps<T>) {
-  const maxIndex = Math.max(options.length - 1, 1);
-
   return (
     <div className="rounded-xl border border-slate-300/70 bg-slate-50/80 p-4">
-      <div className="flex items-center justify-between gap-2">
-        <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{title}</p>
-        <span className="text-sm font-semibold text-cyan-800">{value ?? "Select"}</span>
-      </div>
+      <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{title}</p>
 
       <div className="mt-3 grid gap-2" style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0,1fr))` }}>
         {options.map((option) => {
@@ -1723,30 +1773,75 @@ function SliderSelector<T extends string>({ title, options, value, onSelect }: S
           );
         })}
       </div>
+    </div>
+  );
+}
 
-      <div className="relative mt-4 h-9">
-        <div className="absolute left-0 right-0 top-1/2 h-1.5 -translate-y-1/2 rounded-full border border-slate-300 bg-slate-200" />
+type SegmentCardSelectorProps = {
+  value: PortfolioSegment | null;
+  onSelect: (segment: PortfolioSegment) => void;
+};
 
-        {options.map((option, index) => {
-          const selected = value === option;
-          const left = `${(index / maxIndex) * 100}%`;
+function SegmentCardSelector({ value, onSelect }: SegmentCardSelectorProps) {
+  return (
+    <div className="rounded-xl border border-slate-300/70 bg-slate-50/80 p-4">
+      <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Portfolio Segment</p>
 
+      <div role="radiogroup" aria-label="Portfolio Segment" className="mt-4 grid gap-3 md:grid-cols-2">
+        {PORTFOLIO_SEGMENTS.map((segment) => {
+          const selected = value === segment;
+          const meta = PORTFOLIO_SEGMENT_METADATA[segment];
           return (
             <button
-              key={`${option}-stop`}
+              key={segment}
               type="button"
-              onClick={() => onSelect(option)}
-              className="absolute top-1/2 h-9 w-9 -translate-y-1/2 -translate-x-1/2"
-              style={{ left }}
-              aria-label={`Set ${title} to ${option}`}
+              role="radio"
+              aria-checked={selected}
+              onClick={() => onSelect(segment)}
+              className={`flex h-full flex-col rounded-2xl border p-4 text-left transition ${
+                selected
+                  ? "border-cyan-700 bg-cyan-900 text-cyan-50 shadow-[0_12px_30px_rgba(8,145,178,0.18)] ring-1 ring-cyan-300/30"
+                  : "border-slate-300 bg-white text-slate-800 hover:border-cyan-400 hover:bg-cyan-50/50"
+              }`}
             >
-              <span
-                className={`mx-auto block transition-all ${
-                  selected
-                    ? "h-5 w-5 rounded-full border-2 border-cyan-700 bg-cyan-300 shadow-[0_0_0_4px_rgba(6,182,212,0.18)]"
-                    : "h-4 w-4 rounded-full border border-slate-500 bg-slate-300"
-                }`}
-              />
+              <div className="flex min-h-[8.5rem] items-start justify-between gap-3">
+                <div>
+                  <h3 className={`text-lg font-semibold ${selected ? "text-cyan-50" : "text-slate-900"}`}>{meta.title}</h3>
+                  <p className={`mt-2 text-sm leading-6 ${selected ? "text-cyan-100/90" : "text-slate-600"}`}>{meta.summary}</p>
+                </div>
+                <span
+                  className={`mt-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border text-xs font-bold ${
+                    selected
+                      ? "border-cyan-200 bg-cyan-300 text-cyan-950 shadow-[0_0_0_3px_rgba(103,232,249,0.18)]"
+                      : "border-slate-300 bg-slate-100 text-slate-500"
+                  }`}
+                >
+                  {selected ? <span className="block h-2.5 w-2.5 rounded-full bg-cyan-950" /> : null}
+                </span>
+              </div>
+
+              <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                <div>
+                  <p className={`text-[11px] font-bold uppercase tracking-[0.14em] ${selected ? "text-cyan-200" : "text-slate-500"}`}>
+                    Risk Profile
+                  </p>
+                  <p className={`mt-1 text-sm leading-6 ${selected ? "text-cyan-50" : "text-slate-700"}`}>{meta.riskTendency}</p>
+                </div>
+                <div>
+                  <p className={`text-[11px] font-bold uppercase tracking-[0.14em] ${selected ? "text-cyan-200" : "text-slate-500"}`}>
+                    Volatility
+                  </p>
+                  <p className={`mt-1 text-sm leading-6 ${selected ? "text-cyan-50" : "text-slate-700"}`}>{meta.volatility}</p>
+                </div>
+                <div>
+                  <p className={`text-[11px] font-bold uppercase tracking-[0.14em] ${selected ? "text-cyan-200" : "text-slate-500"}`}>
+                    Example Assets
+                  </p>
+                  <p className={`mt-1 text-sm font-medium leading-6 ${selected ? "text-cyan-50" : "text-slate-700"}`}>
+                    {meta.examples.join(", ")}
+                  </p>
+                </div>
+              </div>
             </button>
           );
         })}
@@ -1758,16 +1853,18 @@ function SliderSelector<T extends string>({ title, options, value, onSelect }: S
 function ConfigureStep({
   riskMode,
   investmentHorizon,
+  portfolioSegment,
   onRiskModeSelect,
   onInvestmentHorizonSelect,
+  onPortfolioSegmentSelect,
   onContinue,
 }: ConfigureStepProps) {
-  const canContinue = Boolean(riskMode && investmentHorizon);
+  const canContinue = Boolean(riskMode && investmentHorizon && portfolioSegment);
 
   return (
     <section className="rounded-2xl border border-slate-300/70 bg-white/70 p-6 backdrop-blur">
       <h2 className="text-2xl font-semibold text-slate-900">Step 1. Set Your Allocation Profile</h2>
-      <p className="mt-2 text-slate-600">Choose your risk tolerance and investment timeframe.</p>
+      <p className="mt-2 text-slate-600">Choose your risk tolerance, investment timeframe, and preferred portfolio segment.</p>
 
       <div className="mt-6 grid gap-6 md:grid-cols-2">
         <SliderSelector title="Risk Tolerance" options={RISK_MODES} value={riskMode} onSelect={onRiskModeSelect} />
@@ -1779,12 +1876,16 @@ function ConfigureStep({
         />
       </div>
 
-      <div className="mt-6 flex justify-end">
+      <div className="mt-6">
+        <SegmentCardSelector value={portfolioSegment} onSelect={onPortfolioSegmentSelect} />
+      </div>
+
+      <div className="mt-6 flex flex-col gap-3 border-t border-slate-200 pt-5 sm:flex-row sm:items-center sm:justify-end">
         <button
           type="button"
           onClick={onContinue}
           disabled={!canContinue}
-          className="rounded-full bg-cyan-500 px-5 py-2.5 text-sm font-semibold text-slate-950 shadow-sm transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500"
+          className="inline-flex items-center justify-center rounded-full bg-cyan-500 px-8 py-3.5 text-base font-semibold text-slate-950 shadow-sm transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500"
         >
           Continue
         </button>
@@ -1796,6 +1897,7 @@ function ConfigureStep({
 type ReviewStepProps = {
   riskMode: RiskMode;
   investmentHorizon: InvestmentHorizon;
+  portfolioSegment: PortfolioSegment;
   basePriceUsdc: number;
   certifiedDecisionRecordFeeUsdc: number;
   resultEmail: string;
@@ -1832,6 +1934,7 @@ type ReviewStepProps = {
 function ReviewStep({
   riskMode,
   investmentHorizon,
+  portfolioSegment,
   basePriceUsdc,
   certifiedDecisionRecordFeeUsdc,
   resultEmail,
@@ -1913,7 +2016,7 @@ function ReviewStep({
       <h2 className="text-2xl font-semibold text-slate-900">Step 2. Review & Authorize</h2>
       <p className="mt-2 text-slate-600">Review your allocation profile and authorize execution on-chain.</p>
 
-      <div className="mt-6 grid gap-4 md:grid-cols-3">
+      <div className="mt-6 grid gap-4 md:grid-cols-4">
         <div className="rounded-xl border border-slate-300/60 bg-slate-50/70 p-4">
           <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Risk Tolerance</p>
           <p className="mt-2 text-lg font-semibold text-slate-800">{riskMode}</p>
@@ -1921,6 +2024,10 @@ function ReviewStep({
         <div className="rounded-xl border border-slate-300/60 bg-slate-50/70 p-4">
           <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Investment Timeframe</p>
           <p className="mt-2 text-lg font-semibold text-slate-800">{investmentHorizon}</p>
+        </div>
+        <div className="rounded-xl border border-slate-300/60 bg-slate-50/70 p-4">
+          <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Portfolio Segment</p>
+          <p className="mt-2 text-lg font-semibold text-slate-800">{portfolioSegment}</p>
         </div>
         <div className="rounded-xl border border-slate-300/60 bg-slate-50/70 p-4">
           <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Structured Allocation</p>
@@ -2699,7 +2806,7 @@ function CompleteStep({
     { key: "Carry", label: "Income Position" },
     { key: "Satellite", label: "Growth Positions" },
     { key: "Liquidity", label: "Liquidity Reserve" },
-    { key: "Speculative", label: "High-Risk Positions" },
+    { key: "Speculative", label: "Speculative" },
   ] as const;
   type RoleGroupKey = (typeof ROLE_GROUP_CONFIG)[number]["key"];
   const mapRoleGroupLabel = (value: RoleGroupKey): string => {
@@ -2712,7 +2819,7 @@ function CompleteStep({
     if (normalized === "satellite") return "Growth Position";
     if (normalized === "liquidity") return "Liquidity Reserve";
     if (normalized === "speculative" || normalized === "high volatility" || normalized === "high_volatility") {
-      return "High-Risk Position";
+      return "Speculative Position";
     }
     if (normalized === "stability") return "Stable Holding";
     return toTitleCase(value);
@@ -2762,6 +2869,7 @@ function CompleteStep({
   const volatilityLabel = phase1Output ? toTitleCase(phase1Output.market_condition.volatility_state) : "Unknown";
   const liquidityLabel = phase1Output ? mapLiquidityLabel(phase1Output.market_condition.liquidity_state) : "Unknown";
   const userRiskLevel = phase2Output?.inputs.user_profile.risk_tolerance ?? "n/a";
+  const portfolioSegmentLabel = phase2Output?.inputs.user_profile.portfolio_segment ?? "n/a";
   const marketConfidenceScore =
     asFiniteNumber(readObjectPath(aaaPayload, ["allocation_result", "meta", "market_regime_confidence"])) ??
     (phase1Output ? phase1Output.market_condition.confidence : null);
@@ -2832,8 +2940,6 @@ function CompleteStep({
   const riskExposureRatioClamped =
     riskExposureRatio !== null ? Math.max(0, Math.min(1, riskExposureRatio)) : null;
   const riskExposureText = riskExposureRatio !== null ? `${formatPct(riskExposureRatio * 100)} of allowed range` : "n/a";
-  const portfolioRiskLevel =
-    riskExposureRatio === null ? "n/a" : riskExposureRatio >= 0.75 ? "High" : riskExposureRatio >= 0.4 ? "Moderate" : "Low";
   const regimeTone = (() => {
     const normalized = regimeLabel.toLowerCase();
     if (normalized.includes("defensive") || normalized.includes("risk_off")) {
@@ -2912,6 +3018,66 @@ function CompleteStep({
     label: group.label,
     value: formatPct((roleGroupTotals.get(group.key) ?? 0) / 100),
   }));
+  const roleGroupRiskWeights: Record<RoleGroupKey, number> = {
+    Defensive: 0.08,
+    Core: 0.28,
+    Carry: portfolioSegmentLabel === "Yield Farm" ? 0.5 : 0.45,
+    Satellite:
+      portfolioSegmentLabel === "Memecoins"
+        ? 0.88
+        : portfolioSegmentLabel === "Gaming"
+          ? 0.72
+          : portfolioSegmentLabel === "Yield Farm"
+            ? 0.56
+            : 0.42,
+    Liquidity: 0.08,
+    Speculative:
+      portfolioSegmentLabel === "Memecoins"
+        ? 0.95
+        : portfolioSegmentLabel === "Gaming"
+          ? 0.84
+          : portfolioSegmentLabel === "Yield Farm"
+            ? 0.68
+            : 0.62,
+  };
+  const portfolioRiskScore = roleGroupOrder.reduce(
+    (sum, group) => sum + ((roleGroupTotals.get(group) ?? 0) / 10000) * roleGroupRiskWeights[group],
+    0,
+  );
+  const stableLikeShare =
+    ((roleGroupTotals.get("Defensive") ?? 0) +
+      (roleGroupTotals.get("Core") ?? 0) +
+      (roleGroupTotals.get("Liquidity") ?? 0)) /
+    10000;
+  const carryShare = (roleGroupTotals.get("Carry") ?? 0) / 10000;
+  const speculativeShare = ((roleGroupTotals.get("Satellite") ?? 0) + (roleGroupTotals.get("Speculative") ?? 0)) / 10000;
+  const portfolioRiskLevel =
+    riskExposureRatio === null
+      ? "n/a"
+      : portfolioSegmentLabel === "Yield Farm"
+        ? speculativeShare >= 0.18 || (stableLikeShare < 0.25 && carryShare >= 0.65)
+          ? "High"
+          : stableLikeShare >= 0.6 && carryShare <= 0.4 && speculativeShare <= 0.05
+            ? "Low"
+            : "Moderate"
+        : portfolioRiskScore >= 0.66
+          ? "High"
+          : portfolioRiskScore >= 0.3
+            ? "Moderate"
+            : "Low";
+  const riskExposureExplanation = (() => {
+    if (riskExposureRatio === null || userRiskLevel === "n/a") return null;
+    if (portfolioSegmentLabel === "Memecoins") {
+      return `Speculative allocation calibrated to ${userRiskLevel} risk tolerance within ${regimeLabel} market conditions.`;
+    }
+    if (portfolioSegmentLabel === "Gaming") {
+      return `Gaming-focused allocation calibrated to ${userRiskLevel} risk tolerance within ${regimeLabel} market conditions.`;
+    }
+    if (portfolioSegmentLabel === "Yield Farm") {
+      return `Yield-focused allocation calibrated to ${userRiskLevel} risk tolerance within ${regimeLabel} market conditions.`;
+    }
+    return "Exposure allocated within defined risk limits for current market regime.";
+  })();
   const hasResultEmail = resultEmail.trim().length > 0;
   const resultEmailTone =
     resultEmailDeliveryStatus === "sent"
@@ -2980,6 +3146,9 @@ function CompleteStep({
             <span className="rounded-full border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700">
               Confidence: {confidencePctLabel}
             </span>
+            <span className="rounded-full border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700">
+              Segment: {portfolioSegmentLabel}
+            </span>
             <span className={`rounded-full border px-2.5 py-1 text-xs font-medium ${fearGreedView.chipClass}`}>
               Fear & Greed: {fearGreedView.label}
               {fearGreedScore !== null ? ` (${Math.round(fearGreedScore)})` : ""}
@@ -3008,6 +3177,9 @@ function CompleteStep({
               </p>
               <p>
                 <span className="font-semibold text-slate-800">Your Risk Tolerance:</span> {userRiskLevel}
+              </p>
+              <p>
+                <span className="font-semibold text-slate-800">Segment:</span> {portfolioSegmentLabel}
               </p>
               <p>
                 <span className="font-semibold text-slate-800">Confidence:</span> {confidencePctLabel}
@@ -3073,6 +3245,9 @@ function CompleteStep({
                 <p className="text-sm font-semibold text-slate-800">Portfolio Risk Level: {portfolioRiskLevel}</p>
               </div>
               <p className="mt-1 text-sm font-bold tabular-nums text-slate-900">{riskExposureText}</p>
+              {riskExposureExplanation && (
+                <p className="mt-1 text-[11px] text-slate-600">{riskExposureExplanation}</p>
+              )}
               <div className="mt-1 h-2.5 rounded-full bg-slate-300/55">
                 <div
                   className="h-2.5 rounded-full bg-cyan-500"
@@ -3247,6 +3422,7 @@ function SelunAllocationWizard() {
   const [wizardState, setWizardState] = useState<WizardState>("CONFIGURE");
   const [riskMode, setRiskMode] = useState<RiskMode | null>(DEFAULT_RISK_MODE);
   const [investmentHorizon, setInvestmentHorizon] = useState<InvestmentHorizon | null>(DEFAULT_HORIZON);
+  const [portfolioSegment, setPortfolioSegment] = useState<PortfolioSegment | null>(DEFAULT_PORTFOLIO_SEGMENT);
   const [resultEmail, setResultEmail] = useState("");
   const [resultEmailDeliveryStatus, setResultEmailDeliveryStatus] = useState<ResultEmailDeliveryStatus>("idle");
   const [resultEmailDeliveryMessage, setResultEmailDeliveryMessage] = useState<string | null>(null);
@@ -3579,7 +3755,7 @@ function SelunAllocationWizard() {
     };
   }, [walletAddress, usdcBalanceRefreshNonce]);
 
-  const canContinueFromConfigure = Boolean(riskMode && investmentHorizon);
+  const canContinueFromConfigure = Boolean(riskMode && investmentHorizon && portfolioSegment);
 
   const handleContinueFromConfigure = () => {
     if (!canContinueFromConfigure) return;
@@ -3626,8 +3802,8 @@ function SelunAllocationWizard() {
   };
 
   const startPhase1Flow = async (jobId: string) => {
-    if (!riskMode || !investmentHorizon) {
-      throw new Error("Risk mode and investment horizon are required to run Phase 1.");
+    if (!riskMode || !investmentHorizon || !portfolioSegment) {
+      throw new Error("Risk mode, investment horizon, and portfolio segment are required to run Phase 1.");
     }
 
     setPhase1JobId(jobId);
@@ -3663,6 +3839,7 @@ function SelunAllocationWizard() {
       riskMode: toBackendRiskMode(riskMode),
       riskTolerance: toBackendRiskTolerance(riskMode),
       investmentTimeframe: toBackendInvestmentTimeframe(investmentHorizon),
+      portfolioSegment: toBackendPortfolioSegment(portfolioSegment),
       timeWindow: toBackendTimeWindow(investmentHorizon),
       walletAddress: walletAddress ?? undefined,
     });
@@ -3987,7 +4164,7 @@ function SelunAllocationWizard() {
   }, [agentPaymentReceipt?.decisionId, resultEmail, sendResultSummaryEmail, wizardState]);
 
   const handleGenerateAllocation = async () => {
-    if (!riskMode || !investmentHorizon || isPaying) return;
+    if (!riskMode || !investmentHorizon || !portfolioSegment || isPaying) return;
 
     setIsPaying(true);
     setPaymentStage("preflight");
@@ -4046,6 +4223,7 @@ function SelunAllocationWizard() {
             includeCertifiedDecisionRecord,
             riskMode,
             investmentHorizon,
+            portfolioSegment,
             promoCode: promoCode.trim() || undefined,
             resultEmail: trimmedResultEmail || undefined,
           }),
@@ -4265,6 +4443,7 @@ function SelunAllocationWizard() {
     setWizardState("CONFIGURE");
     setRiskMode(DEFAULT_RISK_MODE);
     setInvestmentHorizon(DEFAULT_HORIZON);
+    setPortfolioSegment(DEFAULT_PORTFOLIO_SEGMENT);
     setResultEmail("");
     setResultEmailDeliveryStatus("idle");
     setResultEmailDeliveryMessage(null);
@@ -4393,16 +4572,19 @@ function SelunAllocationWizard() {
         <ConfigureStep
           riskMode={riskMode}
           investmentHorizon={investmentHorizon}
+          portfolioSegment={portfolioSegment}
           onRiskModeSelect={setRiskMode}
           onInvestmentHorizonSelect={setInvestmentHorizon}
+          onPortfolioSegmentSelect={setPortfolioSegment}
           onContinue={handleContinueFromConfigure}
         />
       )}
 
-      {wizardState === "REVIEW" && riskMode && investmentHorizon && (
+      {wizardState === "REVIEW" && riskMode && investmentHorizon && portfolioSegment && (
         <ReviewStep
           riskMode={riskMode}
           investmentHorizon={investmentHorizon}
+          portfolioSegment={portfolioSegment}
           basePriceUsdc={basePriceUsdc}
           certifiedDecisionRecordFeeUsdc={certifiedDecisionRecordFeeUsdc}
           resultEmail={resultEmail}
@@ -4499,3 +4681,6 @@ export default function WizardPage() {
     </main>
   );
 }
+
+
+

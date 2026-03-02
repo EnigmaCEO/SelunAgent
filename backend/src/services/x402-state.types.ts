@@ -1,3 +1,6 @@
+export type { PortfolioSegment } from "./portfolio-segments";
+import type { PortfolioSegment } from "./portfolio-segments";
+
 export type AllocateRiskTolerance = "Conservative" | "Balanced" | "Growth" | "Aggressive";
 
 export type AllocateTimeframe = "<1_year" | "1-3_years" | "3+_years";
@@ -15,6 +18,7 @@ export type X402RefundRecord = {
 export type AllocateInputShape = {
   riskTolerance: AllocateRiskTolerance;
   timeframe: AllocateTimeframe;
+  portfolioSegment: PortfolioSegment;
   withReport: boolean;
 };
 

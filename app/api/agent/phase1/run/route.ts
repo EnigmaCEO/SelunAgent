@@ -9,6 +9,7 @@ type Phase1RunRequest = {
   riskMode?: string;
   riskTolerance?: string;
   investmentTimeframe?: string;
+  portfolioSegment?: string;
   timeWindow?: string;
   walletAddress?: string;
 };
@@ -52,6 +53,7 @@ export async function POST(req: Request) {
         riskMode: payload.riskMode,
         riskTolerance: payload.riskTolerance,
         investmentTimeframe: payload.investmentTimeframe,
+        portfolioSegment: payload.portfolioSegment,
         timeWindow: payload.timeWindow,
         walletAddress: payload.walletAddress,
       }),

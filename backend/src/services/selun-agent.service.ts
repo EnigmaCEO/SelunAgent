@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { AgentKit, CdpEvmWalletProvider, walletActionProvider } from "@coinbase/agentkit";
-import { CdpClient } from "@coinbase/cdp-sdk";
+import { CdpClient, type EvmServerAccount } from "@coinbase/cdp-sdk";
 import {
   createPublicClient,
   createWalletClient,
@@ -790,31 +790,77 @@ async function readWalletBalances(address: Address, config = getConfig()) {
   };
 }
 
-async function findProjectServerAccountByName(name: string): Promise<{
+function isCdpNotFoundError(error: unknown): error is { statusCode: number } {
+  return typeof error === "object" && error !== null && "statusCode" in error && (error as { statusCode?: number }).statusCode === 404;
+}
+
+async function resolveTreasuryOwnerAccount(
+  cdp: CdpClient,
+  config = getConfig(),
+): Promise<EvmServerAccount | null> {
+  if (config.treasuryOwnerAddress) {
+    try {
+      return await cdp.evm.getAccount({ address: config.treasuryOwnerAddress });
+    } catch (error) {
+      if (isCdpNotFoundError(error)) {
+        throw new Error(
+          `Configured SELUN_TREASURY_OWNER_ADDRESS ${config.treasuryOwnerAddress} was not found in the current CDP project.`,
+        );
+      }
+      throw error;
+    }
+  }
+
+  try {
+    return await cdp.evm.getAccount({ name: config.treasuryOwnerName });
+  } catch (error) {
+    if (isCdpNotFoundError(error)) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function resolveTreasurySmartAccount(
+  cdp: CdpClient,
+  ownerAccount: EvmServerAccount | null,
+  config = getConfig(),
+): Promise<{
   name?: string;
   address: Address;
+  owners: Address[];
   policies?: string[];
 } | null> {
-  const cdp = createConfiguredCdpClient();
-  let nextPageToken: string | undefined;
+  if (!ownerAccount) return null;
 
-  do {
-    const page = await cdp.evm.listAccounts({
-      pageSize: 100,
-      ...(nextPageToken ? { pageToken: nextPageToken } : {}),
-    });
-    const match = page.accounts.find((account) => account.name === name);
-    if (match) {
-      return {
-        name: match.name,
-        address: match.address,
-        policies: Array.isArray(match.policies) ? match.policies : [],
-      };
+  try {
+    const smartAccount = config.treasurySmartAccountAddress
+      ? await cdp.evm.getSmartAccount({
+        address: config.treasurySmartAccountAddress,
+        owner: ownerAccount,
+      })
+      : await cdp.evm.getSmartAccount({
+        name: config.treasurySmartAccountName,
+        owner: ownerAccount,
+      });
+
+    return {
+      name: smartAccount.name,
+      address: smartAccount.address,
+      owners: smartAccount.owners.map((owner) => owner.address),
+      policies: smartAccount.policies,
+    };
+  } catch (error) {
+    if (isCdpNotFoundError(error)) {
+      if (config.treasurySmartAccountAddress) {
+        throw new Error(
+          `Configured SELUN_TREASURY_SMART_ACCOUNT_ADDRESS ${config.treasurySmartAccountAddress} was not found for treasury owner ${ownerAccount.address}.`,
+        );
+      }
+      return null;
     }
-    nextPageToken = page.nextPageToken;
-  } while (nextPageToken);
-
-  return null;
+    throw error;
+  }
 }
 
 async function buildTreasuryOwnerWalletSnapshot(account: {
@@ -1175,21 +1221,15 @@ export async function listProjectSellerWalletSnapshots(): Promise<ProjectSellerW
 
 export async function getTreasuryWalletSetupSnapshot(): Promise<TreasuryWalletSetupSnapshot> {
   const config = getConfig();
-  const ownerAccount = await findProjectServerAccountByName(config.treasuryOwnerName);
   const cdp = createConfiguredCdpClient(config);
-  const smartAccountsPage = await cdp.evm.listSmartAccounts({
-    name: config.treasurySmartAccountName,
-    pageSize: 10,
-  });
-  const smartAccount = smartAccountsPage.accounts.find(
-    (account) => (account.name || config.treasurySmartAccountName) === config.treasurySmartAccountName,
-  ) ?? null;
+  const resolvedOwnerAccount = await resolveTreasuryOwnerAccount(cdp, config);
+  const smartAccount = await resolveTreasurySmartAccount(cdp, resolvedOwnerAccount, config);
 
   return {
     ownerName: config.treasuryOwnerName,
     smartAccountName: config.treasurySmartAccountName,
     paymasterUrl: config.treasuryPaymasterUrl,
-    owner: ownerAccount ? await buildTreasuryOwnerWalletSnapshot(ownerAccount) : null,
+    owner: resolvedOwnerAccount ? await buildTreasuryOwnerWalletSnapshot(resolvedOwnerAccount) : null,
     smartAccount: smartAccount
       ? await buildTreasurySmartAccountSnapshot({
         name: smartAccount.name,
@@ -1204,13 +1244,20 @@ export async function getTreasuryWalletSetupSnapshot(): Promise<TreasuryWalletSe
 export async function ensureTreasurySmartAccount(): Promise<TreasuryWalletSetupSnapshot> {
   const config = getConfig();
   const cdp = createConfiguredCdpClient(config);
-  const ownerAccount = await cdp.evm.getOrCreateAccount({
-    name: config.treasuryOwnerName,
-  });
-  const smartAccount = await cdp.evm.getOrCreateSmartAccount({
-    name: config.treasurySmartAccountName,
-    owner: ownerAccount,
-  });
+  const ownerAccount = config.treasuryOwnerAddress
+    ? await cdp.evm.getAccount({ address: config.treasuryOwnerAddress })
+    : await cdp.evm.getOrCreateAccount({
+      name: config.treasuryOwnerName,
+    });
+  const smartAccount = config.treasurySmartAccountAddress
+    ? await cdp.evm.getSmartAccount({
+      address: config.treasurySmartAccountAddress,
+      owner: ownerAccount,
+    })
+    : await cdp.evm.getOrCreateSmartAccount({
+      name: config.treasurySmartAccountName,
+      owner: ownerAccount,
+    });
 
   return {
     ownerName: config.treasuryOwnerName,

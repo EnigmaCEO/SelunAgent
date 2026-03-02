@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { resolveBackendDataFilePath } from "../runtime-paths";
+import { normalizePortfolioSegment } from "./portfolio-segments";
 import type {
   AllocateInputShape,
   X402AllocateRecord,
@@ -54,11 +55,13 @@ function normalizeAllocateInputs(value: unknown): AllocateInputShape | null {
 
   const riskTolerance = typeof value.riskTolerance === "string" ? value.riskTolerance : null;
   const timeframe = typeof value.timeframe === "string" ? value.timeframe : null;
+  const portfolioSegment = normalizePortfolioSegment(value.portfolioSegment);
   const withReport = typeof value.withReport === "boolean" ? value.withReport : null;
 
   if (
     (riskTolerance !== "Conservative" && riskTolerance !== "Balanced" && riskTolerance !== "Growth" && riskTolerance !== "Aggressive") ||
     (timeframe !== "<1_year" && timeframe !== "1-3_years" && timeframe !== "3+_years") ||
+    !portfolioSegment ||
     withReport === null
   ) {
     return null;
@@ -67,6 +70,7 @@ function normalizeAllocateInputs(value: unknown): AllocateInputShape | null {
   return {
     riskTolerance,
     timeframe,
+    portfolioSegment,
     withReport,
   };
 }

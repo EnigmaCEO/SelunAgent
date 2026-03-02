@@ -153,14 +153,20 @@ async function sendViaResend(params: {
     });
 
     if (!response.ok) {
-      let errorMessage = `Resend email failed with HTTP ${response.status}.`;
+      const responseText = await response.text().catch(() => "");
+      let errorMessage =
+        response.status === 401
+          ? "Resend email failed with HTTP 401. Check RESEND_API_KEY in the backend runtime."
+          : `Resend email failed with HTTP ${response.status}.`;
       try {
-        const body = (await response.json()) as ResendResponse;
+        const body = JSON.parse(responseText) as ResendResponse;
         if (body?.error?.message) {
           errorMessage = body.error.message;
         }
       } catch {
-        // best effort
+        if (responseText.trim()) {
+          errorMessage = `${errorMessage} Response: ${responseText.trim().slice(0, 300)}`;
+        }
       }
       return { ok: false, error: errorMessage };
     }

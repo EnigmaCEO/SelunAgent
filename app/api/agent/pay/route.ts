@@ -8,6 +8,7 @@ type AgentPaymentRequest = {
   includeCertifiedDecisionRecord?: boolean;
   riskMode?: string;
   investmentHorizon?: string;
+  portfolioSegment?: string;
   promoCode?: string;
   resultEmail?: string;
 };
@@ -67,6 +68,7 @@ export async function POST(req: Request): Promise<NextResponse> {
         includeCertifiedDecisionRecord: payload.includeCertifiedDecisionRecord,
         riskMode: payload.riskMode,
         investmentHorizon: payload.investmentHorizon,
+        portfolioSegment: payload.portfolioSegment,
         promoCode: payload.promoCode,
         resultEmail: payload.resultEmail,
       }),
