@@ -1941,13 +1941,14 @@ export async function transferTreasuryUsdc(input: TreasuryUsdcTransferInput): Pr
 
   const config = getConfig();
   const cdp = createConfiguredCdpClient(config);
-  const ownerAccount = await cdp.evm.getOrCreateAccount({
-    name: config.treasuryOwnerName,
-  });
-  const smartAccount = await cdp.evm.getOrCreateSmartAccount({
-    name: config.treasurySmartAccountName,
-    owner: ownerAccount,
-  });
+  const ownerAccount = await resolveTreasuryOwnerAccount(cdp, config);
+  if (!ownerAccount) {
+    throw new Error("Treasury owner account is not available.");
+  }
+  const smartAccount = await resolveTreasurySmartAccount(cdp, ownerAccount, config);
+  if (!smartAccount) {
+    throw new Error("Treasury smart account is not available.");
+  }
   const toAddress = input.toAddress as Address;
   const amountBaseUnits = normalizeExpectedUsdc(input.amountUsdc);
 
@@ -1965,7 +1966,11 @@ export async function transferTreasuryUsdc(input: TreasuryUsdcTransferInput): Pr
     );
   }
 
-  const scopedSmartAccount = await smartAccount.useNetwork(getCdpTransferNetwork(config));
+  const liveSmartAccount = await cdp.evm.getSmartAccount({
+    address: smartAccount.address,
+    owner: ownerAccount,
+  });
+  const scopedSmartAccount = await liveSmartAccount.useNetwork(getCdpTransferNetwork(config));
   const transferResult = await scopedSmartAccount.transfer({
     to: toAddress,
     amount: amountBaseUnits,
