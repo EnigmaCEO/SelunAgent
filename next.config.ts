@@ -37,6 +37,14 @@ const nextConfig: NextConfig = {
         destination: `${backendOrigin}/.well-known/x402.json`,
       },
       {
+        source: "/openapi",
+        destination: `${backendOrigin}/openapi`,
+      },
+      {
+        source: "/openapi.json",
+        destination: `${backendOrigin}/openapi.json`,
+      },
+      {
         source: "/agent/:path*",
         destination: `${backendOrigin}/agent/:path*`,
       },
