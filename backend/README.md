@@ -343,6 +343,18 @@ Or via package script:
 npm run wallet:refund-usdc -- --to=0xBuyerAddress --amount=1 --network=base-mainnet --seller=0xSellerAddress
 ```
 
+Fund the treasury smart account with ETH from Selun's seller wallet:
+
+```bash
+node scripts/fund-treasury-eth.mjs --amount 0.0001 --from 0xSellerAddress --to 0xTreasurySmartAccount
+```
+
+Or via package script:
+
+```bash
+npm run wallet:fund-treasury-eth -- --amount=0.0001 --from=0xSellerAddress --to=0xTreasurySmartAccount
+```
+
 Required environment:
 
 - `SELUN_X402_SMOKE_URL` or `SELUN_BACKEND_URL`
