@@ -291,6 +291,20 @@ The document now follows x402scan's discovery schema:
 
 If you are using the branded frontend domain, the Next.js rewrite forwards these well-known URLs to the backend automatically.
 
+## OpenAPI Discovery
+
+Selun now exposes an OpenAPI discovery document suitable for x402 crawlers:
+
+- `GET /openapi.json`
+- `GET /openapi` (alias)
+
+The OpenAPI document is generated from the same runtime x402 capabilities payload and includes:
+
+- all paid `/agent/x402/*` operations
+- `402` challenge response metadata
+- `x-payment-info` extension per paid operation
+- facilitator URL and payment header names from live config
+
 ### Bazaar Smoke Test
 
 Use the root script to trigger a real x402 payment flow that can seed facilitator discovery:

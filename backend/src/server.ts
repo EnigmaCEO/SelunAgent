@@ -8,6 +8,9 @@ import { resolveBackendPath } from "./runtime-paths";
 import { getExecutionStatus, getExecutionStatusByWallet } from "./services/phase1-execution.service";
 
 type JsonRecord = Record<string, unknown>;
+type OpenApiHttpMethod = "get" | "post" | "put" | "delete" | "patch" | "options" | "head" | "trace";
+type X402Capabilities = Awaited<ReturnType<typeof getX402CapabilitiesData>>;
+type X402Resource = X402Capabilities["resources"][number];
 
 function asRecord(value: unknown): JsonRecord | null {
   return value && typeof value === "object" ? (value as JsonRecord) : null;
@@ -243,6 +246,255 @@ function buildAbsoluteUrl(req: express.Request, routePath: string): string {
   return `${proto}://${host}${routePath}`;
 }
 
+function toOpenApiMethod(method: string): OpenApiHttpMethod {
+  const normalized = method.trim().toLowerCase();
+  switch (normalized) {
+    case "get":
+    case "post":
+    case "put":
+    case "delete":
+    case "patch":
+    case "options":
+    case "head":
+    case "trace":
+      return normalized;
+    default:
+      return "post";
+  }
+}
+
+function toOpenApiOperationId(resource: X402Resource): string {
+  const normalizedPath = resource.endpoint
+    .replace(/^\/+/, "")
+    .split("/")
+    .map((segment) => segment.replace(/[^a-zA-Z0-9]+/g, "_"))
+    .filter(Boolean)
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join("");
+  return `${resource.method.toLowerCase()}${normalizedPath}`;
+}
+
+function toOpenApiServerUrl(req: express.Request): string {
+  const absolute = buildAbsoluteUrl(req, "");
+  if (absolute) return absolute.endsWith("/") ? absolute.slice(0, -1) : absolute;
+  return `http://localhost:${process.env.PORT ?? "8787"}`;
+}
+
+function buildPaidRouteOpenApiOperation(capabilities: X402Capabilities, resource: X402Resource): Record<string, unknown> {
+  const paymentHeaders = capabilities.paymentTransport.headers;
+  const inputSchema =
+    resource.inputSchema && typeof resource.inputSchema === "object"
+      ? resource.inputSchema
+      : { type: "object", additionalProperties: true };
+
+  return {
+    tags: ["x402"],
+    operationId: toOpenApiOperationId(resource),
+    summary: resource.title,
+    description: resource.description,
+    parameters: [
+      {
+        name: "Idempotency-Key",
+        in: "header",
+        required: false,
+        schema: { type: "string" },
+        description: "Recommended for retries. Selun also accepts decisionId in the request body.",
+      },
+    ],
+    requestBody: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: inputSchema,
+        },
+      },
+    },
+    responses: {
+      "200": {
+        description: "Successful response for synchronous x402 tools.",
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              properties: {
+                success: { type: "boolean" },
+                executionModelVersion: { type: "string" },
+                data: { type: "object", additionalProperties: true },
+              },
+              required: ["success", "executionModelVersion"],
+            },
+          },
+        },
+      },
+      "202": {
+        description: "Accepted response for async allocation flows.",
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              properties: {
+                success: { type: "boolean" },
+                executionModelVersion: { type: "string" },
+                data: { type: "object", additionalProperties: true },
+              },
+              required: ["success", "executionModelVersion"],
+            },
+          },
+        },
+      },
+      "402": {
+        description: "x402 payment challenge.",
+        headers: {
+          [paymentHeaders.paymentRequired]: {
+            description: "Payment challenge payload for this resource.",
+            schema: { type: "string" },
+          },
+        },
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              properties: {
+                success: { type: "boolean" },
+                executionModelVersion: { type: "string" },
+                error: { type: "string" },
+                details: { type: "object", additionalProperties: true },
+              },
+              required: ["success", "executionModelVersion", "error"],
+            },
+          },
+        },
+      },
+    },
+    security: [{ x402PaymentSignature: [] }],
+    "x-payment-info": {
+      protocols: {
+        x402: {
+          minVersion: capabilities.x402Version,
+          facilitator: capabilities.paymentTransport.facilitatorUrl,
+          accepts: resource.paymentRequirementsV2,
+          paymentRequiredHeader: paymentHeaders.paymentRequired,
+          paymentSignatureHeader: paymentHeaders.paymentSignature,
+          paymentResponseHeader: paymentHeaders.paymentResponse,
+        },
+      },
+      pricingMode: "fixed",
+      price: {
+        amount: resource.pricing.amountUsdc,
+        unit: "USDC",
+      },
+      productId: resource.productId,
+      category: capabilities.discovery.category,
+      tags: capabilities.discovery.tags,
+      network: capabilities.discovery.caip2Network,
+    },
+  };
+}
+
+async function buildOpenApiDocument(req: express.Request) {
+  const capabilities = await getX402CapabilitiesData();
+  const serverUrl = toOpenApiServerUrl(req);
+  const paths: Record<string, Record<string, unknown>> = {
+    "/health": {
+      get: {
+        tags: ["discovery"],
+        operationId: "getHealth",
+        summary: "Health check",
+        description: "Returns backend liveness and execution model version.",
+        responses: {
+          "200": {
+            description: "Service is healthy.",
+          },
+        },
+      },
+    },
+    "/.well-known/x402": {
+      get: {
+        tags: ["discovery"],
+        operationId: "getWellKnownX402",
+        summary: "x402 well-known discovery document",
+        description: "Crawler-friendly x402 discovery document.",
+        responses: {
+          "200": {
+            description: "Discovery document.",
+          },
+        },
+      },
+    },
+    "/.well-known/x402.json": {
+      get: {
+        tags: ["discovery"],
+        operationId: "getWellKnownX402Json",
+        summary: "x402 well-known discovery document alias",
+        description: "JSON alias for the x402 discovery document.",
+        responses: {
+          "200": {
+            description: "Discovery document.",
+          },
+        },
+      },
+    },
+    "/agent/x402/capabilities": {
+      get: {
+        tags: ["discovery"],
+        operationId: "getX402Capabilities",
+        summary: "x402 capabilities",
+        description: "Live x402 catalog, pricing, and transport metadata.",
+        responses: {
+          "200": {
+            description: "Capabilities response.",
+          },
+        },
+      },
+    },
+    "/agent/x402/discovery": {
+      get: {
+        tags: ["discovery"],
+        operationId: "getX402DiscoveryAlias",
+        summary: "x402 discovery alias",
+        description: "Alias endpoint for Bazaar-style crawlers.",
+        responses: {
+          "200": {
+            description: "Capabilities response.",
+          },
+        },
+      },
+    },
+  };
+
+  for (const resource of capabilities.resources) {
+    const method = toOpenApiMethod(resource.method);
+    const pathItem = paths[resource.endpoint] ?? {};
+    pathItem[method] = buildPaidRouteOpenApiOperation(capabilities, resource);
+    paths[resource.endpoint] = pathItem;
+  }
+
+  return {
+    openapi: "3.1.0",
+    info: {
+      title: capabilities.name,
+      version: EXECUTION_MODEL_VERSION,
+      description: capabilities.description,
+    },
+    servers: [{ url: serverUrl }],
+    tags: [
+      { name: "x402", description: "Payment-gated x402 routes." },
+      { name: "discovery", description: "Discovery and metadata routes." },
+    ],
+    paths,
+    components: {
+      securitySchemes: {
+        x402PaymentSignature: {
+          type: "apiKey",
+          in: "header",
+          name: capabilities.paymentTransport.headers.paymentSignature,
+          description: "x402 payment signature returned by a compatible buyer client.",
+        },
+      },
+    },
+  };
+}
+
 async function buildWellKnownX402Document(req: express.Request) {
   const capabilities = await getX402CapabilitiesData();
   const resources = capabilities.resources.map((resource) => buildAbsoluteUrl(req, resource.endpoint));
@@ -288,6 +540,34 @@ app.get("/.well-known/x402.json", async (req, res) => {
       success: false,
       executionModelVersion: EXECUTION_MODEL_VERSION,
       error: error instanceof Error ? error.message : "Failed to build x402 discovery document.",
+    });
+  }
+});
+
+app.get("/openapi.json", async (req, res) => {
+  try {
+    const document = await buildOpenApiDocument(req);
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    return res.status(200).json(document);
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      executionModelVersion: EXECUTION_MODEL_VERSION,
+      error: error instanceof Error ? error.message : "Failed to build OpenAPI discovery document.",
+    });
+  }
+});
+
+app.get("/openapi", async (req, res) => {
+  try {
+    const document = await buildOpenApiDocument(req);
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    return res.status(200).json(document);
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      executionModelVersion: EXECUTION_MODEL_VERSION,
+      error: error instanceof Error ? error.message : "Failed to build OpenAPI discovery document.",
     });
   }
 });
