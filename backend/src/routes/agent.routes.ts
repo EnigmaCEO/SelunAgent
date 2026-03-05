@@ -3148,6 +3148,28 @@ router.post("/result-email", async (req: Request, res: Response) => {
   const allocationPolicy = phase2Artifact && isRecord(phase2Artifact.allocation_policy)
     ? phase2Artifact.allocation_policy
     : null;
+
+  if (paymentMethod === "card") {
+    void sendAdminUsageEmail({
+      channel: "legacy_pay",
+      decisionId,
+      walletAddress: hasValidWalletAddress ? walletAddressRaw : null,
+      resultEmail,
+      promoCode: typeof req.body?.promoCode === "string" && req.body.promoCode.trim()
+        ? req.body.promoCode.trim()
+        : null,
+      chargedAmountUsdc,
+      transactionHash: transactionId,
+      paymentMethod: "card",
+      includeCertifiedDecisionRecord: Boolean(payment?.certifiedDecisionRecordPurchased),
+      riskTolerance: toText(req.body?.riskMode, "") || null,
+      timeframe: toText(req.body?.investmentHorizon, "") || null,
+      jobId: null,
+    }).catch((error) => {
+      console.error("Failed to send Selun admin usage email (card/result-email):", error);
+    });
+  }
+
   const result = await sendUserSummaryEmail({
     toEmail: resultEmail,
     decisionId,
@@ -3224,6 +3246,27 @@ router.post("/report-email", async (req: Request, res: Response) => {
     : paymentMethod === "card"
       ? "Stripe card checkout"
       : "n/a";
+
+  if (paymentMethod === "card") {
+    void sendAdminUsageEmail({
+      channel: "legacy_pay",
+      decisionId,
+      walletAddress: hasValidWalletAddress ? walletAddressRaw : null,
+      resultEmail,
+      promoCode: typeof req.body?.promoCode === "string" && req.body.promoCode.trim()
+        ? req.body.promoCode.trim()
+        : null,
+      chargedAmountUsdc,
+      transactionHash: transactionId,
+      paymentMethod: "card",
+      includeCertifiedDecisionRecord: Boolean(req.body?.includeCertifiedDecisionRecord),
+      riskTolerance: toText(req.body?.riskMode, "") || null,
+      timeframe: toText(req.body?.investmentHorizon, "") || null,
+      jobId: null,
+    }).catch((error) => {
+      console.error("Failed to send Selun admin usage email (card/report-email):", error);
+    });
+  }
 
   const result = await sendUserReportEmail({
     toEmail: resultEmail,
