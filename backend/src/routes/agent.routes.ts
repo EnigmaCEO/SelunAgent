@@ -3108,30 +3108,41 @@ router.post("/result-email", async (req: Request, res: Response) => {
 
   const payment = isRecord(req.body?.payment) ? req.body.payment : null;
   const paymentStatus = toText(payment?.status, "").toLowerCase();
+  const paymentMethod = toText(payment?.paymentMethod, "onchain").toLowerCase();
   const decisionId = toText(payment?.decisionId, "");
   const transactionId = toText(payment?.transactionId, "");
   const chargedAmountUsdc = toFiniteNumber(payment?.chargedAmountUsdc ?? payment?.amountUsdc);
-  const walletAddress = toText(req.body?.walletAddress, "");
+  const walletAddressRaw = toText(req.body?.walletAddress, "");
+  const hasValidWalletAddress = Boolean(walletAddressRaw && isAddress(walletAddressRaw));
+  const requiresOnchainVerification = paymentMethod !== "card";
   if (paymentStatus !== "paid" || !decisionId || !transactionId) {
     return failure(res, new Error("Paid purchase record is required before result email delivery."), 402);
   }
   if (chargedAmountUsdc === null || chargedAmountUsdc < 0) {
     return failure(res, new Error("Charged amount is required before result email delivery."), 400);
   }
-  if (!walletAddress || !isAddress(walletAddress)) {
+  if (requiresOnchainVerification && !hasValidWalletAddress) {
     return failure(res, new Error("Valid wallet address is required before result email delivery."), 400);
   }
 
-  try {
-    await verifyResultEmailPayment({
-      fromAddress: walletAddress,
-      expectedAmountUSDC: chargedAmountUsdc,
-      transactionHash: transactionId,
-      decisionId,
-    });
-  } catch (error) {
-    return failure(res, new Error(`Payment verification required: ${error instanceof Error ? error.message : "verification failed."}`), 402);
+  if (requiresOnchainVerification) {
+    try {
+      await verifyResultEmailPayment({
+        fromAddress: walletAddressRaw,
+        expectedAmountUSDC: chargedAmountUsdc,
+        transactionHash: transactionId,
+        decisionId,
+      });
+    } catch (error) {
+      return failure(res, new Error(`Payment verification required: ${error instanceof Error ? error.message : "verification failed."}`), 402);
+    }
   }
+
+  const walletAddress = hasValidWalletAddress
+    ? walletAddressRaw
+    : paymentMethod === "card"
+      ? "Stripe card checkout"
+      : "n/a";
 
   const phase2Artifact = isRecord(req.body?.phase2Artifact) ? req.body.phase2Artifact : null;
   const allocationPolicy = phase2Artifact && isRecord(phase2Artifact.allocation_policy)
@@ -3178,30 +3189,41 @@ router.post("/report-email", async (req: Request, res: Response) => {
 
   const payment = isRecord(req.body?.payment) ? req.body.payment : null;
   const paymentStatus = toText(payment?.status, "").toLowerCase();
+  const paymentMethod = toText(payment?.paymentMethod, "onchain").toLowerCase();
   const decisionId = toText(payment?.decisionId, "");
   const transactionId = toText(payment?.transactionId, "");
   const chargedAmountUsdc = toFiniteNumber(payment?.chargedAmountUsdc ?? payment?.amountUsdc);
-  const walletAddress = toText(req.body?.walletAddress, "");
+  const walletAddressRaw = toText(req.body?.walletAddress, "");
+  const hasValidWalletAddress = Boolean(walletAddressRaw && isAddress(walletAddressRaw));
+  const requiresOnchainVerification = paymentMethod !== "card";
   if (paymentStatus !== "paid" || !decisionId || !transactionId) {
     return failure(res, new Error("Paid purchase record is required before report email delivery."), 402);
   }
   if (chargedAmountUsdc === null || chargedAmountUsdc < 0) {
     return failure(res, new Error("Charged amount is required before report email delivery."), 400);
   }
-  if (!walletAddress || !isAddress(walletAddress)) {
+  if (requiresOnchainVerification && !hasValidWalletAddress) {
     return failure(res, new Error("Valid wallet address is required before report email delivery."), 400);
   }
 
-  try {
-    await verifyResultEmailPayment({
-      fromAddress: walletAddress,
-      expectedAmountUSDC: chargedAmountUsdc,
-      transactionHash: transactionId,
-      decisionId,
-    });
-  } catch (error) {
-    return failure(res, new Error(`Payment verification required: ${error instanceof Error ? error.message : "verification failed."}`), 402);
+  if (requiresOnchainVerification) {
+    try {
+      await verifyResultEmailPayment({
+        fromAddress: walletAddressRaw,
+        expectedAmountUSDC: chargedAmountUsdc,
+        transactionHash: transactionId,
+        decisionId,
+      });
+    } catch (error) {
+      return failure(res, new Error(`Payment verification required: ${error instanceof Error ? error.message : "verification failed."}`), 402);
+    }
   }
+
+  const walletAddress = hasValidWalletAddress
+    ? walletAddressRaw
+    : paymentMethod === "card"
+      ? "Stripe card checkout"
+      : "n/a";
 
   const result = await sendUserReportEmail({
     toEmail: resultEmail,

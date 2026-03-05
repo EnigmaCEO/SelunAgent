@@ -31,7 +31,7 @@ type DownloadRequestPayload = {
     chargedAmountUsdc?: number | string;
     agentNote?: string;
     certifiedDecisionRecordPurchased?: boolean;
-    paymentMethod?: "onchain" | "free_code";
+    paymentMethod?: "onchain" | "free_code" | "card";
     freeCodeApplied?: boolean;
   } | null;
   allocations?: AllocationRow[];
@@ -386,6 +386,7 @@ async function sendResultEmail(params: {
   riskMode: string;
   investmentHorizon: string;
   includeCertified: boolean;
+  paymentMethod: string;
   walletAddress: string;
   amountUsdc: number | null;
   transactionHash: string;
@@ -407,6 +408,7 @@ async function sendResultEmail(params: {
           transactionId: params.transactionHash,
           decisionId: params.decisionId,
           chargedAmountUsdc: params.amountUsdc,
+          paymentMethod: params.paymentMethod,
         },
       }),
       cache: "no-store",
@@ -1806,39 +1808,48 @@ export async function POST(req: Request): Promise<Response> {
     );
   }
 
-  const walletAddress = toText(payload.walletAddress, "");
-  if (!walletAddress || !/^0x[a-fA-F0-9]{40}$/.test(walletAddress)) {
+  const walletAddressRaw = toText(payload.walletAddress, "");
+  const hasValidWalletAddress = /^0x[a-fA-F0-9]{40}$/.test(walletAddressRaw);
+  const requiresOnchainVerification = paymentMethod !== "card";
+  if (requiresOnchainVerification && !hasValidWalletAddress) {
     return NextResponse.json({ error: "Valid paid wallet address is required before report download." }, { status: 400 });
   }
+  const walletAddress = hasValidWalletAddress
+    ? walletAddressRaw
+    : paymentMethod === "card"
+      ? "Stripe card checkout"
+      : "n/a";
 
   const isFreeCodePayment =
     paymentMethod === "free_code" ||
     transactionId.startsWith("FREE-") ||
     (chargedAmountUsdc !== null && chargedAmountUsdc <= 0);
 
-  let expectedVerificationAmount = 0;
-  if (!isFreeCodePayment) {
-    const pricing = await fetchBackendPricing();
-    if (!pricing.ok) {
+  if (requiresOnchainVerification) {
+    let expectedVerificationAmount = 0;
+    if (!isFreeCodePayment) {
+      const pricing = await fetchBackendPricing();
+      if (!pricing.ok) {
+        return NextResponse.json(
+          { error: `Pricing lookup required for certified report: ${pricing.error}` },
+          { status: 502 },
+        );
+      }
+      expectedVerificationAmount = pricing.requiredCertifiedPriceUsdc;
+    }
+
+    const verifiedPayment = await verifyPurchaseOnBackend(
+      walletAddressRaw,
+      expectedVerificationAmount,
+      transactionId,
+      decisionId,
+    );
+    if (!verifiedPayment.ok) {
       return NextResponse.json(
-        { error: `Pricing lookup required for certified report: ${pricing.error}` },
-        { status: 502 },
+        { error: `Payment verification required: ${verifiedPayment.error}` },
+        { status: 402 },
       );
     }
-    expectedVerificationAmount = pricing.requiredCertifiedPriceUsdc;
-  }
-
-  const verifiedPayment = await verifyPurchaseOnBackend(
-    walletAddress,
-    expectedVerificationAmount,
-    transactionId,
-    decisionId,
-  );
-  if (!verifiedPayment.ok) {
-    return NextResponse.json(
-      { error: `Payment verification required: ${verifiedPayment.error}` },
-      { status: 402 },
-    );
   }
 
   const integrityHash = createHash("sha256")
@@ -1856,7 +1867,13 @@ export async function POST(req: Request): Promise<Response> {
     };
   }
 
-  const pdfBytes = await buildPdf(payload, integrityHash, chainAttestation);
+  const pdfPayload = walletAddressRaw === walletAddress
+    ? payload
+    : {
+      ...payload,
+      walletAddress,
+    };
+  const pdfBytes = await buildPdf(pdfPayload, integrityHash, chainAttestation);
   const pdfBuffer = Buffer.from(pdfBytes);
   const fileStem = includeCertified ? "selun-certified-decision-record" : "selun-structured-allocation-report";
   const safeDecision = sanitizeFilenamePart(decisionId);
@@ -1870,6 +1887,7 @@ export async function POST(req: Request): Promise<Response> {
       riskMode: toText(payload.riskMode, "n/a"),
       investmentHorizon: toText(payload.investmentHorizon, "n/a"),
       includeCertified,
+      paymentMethod,
       walletAddress,
       amountUsdc: chargedAmountUsdc,
       transactionHash: transactionId,
