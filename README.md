@@ -179,8 +179,3 @@ Selun exposes selected intelligence outputs through agent-accessible endpoints.
 License
 
 MIT
-
-- **Quick Start (30 seconds)**  
-- **Agent Architecture Diagram (visual)**
-
-Both are common in successful AI/agent repos right now.
