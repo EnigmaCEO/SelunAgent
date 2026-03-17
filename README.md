@@ -180,11 +180,6 @@ License
 
 MIT
 
-
----
-
-If you'd like, I can also help you add **two sections that make GitHub repos much more likely to get stars**:
-
 - **Quick Start (30 seconds)**  
 - **Agent Architecture Diagram (visual)**
 
