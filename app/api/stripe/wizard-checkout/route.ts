@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import Stripe from "stripe";
+import { normalizeReferralCode } from "@/app/lib/referral";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,6 +13,8 @@ type WizardCheckoutRequest = {
   includeCertifiedDecisionRecord?: boolean;
   resultEmail?: string;
   promoCode?: string;
+  referralCode?: string;
+  referralUserId?: string;
 };
 
 const STRIPE_ALLOCATION_PRICE_CENTS = 1900;
@@ -35,6 +38,19 @@ function getSiteUrl(req: Request) {
   }
 
   return new URL(req.url).origin;
+}
+
+function buildCheckoutReturnUrl(siteUrl: string, params: Record<string, string>): string {
+  const url = new URL("/wizard", siteUrl);
+  for (const [key, value] of Object.entries(params)) {
+    url.searchParams.set(key, value);
+  }
+
+  // Stripe replaces the raw placeholder token. If the token is URL-encoded,
+  // Stripe leaves it untouched and the confirm route receives a fake session id.
+  return url
+    .toString()
+    .replace(encodeURIComponent("{CHECKOUT_SESSION_ID}"), "{CHECKOUT_SESSION_ID}");
 }
 
 function createDecisionId() {
@@ -100,10 +116,13 @@ export async function POST(req: Request): Promise<NextResponse> {
     );
   }
 
-  const resultEmail = payload.resultEmail?.trim().toLowerCase() || "";
+  const resultEmail = payload.resultEmail?.trim()?.toLowerCase() || "";
   if (!isValidEmail(resultEmail)) {
     return NextResponse.json({ success: false, error: "Enter a valid results email or leave it blank." }, { status: 400 });
   }
+
+  const referralCode = normalizeReferralCode(payload.referralCode);
+  const referralUserId = payload.referralUserId?.trim() || "";
 
   try {
     const stripe = getStripeClient();
@@ -130,6 +149,14 @@ export async function POST(req: Request): Promise<NextResponse> {
       );
     }
 
+    const successUrl = buildCheckoutReturnUrl(siteUrl, {
+      stripe_checkout: "success",
+      session_id: "{CHECKOUT_SESSION_ID}",
+    });
+    const cancelUrl = buildCheckoutReturnUrl(siteUrl, {
+      stripe_checkout: "cancelled",
+    });
+
     const sessionParams: Stripe.Checkout.SessionCreateParams = {
       mode: "payment",
       payment_method_types: ["card"],
@@ -138,20 +165,29 @@ export async function POST(req: Request): Promise<NextResponse> {
         metadata: {
           source: "selun_wizard",
           decisionId,
+          riskMode: payload.riskMode ?? "",
+          investmentHorizon: payload.investmentHorizon ?? "",
+          portfolioSegment: payload.portfolioSegment ?? "",
+          includeCertifiedDecisionRecord: includeReport ? "true" : "false",
+          resultEmail: resultEmail || "",
+          ...(referralCode ? { referralCode } : {}),
+          ...(referralUserId ? { referralUserId } : {}),
         },
       },
-      success_url: `${siteUrl}/wizard?stripe_checkout=success&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${siteUrl}/wizard?stripe_checkout=cancelled`,
+      success_url: successUrl,
+      cancel_url: cancelUrl,
       customer_email: resultEmail || undefined,
       line_items: lineItems,
       metadata: {
         source: "selun_wizard",
         decisionId,
-        riskMode: payload.riskMode ?? null,
-        investmentHorizon: payload.investmentHorizon ?? null,
-        portfolioSegment: payload.portfolioSegment ?? null,
+        riskMode: payload.riskMode ?? "",
+        investmentHorizon: payload.investmentHorizon ?? "",
+        portfolioSegment: payload.portfolioSegment ?? "",
         includeCertifiedDecisionRecord: includeReport ? "true" : "false",
-        resultEmail: resultEmail || null,
+        resultEmail: resultEmail || "",
+        ...(referralCode ? { referralCode } : {}),
+        ...(referralUserId ? { referralUserId } : {}),
       },
     };
 

@@ -52,6 +52,10 @@ const nextConfig: NextConfig = {
         source: "/execution-status/:path*",
         destination: `${backendOrigin}/execution-status/:path*`,
       },
+      {
+        source: "/referral/:path*",
+        destination: `${backendOrigin}/referral/:path*`,
+      },
     ];
   },
 };

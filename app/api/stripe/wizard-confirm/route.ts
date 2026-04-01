@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import Stripe from "stripe";
+import { ensureStripeWizardPhase1Started } from "@/app/api/stripe/_lib/fulfillment";
+import { trackReferralConversionOnBackend } from "@/app/lib/referral-backend";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,6 +23,19 @@ function getStripeClient() {
   }
 
   return new Stripe(secretKey);
+}
+
+function resolveWizardUserId(session: Stripe.Checkout.Session, paymentIntent: PaymentIntentSnapshot): string {
+  const candidate =
+    session.metadata?.referralUserId?.trim() ||
+    paymentIntent.metadata?.referralUserId?.trim() ||
+    session.metadata?.resultEmail?.trim()?.toLowerCase() ||
+    session.customer_details?.email?.trim()?.toLowerCase() ||
+    paymentIntent.metadata?.resultEmail?.trim()?.toLowerCase() ||
+    paymentIntent.id ||
+    session.id;
+
+  return candidate;
 }
 
 async function resolvePaymentIntentSnapshot(
@@ -65,6 +80,12 @@ export async function POST(req: Request): Promise<NextResponse> {
   if (!sessionId) {
     return NextResponse.json({ success: false, error: "Stripe sessionId is required." }, { status: 400 });
   }
+  if (sessionId.includes("{CHECKOUT_SESSION_ID}")) {
+    return NextResponse.json(
+      { success: false, error: "Stripe returned an unresolved checkout session placeholder. Start checkout again." },
+      { status: 400 },
+    );
+  }
 
   try {
     const stripe = getStripeClient();
@@ -89,8 +110,18 @@ export async function POST(req: Request): Promise<NextResponse> {
       session.payment_status === "paid" ||
       paymentIntent.status === "succeeded" ||
       Boolean(webhookPaidAt);
+    const userId = resolveWizardUserId(session, paymentIntent);
 
     if (!isPaid) {
+      await trackReferralConversionOnBackend({
+        referralCode: session.metadata?.referralCode || paymentIntent.metadata.referralCode || "",
+        transactionId: paymentIntent.id || session.id,
+        amountUsd: Number(session.amount_total ?? 0) / 100,
+        userId,
+        source: "stripe_wizard",
+        status: "pending",
+      });
+
       const pendingReason =
         paymentIntent.status === "processing"
           ? "Payment is processing with Stripe. We will continue automatically once it succeeds."
@@ -107,6 +138,28 @@ export async function POST(req: Request): Promise<NextResponse> {
 
     const includeReport = session.metadata?.includeCertifiedDecisionRecord === "true";
     const chargedAmountUsd = Number(session.amount_total ?? 0) / 100;
+    const allocationAmountUsd = 19;
+    const reportAmountUsd = includeReport ? Math.max(0, chargedAmountUsd - allocationAmountUsd) : 0;
+    const referralCode = session.metadata?.referralCode || paymentIntent.metadata.referralCode || "";
+
+    await trackReferralConversionOnBackend({
+      referralCode,
+      transactionId: paymentIntent.id || session.id,
+      amountUsd: chargedAmountUsd,
+      allocationAmountUsd,
+      reportAmountUsd,
+      paymentReference: paymentIntent.id || session.id,
+      userId,
+      source: "stripe_wizard",
+      status: "confirmed",
+    });
+
+    const fulfillment = await ensureStripeWizardPhase1Started({
+      decisionId: session.metadata?.decisionId || session.id,
+      riskMode: session.metadata?.riskMode,
+      investmentHorizon: session.metadata?.investmentHorizon,
+      portfolioSegment: session.metadata?.portfolioSegment,
+    });
 
     return NextResponse.json({
       success: true,
@@ -124,6 +177,9 @@ export async function POST(req: Request): Promise<NextResponse> {
       investmentHorizon: session.metadata?.investmentHorizon,
       portfolioSegment: session.metadata?.portfolioSegment,
       resultEmail: session.metadata?.resultEmail || "",
+      jobId: fulfillment.jobId,
+      statusPath: fulfillment.statusPath,
+      phase1Status: fulfillment.executionStatus,
     });
   } catch (error) {
     return NextResponse.json(

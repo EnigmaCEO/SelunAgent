@@ -11,6 +11,7 @@ type AgentPaymentRequest = {
   portfolioSegment?: string;
   promoCode?: string;
   resultEmail?: string;
+  referralCode?: string;
 };
 
 type BackendAgentResponse = {
@@ -71,6 +72,7 @@ export async function POST(req: Request): Promise<NextResponse> {
         portfolioSegment: payload.portfolioSegment,
         promoCode: payload.promoCode,
         resultEmail: payload.resultEmail,
+        referralCode: payload.referralCode,
       }),
       cache: "no-store",
     });

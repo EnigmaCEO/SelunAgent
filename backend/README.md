@@ -9,6 +9,8 @@ Frontend should only keep `SELUN_BACKEND_URL` plus UI-safe vars in `.env.local`.
 
 - `COINBASE_API_KEY`
 - `COINBASE_API_SECRET`
+- `DATABASE_URL` (shared Postgres used for referral persistence)
+  - local AAA default: `postgresql://sagitta:sagitta_pw@127.0.0.1:5432/sagitta_aaa`
 - `AGENT_WALLET_ID`
 - `NETWORK_ID` (`base-mainnet` or `base-sepolia`)
 - `BASE_MAINNET_RPC` (required when `NETWORK_ID=base-mainnet`; use a dedicated RPC provider in production, not `https://mainnet.base.org`)
@@ -49,6 +51,8 @@ Optional:
 - `TRUST_PROXY` (default `false`; set for reverse proxies/load balancers)
 - `RESEND_API_KEY` (required for email notifications)
 - `SELUN_EMAIL_FROM` (sender email, e.g. `Selun <noreply@yourdomain.com>`)
+- `SELUN_REFERRAL_INTERNAL_TOKEN` (shared secret for Next.js Stripe routes to record referral conversions on the backend; may be omitted if you reuse `SELUN_ADMIN_API_TOKEN`)
+- `SELUN_REFERRAL_COMMISSION_RATE` (optional decimal from `0` to `1`; defaults to `0.5` so wallet referrals earn 50% of the paid amount)
 - `SELUN_ADMIN_USAGE_EMAILS_ENABLED` (default `0`)
 - `SELUN_ADMIN_USAGE_EMAILS` (CSV list of admin recipients)
 - `SELUN_ADMIN_API_TOKEN` (required for `/agent/admin/*` routes)
@@ -93,6 +97,9 @@ fly scale count 1 --app selunagent
 - `POST /agent/init`
 - `GET /agent/wallet`
 - `GET /agent/pricing`
+- `POST /referral/create`
+- `GET /referral/leaderboard`
+- `GET /referral/:code`
 - `POST /agent/pay-quote`
 - `POST /agent/usdc-balance`
 - `POST /agent/pay`
@@ -107,6 +114,7 @@ fly scale count 1 --app selunagent
 - `POST /agent/admin/refund`
 
 Wizard UI can continue using `/agent/pay`, `/agent/verify-payment`, and `/agent/phase1..6` routes.
+Wizard Stripe routes should share `SELUN_REFERRAL_INTERNAL_TOKEN` with the backend so confirmed card payments can log referral conversions without exposing a public write endpoint.
 
 ## Admin Refunds
 

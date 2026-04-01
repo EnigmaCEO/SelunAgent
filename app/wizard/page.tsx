@@ -4,8 +4,14 @@ import Image from "next/image";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Fragment, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import {
+  ACTIVE_REFERRAL_CODE_STORAGE_KEY,
+  isAgentProgramReferrerId,
+  normalizeReferralCode,
+  readOrCreateAgentReferralVisitorId,
+} from "@/app/lib/referral";
 
-type WizardState = "CONFIGURE" | "REVIEW" | "PAYMENT_PENDING" | "PROCESSING" | "COMPLETE";
+type WizardState = "CONFIGURE" | "REVIEW" | "PROCESSING" | "COMPLETE";
 
 type ProcessingStep =
   | "SIGNAL_PULL"
@@ -41,8 +47,47 @@ type AgentPaymentReceipt = {
   agentNote: string;
   chargedAmountUsdc: number;
   certifiedDecisionRecordPurchased: boolean;
-  paymentMethod: "card";
+  paymentMethod: "onchain" | "free_code" | "card";
   freeCodeApplied: boolean;
+};
+
+type AgentPaymentResponse = {
+  success: boolean;
+  status?: "paid";
+  transactionId?: string;
+  decisionId?: string;
+  agentNote?: string;
+  chargedAmountUsdc?: string;
+  certifiedDecisionRecordPurchased?: boolean;
+  paymentMethod?: "onchain" | "free_code" | "card";
+  freeCodeApplied?: boolean;
+  error?: string;
+};
+
+type PaymentQuoteResponse = {
+  success: boolean;
+  totalBeforeDiscountUsdc?: string;
+  chargedAmountUsdc?: string;
+  discountAmountUsdc?: string;
+  discountPercent?: number;
+  promoCodeApplied?: boolean;
+  promoCode?: string;
+  certifiedDecisionRecordPurchased?: boolean;
+  paymentMethod?: "onchain" | "free_code" | "card";
+  message?: string;
+  error?: string;
+};
+
+type PromoQuoteResult = {
+  totalBeforeDiscountUsdc: number;
+  chargedAmountUsdc: number;
+  discountAmountUsdc: number;
+  discountPercent: number;
+  promoCodeApplied: boolean;
+  promoCode?: string;
+  certifiedDecisionRecordPurchased: boolean;
+  paymentMethod: "onchain" | "free_code" | "card";
+  message: string;
 };
 
 type StripeWizardCheckoutResponse = {
@@ -55,7 +100,7 @@ type StripeWizardCheckoutResponse = {
 
 type StripeWizardConfirmResponse = {
   success?: boolean;
-  status?: "paid" | "pending";
+  status?: "paid";
   transactionId?: string;
   decisionId?: string;
   agentNote?: string;
@@ -67,7 +112,6 @@ type StripeWizardConfirmResponse = {
   investmentHorizon?: InvestmentHorizon;
   portfolioSegment?: PortfolioSegment;
   resultEmail?: string;
-  pendingReason?: string;
   error?: string;
 };
 
@@ -75,8 +119,21 @@ type WizardDraft = {
   riskMode: RiskMode;
   investmentHorizon: InvestmentHorizon;
   portfolioSegment: PortfolioSegment;
+  paymentMethod: WizardPaymentMethod;
   includeCertifiedDecisionRecord: boolean;
   resultEmail: string;
+};
+
+type UsdcBalanceResponse = {
+  success?: boolean;
+  error?: string;
+  data?: {
+    walletAddress?: string;
+    network?: string;
+    usdcContractAddress?: string;
+    usdcBalance?: string;
+    usdcBalanceBaseUnits?: string;
+  };
 };
 
 type PricingResponse = {
@@ -85,6 +142,31 @@ type PricingResponse = {
   data?: {
     structuredAllocationPriceUsdc?: number;
     certifiedDecisionRecordFeeUsdc?: number;
+  };
+};
+
+type AgentWalletResponse = {
+  success?: boolean;
+  error?: string;
+  data?: {
+    walletAddress?: string;
+    network?: string;
+    usdc?: {
+      contractAddress?: string;
+      balance?: string;
+      balanceBaseUnits?: string;
+    };
+  };
+};
+
+type VerifyPaymentResponse = {
+  success?: boolean;
+  error?: string;
+  data?: {
+    transactionHash?: string;
+    amount?: string;
+    confirmed?: boolean;
+    blockNumber?: number;
   };
 };
 
@@ -525,6 +607,51 @@ type ExecutionStatusResponse = {
   };
 };
 
+type ChainConfig = {
+  chainIdHex: string;
+  chainName: string;
+  nativeCurrency: { name: string; symbol: string; decimals: number };
+  rpcUrls: string[];
+  blockExplorerUrls: string[];
+};
+
+type ProviderRpcError = {
+  code?: number;
+  message?: string;
+  data?: unknown;
+  cause?: unknown;
+};
+
+type EthereumProvider = {
+  request: (args: { method: string; params?: unknown[] | object }) => Promise<unknown>;
+  on?: (event: string, listener: (...args: unknown[]) => void) => void;
+  off?: (event: string, listener: (...args: unknown[]) => void) => void;
+  removeListener?: (event: string, listener: (...args: unknown[]) => void) => void;
+  disconnect?: () => Promise<void>;
+  accounts?: string[];
+  connected?: boolean;
+  isWalletConnect?: boolean;
+  setDefaultChain?: (chain: string, rpcUrl?: string) => void;
+  connect?: (args?: unknown) => Promise<unknown>;
+  session?: {
+    namespaces?: Record<
+      string,
+      {
+        accounts?: string[];
+      }
+    >;
+  } | null;
+};
+
+type WalletConnectionMethod = "browser" | "mobile";
+type WizardPaymentMethod = "card" | "browser" | "mobile";
+
+declare global {
+  interface Window {
+    ethereum?: EthereumProvider;
+  }
+}
+
 const RISK_MODES: RiskMode[] = ["Conservative", "Balanced", "Growth", "Aggressive"];
 const HORIZONS: InvestmentHorizon[] = ["< 1 Year", "1-3 Years", "3+ Years"];
 const PORTFOLIO_SEGMENTS: PortfolioSegment[] = ["Bluechips", "Memecoins", "Gaming", "Yield Farm"];
@@ -533,16 +660,38 @@ const DEFAULT_HORIZON: InvestmentHorizon = "1-3 Years";
 const DEFAULT_PORTFOLIO_SEGMENT: PortfolioSegment = "Bluechips";
 const WIZARD_DRAFT_STORAGE_KEY = "selun-wizard-draft-v1";
 const PROCESSING_POLL_INTERVAL_MS = 1500;
-const WIZARD_FLOW: WizardState[] = ["CONFIGURE", "REVIEW", "PAYMENT_PENDING", "PROCESSING", "COMPLETE"];
-const WIZARD_FLOW_LABELS: Record<WizardState, string> = {
-  CONFIGURE: "Configure",
-  REVIEW: "Review",
-  PAYMENT_PENDING: "Payment Pending",
-  PROCESSING: "Processing",
-  COMPLETE: "Complete",
-};
+const WALLETCONNECT_PROJECT_ID = process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID?.trim() ?? "";
+const WIZARD_FLOW: WizardState[] = ["CONFIGURE", "REVIEW", "PROCESSING", "COMPLETE"];
 const FALLBACK_BASE_PRICE_USDC = 19;
 const FALLBACK_CERTIFIED_DECISION_RECORD_FEE_USDC = 15;
+
+const NETWORK_LABELS: Record<string, string> = {
+  "base-mainnet": "Base Mainnet",
+  "base-sepolia": "Base Sepolia",
+};
+const CHAIN_CONFIGS: Record<string, ChainConfig> = {
+  "base-mainnet": {
+    chainIdHex: "0x2105",
+    chainName: "Base",
+    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+    rpcUrls: ["https://mainnet.base.org"],
+    blockExplorerUrls: ["https://basescan.org"],
+  },
+  "base-sepolia": {
+    chainIdHex: "0x14a34",
+    chainName: "Base Sepolia",
+    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+    rpcUrls: ["https://sepolia.base.org"],
+    blockExplorerUrls: ["https://sepolia.basescan.org"],
+  },
+};
+
+function getWalletConnectRpcMap(): Record<number, string> {
+  return {
+    8453: CHAIN_CONFIGS["base-mainnet"].rpcUrls[0],
+    84532: CHAIN_CONFIGS["base-sepolia"].rpcUrls[0],
+  };
+}
 
 const PROCESSING_STEPS: ProcessingStepMeta[] = [
   { key: "SIGNAL_PULL", label: "Reviewing Market Condition" },
@@ -657,6 +806,7 @@ const createPhase3SubPhaseStates = (): Record<string, SubPhaseStatus> => ({
   finalizing_universe_snapshot: "pending",
 });
 
+const shortenAddress = (address: string) => `${address.slice(0, 6)}...${address.slice(-4)}`;
 const formatUsdcValue = (value: number) =>
   new Intl.NumberFormat("en-US", {
     minimumFractionDigits: 2,
@@ -1037,6 +1187,38 @@ function formatRiskClassLabel(riskClass: string): string {
     .join(" ");
 }
 
+const isHexAddress = (value: string) => /^0x[a-fA-F0-9]{40}$/.test(value);
+const getNetworkLabel = (network: string) => NETWORK_LABELS[network] || network;
+
+async function queryUsdcBalance(walletAddress: string): Promise<{
+  usdcBalance: number;
+  networkId: string;
+  networkLabel: string;
+}> {
+  const response = await fetch("/api/agent/usdc-balance", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ walletAddress }),
+  });
+
+  const payload = (await response.json()) as UsdcBalanceResponse;
+  if (!response.ok || !payload.success || !payload.data) {
+    throw new Error(payload.error || "Unable to read USDC balance.");
+  }
+
+  const networkId = payload.data.network || "unknown-network";
+  const parsedBalance = Number.parseFloat(payload.data.usdcBalance || "");
+  if (!Number.isFinite(parsedBalance)) {
+    throw new Error("Backend returned an invalid USDC balance.");
+  }
+
+  return {
+    usdcBalance: parsedBalance,
+    networkId,
+    networkLabel: getNetworkLabel(networkId),
+  };
+}
+
 async function queryPricing(): Promise<{
   structuredAllocationPriceUsdc: number;
   certifiedDecisionRecordFeeUsdc: number;
@@ -1061,6 +1243,170 @@ async function queryPricing(): Promise<{
     structuredAllocationPriceUsdc: basePrice,
     certifiedDecisionRecordFeeUsdc: decisionFee,
   };
+}
+
+async function queryPaymentQuote(params: {
+  walletAddress: string;
+  includeCertifiedDecisionRecord: boolean;
+  promoCode: string;
+}): Promise<PromoQuoteResult> {
+  const response = await fetch("/api/agent/pay-quote", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+
+  const rawText = await response.text();
+  let payload: PaymentQuoteResponse | null = null;
+  try {
+    payload = rawText ? (JSON.parse(rawText) as PaymentQuoteResponse) : null;
+  } catch {
+    payload = null;
+  }
+
+  if (!response.ok || !payload?.success) {
+    if (payload?.error) {
+      throw new Error(payload.error);
+    }
+
+    const trimmed = rawText.trim();
+    const looksLikeHtml =
+      trimmed.startsWith("<!DOCTYPE") ||
+      trimmed.startsWith("<html") ||
+      (response.headers.get("content-type") || "").includes("text/html");
+    if (looksLikeHtml) {
+      throw new Error("Promo quote endpoint returned HTML instead of JSON. Redeploy latest frontend/backend and try again.");
+    }
+
+    throw new Error(`Unable to validate promo code (HTTP ${response.status}).`);
+  }
+
+  const totalBeforeDiscountUsdc = Number.parseFloat(payload.totalBeforeDiscountUsdc ?? "");
+  const chargedAmountUsdc = Number.parseFloat(payload.chargedAmountUsdc ?? "");
+  const discountAmountUsdc = Number.parseFloat(payload.discountAmountUsdc ?? "");
+  const discountPercent = Number(payload.discountPercent ?? 0);
+  if (
+    !Number.isFinite(totalBeforeDiscountUsdc) ||
+    totalBeforeDiscountUsdc < 0 ||
+    !Number.isFinite(chargedAmountUsdc) ||
+    chargedAmountUsdc < 0 ||
+    !Number.isFinite(discountAmountUsdc) ||
+    discountAmountUsdc < 0 ||
+    !Number.isFinite(discountPercent) ||
+    discountPercent < 0 ||
+    discountPercent > 100
+  ) {
+    throw new Error("Backend returned invalid promo quote.");
+  }
+
+  return {
+    totalBeforeDiscountUsdc,
+    chargedAmountUsdc,
+    discountAmountUsdc,
+    discountPercent,
+    promoCodeApplied: Boolean(payload.promoCodeApplied),
+    promoCode: payload.promoCode,
+    certifiedDecisionRecordPurchased: Boolean(payload.certifiedDecisionRecordPurchased),
+    paymentMethod: payload.paymentMethod ?? "onchain",
+    message: payload.message || "Promo code applied.",
+  };
+}
+
+async function queryAgentWallet(): Promise<{
+  walletAddress: string;
+  networkId: string;
+  usdcContractAddress: string;
+}> {
+  const response = await fetch("/api/agent/wallet", {
+    method: "GET",
+    cache: "no-store",
+  });
+
+  const payload = (await response.json()) as AgentWalletResponse;
+  if (!response.ok || !payload.success || !payload.data) {
+    throw new Error(payload.error || "Unable to load agent wallet.");
+  }
+
+  const walletAddress = payload.data.walletAddress ?? "";
+  const networkId = payload.data.network ?? "";
+  const usdcContractAddress = payload.data.usdc?.contractAddress ?? "";
+
+  if (!isHexAddress(walletAddress)) {
+    throw new Error("Backend returned invalid agent wallet address.");
+  }
+  if (!networkId || !CHAIN_CONFIGS[networkId]) {
+    throw new Error(`Unsupported backend network for payment: ${networkId || "unknown"}.`);
+  }
+  if (!isHexAddress(usdcContractAddress)) {
+    throw new Error("Backend returned invalid USDC contract address.");
+  }
+
+  return {
+    walletAddress,
+    networkId,
+    usdcContractAddress,
+  };
+}
+
+async function verifyPaymentOnBackend(params: {
+  fromAddress: string;
+  expectedAmountUSDC: number | string;
+  transactionHash?: string;
+  decisionId?: string;
+}, options?: {
+  timeoutMs?: number;
+}): Promise<{
+  transactionHash: string;
+  amount: string;
+  confirmed: boolean;
+}> {
+  const timeoutMs = options?.timeoutMs;
+  const controller = typeof AbortController !== "undefined" && typeof timeoutMs === "number" && timeoutMs > 0
+    ? new AbortController()
+    : undefined;
+  const timeoutHandle =
+    controller && typeof timeoutMs === "number" && timeoutMs > 0
+      ? setTimeout(() => controller.abort(), timeoutMs)
+      : undefined;
+  try {
+    const response = await fetch("/api/agent/verify-payment", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+      signal: controller?.signal,
+    });
+
+    const payload = (await response.json()) as VerifyPaymentResponse;
+    if (!response.ok || !payload.success || !payload.data) {
+      throw new Error(payload.error || "Payment verification failed.");
+    }
+
+    const transactionHash = payload.data.transactionHash ?? "";
+    const amount = payload.data.amount ?? "";
+    const confirmed = Boolean(payload.data.confirmed);
+
+    if (!/^0x[a-fA-F0-9]{64}$/.test(transactionHash)) {
+      throw new Error("Backend returned invalid transaction hash.");
+    }
+    if (!confirmed) {
+      throw new Error("Payment was not confirmed on-chain.");
+    }
+
+    return {
+      transactionHash,
+      amount,
+      confirmed,
+    };
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error("Payment verification timed out.");
+    }
+    throw error;
+  } finally {
+    if (typeof timeoutHandle === "number") {
+      clearTimeout(timeoutHandle);
+    }
+  }
 }
 
 async function startPhase1Execution(params: {
@@ -1178,8 +1524,389 @@ function toBackendPortfolioSegment(segment: PortfolioSegment): PortfolioSegment 
   return segment;
 }
 
+function parseUsdcToBaseUnits(value: string): bigint {
+  const trimmed = value.trim();
+  if (!/^\d+(\.\d+)?$/.test(trimmed)) {
+    throw new Error(`Invalid USDC amount: ${value}`);
+  }
+
+  const [wholePart, fractionalRaw = ""] = trimmed.split(".");
+  if (fractionalRaw.length > 6) {
+    throw new Error(`USDC amount has too many decimal places: ${value}`);
+  }
+
+  const fractionalPart = fractionalRaw.padEnd(6, "0");
+  return BigInt(wholePart) * 1_000_000n + BigInt(fractionalPart || "0");
+}
+
+function encodeUsdcTransferCall(toAddress: string, amountBaseUnits: bigint): string {
+  const methodSelector = "a9059cbb";
+  const encodedTo = toAddress.toLowerCase().replace(/^0x/, "").padStart(64, "0");
+  const encodedAmount = amountBaseUnits.toString(16).padStart(64, "0");
+  return `0x${methodSelector}${encodedTo}${encodedAmount}`;
+}
+
+function extractWalletRpcErrorDetails(error: unknown): {
+  message: string;
+  code?: number;
+  transactionHash?: string;
+} {
+  const transactionHashPattern = /0x[a-fA-F0-9]{64}/;
+  const seen = new Set<unknown>();
+  const queue: unknown[] = [error];
+  const messages: string[] = [];
+  let code: number | undefined;
+  let transactionHash: string | undefined;
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (current == null || seen.has(current)) continue;
+
+    if (typeof current === "string") {
+      const trimmed = current.trim();
+      if (trimmed) messages.push(trimmed);
+      const match = trimmed.match(transactionHashPattern);
+      if (!transactionHash && match) {
+        transactionHash = match[0];
+      }
+      continue;
+    }
+
+    if (typeof current === "number" || typeof current === "boolean") {
+      continue;
+    }
+
+    if (current instanceof Error) {
+      seen.add(current);
+      if (current.message) messages.push(current.message);
+      queue.push((current as { cause?: unknown }).cause);
+      continue;
+    }
+
+    if (typeof current === "object") {
+      seen.add(current);
+      const record = current as Record<string, unknown>;
+      if (typeof record.code === "number" && code === undefined) {
+        code = record.code;
+      }
+      if (typeof record.message === "string") {
+        messages.push(record.message);
+      }
+
+      const hashValue = record.transactionHash ?? record.txHash ?? record.hash;
+      if (!transactionHash && typeof hashValue === "string" && /^0x[a-fA-F0-9]{64}$/.test(hashValue)) {
+        transactionHash = hashValue;
+      }
+
+      for (const value of Object.values(record)) {
+        queue.push(value);
+      }
+    }
+  }
+
+  return {
+    message: [...new Set(messages.map((value) => value.trim()).filter(Boolean))].join(" | ") || "Wallet transfer failed.",
+    code,
+    transactionHash,
+  };
+}
+
+function parseDuplicateBroadcastWalletError(error: unknown): {
+  isDuplicateBroadcast: boolean;
+  message: string;
+  transactionHash?: string;
+} {
+  const details = extractWalletRpcErrorDetails(error);
+  const normalizedMessage = details.message.toLowerCase();
+  const duplicateBroadcastMarkers = [
+    "already known",
+    "known transaction",
+    "already imported",
+    "nonce too low",
+    "replacement transaction underpriced",
+  ];
+
+  return {
+    isDuplicateBroadcast:
+      duplicateBroadcastMarkers.some((marker) => normalizedMessage.includes(marker)) ||
+      (details.code === -32000 && normalizedMessage.includes("known")),
+    message: details.message,
+    transactionHash: details.transactionHash,
+  };
+}
+
+function isUserRejectedWalletError(error: unknown): boolean {
+  const details = extractWalletRpcErrorDetails(error);
+  const normalizedMessage = details.message.toLowerCase();
+  return (
+    details.code === 4001 ||
+    normalizedMessage.includes("user rejected") ||
+    normalizedMessage.includes("user denied") ||
+    normalizedMessage.includes("rejected the request")
+  );
+}
+
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseHexQuantityToBigInt(value: unknown): bigint | null {
+  if (typeof value !== "string") return null;
+  if (!/^0x[a-fA-F0-9]+$/.test(value)) return null;
+  try {
+    return BigInt(value);
+  } catch {
+    return null;
+  }
+}
+
+async function hasPendingTransactions(provider: EthereumProvider, walletAddress: string): Promise<boolean> {
+  try {
+    const [latestRaw, pendingRaw] = await Promise.all([
+      provider.request({
+        method: "eth_getTransactionCount",
+        params: [walletAddress, "latest"],
+      }),
+      provider.request({
+        method: "eth_getTransactionCount",
+        params: [walletAddress, "pending"],
+      }),
+    ]);
+
+    const latest = parseHexQuantityToBigInt(latestRaw);
+    const pending = parseHexQuantityToBigInt(pendingRaw);
+    if (latest === null || pending === null) return false;
+    return pending > latest;
+  } catch {
+    return false;
+  }
+}
+
+async function hasPendingTransactionsOnRpc(networkId: string, walletAddress: string): Promise<boolean> {
+  const chainConfig = CHAIN_CONFIGS[networkId];
+  const rpcUrl = chainConfig?.rpcUrls?.[0];
+  if (!rpcUrl) return false;
+
+  const sendRpc = async (method: string, params: unknown[]): Promise<unknown> => {
+    const response = await fetch(rpcUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: Date.now(),
+        method,
+        params,
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(`RPC request failed: ${response.status}`);
+    }
+    const payload = (await response.json()) as {
+      result?: unknown;
+      error?: { message?: string };
+    };
+    if (payload.error) {
+      throw new Error(payload.error.message || "RPC returned an error.");
+    }
+    return payload.result;
+  };
+
+  try {
+    const [latestRaw, pendingRaw] = await Promise.all([
+      sendRpc("eth_getTransactionCount", [walletAddress, "latest"]),
+      sendRpc("eth_getTransactionCount", [walletAddress, "pending"]),
+    ]);
+    const latest = parseHexQuantityToBigInt(latestRaw);
+    const pending = parseHexQuantityToBigInt(pendingRaw);
+    if (latest === null || pending === null) return false;
+    return pending > latest;
+  } catch {
+    return false;
+  }
+}
+
+async function tryRecoverExistingPayment(params: {
+  fromAddress: string;
+  expectedAmountUSDC: string;
+  decisionId?: string;
+}, timeoutMs: number): Promise<Awaited<ReturnType<typeof verifyPaymentOnBackend>> | null> {
+  try {
+    return await verifyPaymentOnBackend(
+      {
+        fromAddress: params.fromAddress,
+        expectedAmountUSDC: params.expectedAmountUSDC,
+      },
+      { timeoutMs },
+    );
+  } catch {
+    return null;
+  }
+}
+
+function getBrowserWalletProvider(): EthereumProvider | null {
+  if (typeof window === "undefined") return null;
+  return window.ethereum?.request ? window.ethereum : null;
+}
+
+function parseWalletAccountString(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const candidate = trimmed.includes(":") ? trimmed.split(":").pop() ?? "" : trimmed;
+  return isHexAddress(candidate) ? candidate : null;
+}
+
+function parseWalletAccounts(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return Array.from(
+    new Set(
+      raw
+        .filter((value): value is string => typeof value === "string")
+        .map(parseWalletAccountString)
+        .filter((value): value is string => Boolean(value)),
+    ),
+  );
+}
+
+function toWalletConnectChain(networkId: string): string {
+  const config = CHAIN_CONFIGS[networkId];
+  if (!config) {
+    throw new Error(`Unsupported network for WalletConnect: ${networkId}`);
+  }
+  return `eip155:${parseInt(config.chainIdHex, 16)}`;
+}
+
+function getNetworkLabelFromChainIdHex(chainIdHex: string | null): string | null {
+  if (!chainIdHex) return null;
+  const normalized = chainIdHex.toLowerCase();
+  for (const [networkId, config] of Object.entries(CHAIN_CONFIGS)) {
+    if (config.chainIdHex.toLowerCase() === normalized) {
+      return NETWORK_LABELS[networkId] ?? config.chainName;
+    }
+  }
+  return null;
+}
+
+function extractWalletConnectSessionAccounts(provider: EthereumProvider): string[] {
+  const namespaces = provider.session?.namespaces;
+  if (!namespaces) {
+    return [];
+  }
+  const collected: string[] = [];
+  for (const namespace of Object.values(namespaces)) {
+    if (Array.isArray(namespace.accounts)) {
+      collected.push(...namespace.accounts);
+    }
+  }
+  return parseWalletAccounts(collected);
+}
+
+async function getWalletChainIdHex(provider: EthereumProvider): Promise<string | null> {
+  if (!provider?.request) return null;
+  try {
+    const raw = await provider.request({ method: "eth_chainId" });
+    return typeof raw === "string" ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+// CHANGED: make switching more robust:
+// - if already on chain, return immediately
+// - use longer timeout (wallet UI may require user attention)
+// - keep original add-chain fallback
+function isUnsupportedWalletMethod(error: unknown): boolean {
+  const rpcError = error as ProviderRpcError | undefined;
+  const message = typeof rpcError?.message === "string" ? rpcError.message.toLowerCase() : "";
+  return rpcError?.code === -32601 || message.includes("wallet_switchethereumchain") || message.includes("missing or invalid");
+}
+
+async function ensureWalletOnChain(
+  provider: EthereumProvider,
+  networkId: string,
+  walletConnectionMethod: WalletConnectionMethod | null = null,
+) {
+  if (!provider?.request) {
+    throw new Error("No wallet provider detected.");
+  }
+
+  const config = CHAIN_CONFIGS[networkId];
+  if (!config) {
+    throw new Error(`Unsupported chain requested: ${networkId}`);
+  }
+
+  const currentChainId = await getWalletChainIdHex(provider);
+  if (currentChainId && currentChainId.toLowerCase() === config.chainIdHex.toLowerCase()) {
+    if (typeof provider.setDefaultChain === "function") {
+      provider.setDefaultChain(toWalletConnectChain(networkId), config.rpcUrls[0]);
+    }
+    return;
+  }
+
+  try {
+    await provider.request({
+      method: "wallet_switchEthereumChain",
+      params: [{ chainId: config.chainIdHex }],
+    });
+    return;
+  } catch (error) {
+    const rpcError = error as ProviderRpcError;
+
+    // If switch request was shown but not completed, wallets may effectively "hang".
+    // Surface a more actionable hint.
+    if (rpcError?.code === 4001) {
+      throw new Error(`Network switch rejected. Please switch your wallet to ${config.chainName} and retry.`);
+    }
+
+    if (isUnsupportedWalletMethod(rpcError)) {
+      const currentNetworkLabel = getNetworkLabelFromChainIdHex(currentChainId);
+      const requiredNetworkLabel = NETWORK_LABELS[networkId] ?? config.chainName;
+      const manualSwitchMessage =
+        walletConnectionMethod === "mobile"
+          ? currentNetworkLabel
+            ? `This mobile wallet session is connected to ${currentNetworkLabel}. Selun is currently configured for ${requiredNetworkLabel}. Reconnect with a wallet that supports ${requiredNetworkLabel}, or use a browser wallet for that network.`
+            : `This mobile wallet session does not support automatic network switching. Selun is currently configured for ${requiredNetworkLabel}. Reconnect with a wallet that supports ${requiredNetworkLabel}, or use a browser wallet for that network.`
+          : `Your wallet does not support automatic network switching. Switch it to ${config.chainName} and retry.`;
+      throw new Error(manualSwitchMessage);
+    }
+
+    if (rpcError.code !== 4902) {
+      throw new Error(rpcError.message || `Failed to switch wallet network to ${config.chainName}.`);
+    }
+  }
+
+  try {
+    await provider.request({
+      method: "wallet_addEthereumChain",
+      params: [
+        {
+          chainId: config.chainIdHex,
+          chainName: config.chainName,
+          nativeCurrency: config.nativeCurrency,
+          rpcUrls: config.rpcUrls,
+          blockExplorerUrls: config.blockExplorerUrls,
+        },
+      ],
+    });
+  } catch (error) {
+    if (isUnsupportedWalletMethod(error)) {
+      const manualAddMessage =
+        walletConnectionMethod === "mobile"
+          ? `Your mobile wallet does not support adding ${config.chainName} automatically. Open the wallet app, switch to ${config.chainName}, then retry.`
+          : `Your wallet does not support adding ${config.chainName} automatically. Switch to that network manually, then retry.`;
+      throw new Error(manualAddMessage);
+    }
+    throw error;
+  }
+
+  if (typeof provider.setDefaultChain === "function") {
+    provider.setDefaultChain(toWalletConnectChain(networkId), config.rpcUrls[0]);
+  }
+}
+
+// Helper function to check if an amount is effectively zero
+function isZeroAmount(value: unknown): boolean {
+  const n = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  return Number.isFinite(n) && Math.abs(n) < 1e-9;
 }
 
 type ConfigureStepProps = {
@@ -1348,18 +2075,44 @@ type ReviewStepProps = {
   riskMode: RiskMode;
   investmentHorizon: InvestmentHorizon;
   portfolioSegment: PortfolioSegment;
+  paymentMethod: WizardPaymentMethod;
   basePriceUsdc: number;
   certifiedDecisionRecordFeeUsdc: number;
   resultEmail: string;
   includeCertifiedDecisionRecord: boolean;
+  promoCode: string;
+  promoQuote: PromoQuoteResult | null;
+  promoQuoteError: string | null;
+  isApplyingPromoCode: boolean;
+  requiresPromoApply: boolean;
+  requiredAmountUsdc: number;
   totalPriceUsdc: number;
   isLoadingPricing: boolean;
   pricingError: string | null;
+  walletAddress: string | null;
+  walletConnectionMethod: WalletConnectionMethod | null;
+  walletConnectAvailable: boolean;
+  walletConnectUri: string | null;
+  walletConnectQrDataUrl: string | null;
+  usdcNetworkLabel: string;
+  usdcBalance: number | null;
+  isLoadingUsdcBalance: boolean;
+  usdcBalanceError: string | null;
+  isBalanceLow: boolean;
+  isConnectingWallet: boolean;
+  connectingWalletMethod: WalletConnectionMethod | null;
   paymentError: string | null;
+  isPaying: boolean;
   isStartingCardCheckout: boolean;
   isConfirmingCardCheckout: boolean;
   onResultEmailChange: (value: string) => void;
   onToggleCertifiedDecisionRecord: (nextValue: boolean) => void;
+  onSelectPaymentMethod: (method: WizardPaymentMethod) => void;
+  onPromoCodeChange: (value: string) => void;
+  onApplyPromoCode: () => Promise<void>;
+  onConnectBrowserWallet: () => Promise<void>;
+  onConnectQrWallet: () => Promise<void>;
+  onRefreshUsdcBalance: () => void;
   onRefreshPricing: () => Promise<void>;
   onBack: () => void;
   onGenerate: () => void;
@@ -1369,48 +2122,131 @@ function ReviewStep({
   riskMode,
   investmentHorizon,
   portfolioSegment,
+  paymentMethod,
   basePriceUsdc,
   certifiedDecisionRecordFeeUsdc,
   resultEmail,
   includeCertifiedDecisionRecord,
+  promoCode,
+  promoQuote,
+  promoQuoteError,
+  isApplyingPromoCode,
+  requiresPromoApply,
+  requiredAmountUsdc,
   totalPriceUsdc,
   isLoadingPricing,
   pricingError,
+  walletAddress,
+  walletConnectionMethod,
+  walletConnectAvailable,
+  walletConnectUri,
+  walletConnectQrDataUrl,
+  usdcNetworkLabel,
+  usdcBalance,
+  isLoadingUsdcBalance,
+  usdcBalanceError,
+  isBalanceLow,
+  isConnectingWallet,
+  connectingWalletMethod,
   paymentError,
+  isPaying,
   isStartingCardCheckout,
   isConfirmingCardCheckout,
   onResultEmailChange,
   onToggleCertifiedDecisionRecord,
+  onSelectPaymentMethod,
+  onPromoCodeChange,
+  onApplyPromoCode,
+  onConnectBrowserWallet,
+  onConnectQrWallet,
+  onRefreshUsdcBalance,
   onRefreshPricing,
   onBack,
   onGenerate,
 }: ReviewStepProps) {
+  const hasPromoCode = promoCode.trim().length > 0;
+  const promoApplied = Boolean(promoQuote?.promoCodeApplied);
   const normalizedResultEmail = resultEmail.trim();
   const hasResultEmail = normalizedResultEmail.length > 0;
   const invalidResultEmail = hasResultEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedResultEmail);
+  const requiresUsdcBalance = requiredAmountUsdc > 0;
+  const isCardPayment = paymentMethod === "card";
+  const walletConnectionLabel =
+    walletConnectionMethod === "mobile"
+      ? "Connected via QR / mobile wallet"
+      : walletConnectionMethod === "browser"
+        ? "Connected via browser wallet"
+        : null;
+  const browserWalletActionLabel = walletAddress
+    ? walletConnectionMethod === "browser"
+      ? "Reconnect Browser"
+      : "Switch to Browser"
+    : "Browser Wallet";
+  const qrWalletActionLabel = walletAddress
+    ? walletConnectionMethod === "mobile"
+      ? "Reconnect QR / Mobile"
+      : "Switch to QR / Mobile"
+    : "QR / Mobile Wallet";
+  const isConnectingBrowserWallet = isConnectingWallet && connectingWalletMethod === "browser";
+  const isConnectingQrWallet = isConnectingWallet && connectingWalletMethod === "mobile";
+  const browserWalletButtonLabel = isConnectingBrowserWallet ? "Connecting..." : browserWalletActionLabel;
+  const qrWalletButtonLabel = isConnectingQrWallet ? "Connecting..." : qrWalletActionLabel;
   const canGenerate =
-    !isLoadingPricing &&
-    !pricingError &&
+    !isPaying &&
     !isStartingCardCheckout &&
     !isConfirmingCardCheckout &&
-    !invalidResultEmail;
+    !invalidResultEmail &&
+    (
+      isCardPayment
+        ? !hasPromoCode && !isApplyingPromoCode
+        : Boolean(walletAddress) &&
+          !isApplyingPromoCode &&
+          !requiresPromoApply &&
+          (
+            !requiresUsdcBalance ||
+            (
+              !isLoadingUsdcBalance &&
+              !usdcBalanceError &&
+              !isLoadingPricing &&
+              !pricingError &&
+              usdcBalance !== null &&
+              usdcBalance >= requiredAmountUsdc
+            )
+          )
+    );
+
+  const shouldLeadWithConnect = !walletAddress;
 
   const authorizeLabel = isConfirmingCardCheckout
     ? "Confirming card payment..."
     : isStartingCardCheckout
-      ? "Opening secure Stripe checkout..."
-      : isLoadingPricing
-        ? "Loading pricing..."
-        : pricingError
-          ? "Pricing unavailable. Refresh required."
-          : invalidResultEmail
-            ? "Enter a valid results email or leave blank"
-            : "Continue to Secure Payment";
+      ? "Opening secure card checkout..."
+    : isPaying
+    ? "Agent processing payment..."
+    : isLoadingPricing
+      ? "Loading pricing..."
+    : pricingError
+      ? "Pricing unavailable. Refresh required."
+    : invalidResultEmail
+      ? "Enter a valid results email or leave blank"
+    : isCardPayment && hasPromoCode
+      ? "Promo codes are not available for card checkout"
+    : isCardPayment
+      ? `Continue to Secure Card Checkout`
+    : requiresUsdcBalance && isLoadingUsdcBalance && walletAddress
+      ? "Checking USDC balance..."
+    : requiresPromoApply
+      ? "Apply promo code to confirm final price"
+    : isBalanceLow
+      ? "Insufficient USDC balance"
+    : !requiresUsdcBalance
+      ? "Generate Allocation"
+    : `Authorize ${formatUsdcValue(requiredAmountUsdc)} USDC & Generate Allocation`;
 
   return (
     <section className="rounded-2xl border border-slate-300/70 bg-white/70 p-6 backdrop-blur">
-      <h2 className="text-2xl font-semibold text-slate-900">Step 2. Review & Authorize Execution</h2>
-      <p className="mt-2 text-slate-600">Confirm your allocation profile and authorize secure payment to initiate allocation.</p>
+      <h2 className="text-2xl font-semibold text-slate-900">Step 2. Review & Authorize</h2>
+      <p className="mt-2 text-slate-600">Review your allocation profile and authorize execution on-chain.</p>
 
       <div className="mt-6 grid gap-4 md:grid-cols-4">
         <div className="rounded-xl border border-slate-300/60 bg-slate-50/70 p-4">
@@ -1427,7 +2263,7 @@ function ReviewStep({
         </div>
         <div className="rounded-xl border border-slate-300/60 bg-slate-50/70 p-4">
           <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Structured Allocation</p>
-          <p className="mt-2 text-lg font-semibold text-slate-800">${formatUsdcValue(basePriceUsdc)} USD</p>
+          <p className="mt-2 text-lg font-semibold text-slate-800">${formatUsdcValue(basePriceUsdc)} USDC</p>
         </div>
       </div>
 
@@ -1437,16 +2273,15 @@ function ReviewStep({
             type="checkbox"
             checked={includeCertifiedDecisionRecord}
             onChange={(event) => onToggleCertifiedDecisionRecord(event.target.checked)}
-            disabled={isStartingCardCheckout || isConfirmingCardCheckout}
+            disabled={isPaying}
             className="mt-1 h-4 w-4 accent-cyan-700"
           />
           <div className="space-y-1">
             <p className="text-sm font-semibold text-slate-800">Add Certified Decision Report</p>
-            <p className="text-sm font-semibold text-slate-700">${formatUsdcValue(certifiedDecisionRecordFeeUsdc)} USD</p>
+            <p className="text-sm font-semibold text-slate-700">${formatUsdcValue(certifiedDecisionRecordFeeUsdc)} USDC</p>
             <p className="text-xs text-slate-600">
-              Exhaustive report detailing current market conditions, allocation rationale, and token selection logic.
-              <br />
-              <strong>Recommended for in-depth analysis and documentation.</strong>
+            Exhaustive report detailing current market conditions, allocation rationale, and token selection logic.
+            <br /><strong>Recommended for in-depth analysis and documentation.</strong>
             </p>
           </div>
         </label>
@@ -1478,18 +2313,32 @@ function ReviewStep({
       <div className="mt-4 rounded-xl border border-slate-300/60 bg-white/80 p-4">
         <div className="flex items-center justify-between text-sm text-slate-700">
           <span>Structured Allocation</span>
-          <span>${formatUsdcValue(basePriceUsdc)} USD</span>
+          <span>${formatUsdcValue(basePriceUsdc)} USDC</span>
         </div>
         <div className="mt-1 flex items-center justify-between text-sm text-slate-700">
           <span>Certified Decision Report</span>
           <span>
-            {includeCertifiedDecisionRecord ? `$${formatUsdcValue(certifiedDecisionRecordFeeUsdc)} USD` : "$0 USD"}
+            {includeCertifiedDecisionRecord ? `$${formatUsdcValue(certifiedDecisionRecordFeeUsdc)} USDC` : "$0 USDC"}
           </span>
         </div>
+        {promoApplied && promoQuote && (
+          <div className="mt-1 flex items-center justify-between text-sm text-emerald-700">
+            <span>Promo Discount ({formatUsdcValue(promoQuote.discountPercent)}%)</span>
+            <span>- ${formatUsdcValue(promoQuote.discountAmountUsdc)} USDC</span>
+          </div>
+        )}
         <div className="mt-3 flex items-center justify-between border-t border-slate-200 pt-3 text-base font-bold text-slate-950">
           <span>Final Total</span>
-          <span>${formatUsdcValue(totalPriceUsdc)} USD</span>
+          <span>${formatUsdcValue(requiredAmountUsdc)} USDC</span>
         </div>
+        {requiresPromoApply && (
+          <p className="mt-2 text-xs font-medium text-amber-700">
+            Apply your code to confirm the final checkout price before purchase.
+          </p>
+        )}
+        {promoApplied && promoQuote?.message && (
+          <p className="mt-2 text-xs font-medium text-emerald-700">{promoQuote.message}</p>
+        )}
         <p className="mt-2 text-xs font-medium text-slate-500">
           Allocation executed using Sagitta AAA v4 market-aware allocator.
         </p>
@@ -1501,7 +2350,7 @@ function ReviewStep({
           <button
             type="button"
             onClick={() => void onRefreshPricing()}
-            disabled={isLoadingPricing || isStartingCardCheckout || isConfirmingCardCheckout}
+            disabled={isLoadingPricing || isPaying}
             className="rounded-full border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold text-amber-800 transition hover:border-amber-400 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {isLoadingPricing ? "Refreshing..." : "Refresh Pricing"}
@@ -1510,16 +2359,218 @@ function ReviewStep({
       )}
 
       <div className="mt-4 rounded-xl border border-slate-300/60 bg-slate-50/70 p-4">
-        <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Payment</p>
-        <div className="mt-3 rounded-xl border border-slate-300/60 bg-white/80 p-4">
-          <p className="text-sm font-semibold text-slate-800">Secure Payment Processing</p>
-          <p className="mt-2 text-sm text-slate-600">
-            Payments are processed securely via Stripe. Selun never stores your card details.
-          </p>
-          <p className="mt-3 text-xs font-medium text-slate-500">
-            After payment confirmation, Selun will begin generating your allocation.
-          </p>
+        <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Payment Method</p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => onSelectPaymentMethod("card")}
+            disabled={isPaying || isStartingCardCheckout || isConfirmingCardCheckout}
+            className={`rounded-full px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${
+              paymentMethod === "card"
+                ? "border border-slate-400 bg-slate-200 text-slate-800 shadow-[0_0_0_3px_rgba(34,211,238,0.2),0_8px_20px_rgba(34,211,238,0.18)]"
+                : "border border-slate-400 bg-white text-slate-700 hover:border-cyan-400"
+            }`}
+          >
+            Card
+          </button>
+          <button
+            type="button"
+            onClick={() => onSelectPaymentMethod("browser")}
+            disabled={isConnectingWallet || isPaying}
+            className={`rounded-full px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${
+              paymentMethod === "browser"
+                ? "border border-slate-400 bg-slate-200 text-slate-800 shadow-[0_0_0_3px_rgba(34,211,238,0.2),0_8px_20px_rgba(34,211,238,0.18)]"
+                : "border border-slate-400 bg-white text-slate-700 hover:border-cyan-400"
+            }`}
+          >
+            Browser Wallet
+          </button>
+          <button
+            type="button"
+            onClick={() => onSelectPaymentMethod("mobile")}
+            disabled={isConnectingWallet || isPaying || !walletConnectAvailable}
+            className={`rounded-full px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${
+              paymentMethod === "mobile"
+                ? "border border-slate-400 bg-slate-200 text-slate-800 shadow-[0_0_0_3px_rgba(34,211,238,0.2),0_8px_20px_rgba(34,211,238,0.18)]"
+                : "border border-slate-400 bg-white text-slate-700 hover:border-cyan-400 disabled:border-slate-300 disabled:bg-slate-100 disabled:text-slate-400"
+            }`}
+          >
+            QR / Mobile Wallet
+          </button>
         </div>
+        <p className="mt-2 text-xs text-slate-600">
+          {isCardPayment
+            ? "Secure card checkout opens with Stripe. After payment is confirmed, you will return here and Selun will begin processing your allocation."
+            : "Crypto payment is signed by your connected wallet and then executed by the Selun agent."}
+        </p>
+      </div>
+
+      {!isCardPayment && (
+        <div className="mt-4 rounded-xl border border-slate-300/60 bg-slate-50/70 p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Wallet</p>
+            <p className="mt-1 text-sm font-semibold text-slate-800">
+              {walletAddress ? `Connected: ${shortenAddress(walletAddress)}` : "Not connected"}
+            </p>
+            {walletConnectionLabel && <p className="mt-1 text-xs font-medium text-cyan-800">{walletConnectionLabel}</p>}
+            <p className="mt-1 text-xs text-slate-600">
+              Payment is signed by your connected wallet and then executed by the Selun agent.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={onConnectBrowserWallet}
+            disabled={isConnectingWallet || isPaying || paymentMethod !== "browser"}
+            className={`rounded-full px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                paymentMethod === "browser" && (!walletAddress || walletConnectionMethod === "browser" || shouldLeadWithConnect)
+                  ? "border border-slate-400 bg-slate-200 text-slate-800 shadow-[0_0_0_3px_rgba(34,211,238,0.2),0_8px_20px_rgba(34,211,238,0.18)] hover:border-cyan-500 hover:bg-slate-100 hover:shadow-[0_0_0_4px_rgba(34,211,238,0.28),0_10px_24px_rgba(34,211,238,0.24)]"
+                  : "border border-slate-400 bg-white text-slate-700 hover:border-cyan-400"
+              }`}
+            >
+              {browserWalletButtonLabel}
+            </button>
+          <button
+            type="button"
+            onClick={onConnectQrWallet}
+            disabled={isConnectingWallet || isPaying || !walletConnectAvailable || paymentMethod !== "mobile"}
+            className={`rounded-full px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                paymentMethod === "mobile" && walletAddress && walletConnectionMethod === "mobile"
+                  ? "border border-slate-400 bg-slate-200 text-slate-800 shadow-[0_0_0_3px_rgba(34,211,238,0.2),0_8px_20px_rgba(34,211,238,0.18)] hover:border-cyan-500 hover:bg-slate-100 hover:shadow-[0_0_0_4px_rgba(34,211,238,0.28),0_10px_24px_rgba(34,211,238,0.24)]"
+                  : "border border-slate-400 bg-white text-slate-700 hover:border-cyan-400 disabled:border-slate-300 disabled:bg-slate-100 disabled:text-slate-400"
+              }`}
+            >
+              {qrWalletButtonLabel}
+            </button>
+          </div>
+        </div>
+        {!walletConnectAvailable && (
+          <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-700">
+            QR / mobile wallet connection is not configured. Set <code>NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID</code> to enable it.
+          </p>
+        )}
+        {(walletConnectQrDataUrl || walletConnectUri) && (
+          <div className="mt-4 rounded-2xl border border-slate-300/60 bg-white/90 p-4">
+            <div className="flex flex-col gap-4 md:flex-row md:items-center">
+              <div className="flex min-w-[220px] justify-center">
+                {walletConnectQrDataUrl ? (
+                  <img
+                    src={walletConnectQrDataUrl}
+                    alt="WalletConnect QR code"
+                    width={220}
+                    height={220}
+                    className="rounded-2xl border border-slate-200 bg-white p-3"
+                  />
+                ) : (
+                  <div className="flex h-[220px] w-[220px] items-center justify-center rounded-2xl border border-dashed border-slate-300 bg-slate-50 text-sm text-slate-500">
+                    Waiting for QR code...
+                  </div>
+                )}
+              </div>
+              <div className="flex-1">
+                <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Mobile Wallet</p>
+                <h4 className="mt-2 text-lg font-semibold text-slate-900">Scan with your wallet app</h4>
+                <p className="mt-2 text-sm leading-6 text-slate-600">
+                  Open a WalletConnect-compatible wallet on your phone and scan this QR code to connect without relying on a browser extension.
+                </p>
+                {walletConnectUri && (
+                  <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                    <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-slate-500">Manual Link</p>
+                    <p className="mt-2 break-all font-mono text-xs text-slate-700">{walletConnectUri}</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
+          <div className="rounded-lg border border-slate-300/60 bg-white/80 px-3 py-2">
+            <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-slate-500">USDC Network</p>
+            <p className="mt-1 text-sm font-semibold text-slate-800">{usdcNetworkLabel}</p>
+          </div>
+
+          <button
+            type="button"
+            onClick={onRefreshUsdcBalance}
+            disabled={!walletAddress || isLoadingUsdcBalance || isPaying}
+            className="self-end rounded-full border border-slate-400 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-cyan-400 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {isLoadingUsdcBalance ? "Checking..." : "Refresh Balance"}
+          </button>
+        </div>
+
+        <div className="mt-3 rounded-lg border border-slate-300/60 bg-white/80 px-3 py-2">
+          <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-slate-500">USDC Available</p>
+          <p className="mt-1 text-lg font-semibold text-slate-900">
+            {walletAddress
+              ? isLoadingUsdcBalance
+                ? "Checking..."
+                : usdcBalance !== null
+                  ? `${formatUsdcValue(usdcBalance)} USDC`
+                  : "Unavailable"
+              : "Connect wallet to check"}
+          </p>
+          <p className="text-xs text-slate-600">Required: {formatUsdcValue(requiredAmountUsdc)} USDC</p>
+        </div>
+
+        {usdcBalanceError && (
+          <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-700">
+            {usdcBalanceError}
+          </p>
+        )}
+
+        {walletAddress && requiresUsdcBalance && isBalanceLow && !usdcBalanceError && !requiresPromoApply && (
+          <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-700">
+            Low USDC balance on {usdcNetworkLabel}. Add funds before continuing.
+          </p>
+        )}
+      </div>
+      )}
+
+      <div className="mt-4 rounded-xl border border-slate-300/60 bg-slate-50/70 p-4">
+        <label className="block text-xs font-bold uppercase tracking-[0.16em] text-slate-500" htmlFor="promo-code-input">
+          Promo Code (Optional)
+        </label>
+        <div className="mt-2 grid gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
+          <input
+            id="promo-code-input"
+            type="text"
+            value={promoCode}
+            onChange={(event) => onPromoCodeChange(event.target.value)}
+            placeholder={isCardPayment ? "Enter code at secure checkout" : "Enter promo code"}
+            disabled={isPaying || isApplyingPromoCode || isCardPayment}
+            className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-800 outline-none ring-cyan-500/30 transition placeholder:text-slate-400 focus:border-cyan-400 focus:ring-4 disabled:cursor-not-allowed disabled:bg-slate-100"
+          />
+          <button
+            type="button"
+            onClick={() => void onApplyPromoCode()}
+            disabled={!walletAddress || !hasPromoCode || isPaying || isApplyingPromoCode || isCardPayment}
+            className="rounded-full border border-cyan-500 bg-cyan-50 px-4 py-2 text-sm font-semibold text-cyan-800 transition hover:bg-cyan-100 disabled:cursor-not-allowed disabled:border-slate-300 disabled:bg-slate-100 disabled:text-slate-400"
+          >
+            {isApplyingPromoCode ? "Applying..." : promoApplied ? "Code Applied" : "Apply Code"}
+          </button>
+        </div>
+        {isCardPayment && (
+          <p className="mt-2 text-xs font-medium text-slate-600">Promotion codes are entered on the secure Stripe checkout page.</p>
+        )}
+        {!walletAddress && (
+          <p className="mt-2 text-xs font-medium text-amber-700">
+            {isCardPayment ? "Wallet connection is not required for card checkout." : "Connect wallet first, then apply promo code."}
+          </p>
+        )}
+        {walletAddress && !isCardPayment && (
+          <p className="mt-2 text-xs text-slate-600">
+            Apply code first to lock preview pricing before purchase.
+          </p>
+        )}
+        {promoQuoteError && (
+          <p className="mt-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-medium text-rose-700">
+            {promoQuoteError}
+          </p>
+        )}
       </div>
 
       {paymentError && (
@@ -1532,7 +2583,7 @@ function ReviewStep({
         <button
           type="button"
           onClick={onBack}
-          disabled={isStartingCardCheckout || isConfirmingCardCheckout}
+          disabled={isPaying}
           className="rounded-full border border-slate-400 bg-white px-5 py-2.5 text-sm font-semibold text-slate-700 transition hover:border-slate-500 disabled:cursor-not-allowed disabled:opacity-50"
         >
           Back
@@ -1546,85 +2597,6 @@ function ReviewStep({
           {authorizeLabel}
         </button>
       </div>
-      <p className="mt-3 text-center text-xs font-medium text-slate-500">
-        Non-custodial allocation. Selun never holds client assets.
-      </p>
-    </section>
-  );
-}
-
-type PaymentPendingStepProps = {
-  paymentError: string | null;
-  isConfirmingCardCheckout: boolean;
-  onBackToReview: () => void;
-  onCheckPaymentStatus: () => void;
-};
-
-function PaymentPendingStep({
-  paymentError,
-  isConfirmingCardCheckout,
-  onBackToReview,
-  onCheckPaymentStatus,
-}: PaymentPendingStepProps) {
-  const confirmationLabel = isConfirmingCardCheckout
-    ? "Checking Stripe payment status..."
-    : "Check Payment Status";
-
-  return (
-    <section className="rounded-2xl border border-slate-300/70 bg-white/70 p-6 backdrop-blur">
-      <h2 className="text-2xl font-semibold text-slate-900">Step 3. Awaiting Payment Confirmation</h2>
-      <p className="mt-2 text-slate-600">
-        Your payment has been submitted. Some Stripe payment methods settle with a short delay.
-      </p>
-
-      <div className="mt-6 rounded-xl border border-cyan-200/70 bg-cyan-50/70 p-4">
-        <div className="flex items-center gap-3">
-          <span
-            aria-hidden="true"
-            className={`inline-flex h-6 w-6 shrink-0 rounded-full border-2 ${
-              isConfirmingCardCheckout
-                ? "animate-spin border-cyan-200 border-t-cyan-600"
-                : "border-cyan-600 bg-cyan-100"
-            }`}
-          />
-          <p className="text-sm font-semibold text-cyan-900">
-            {isConfirmingCardCheckout
-              ? "Waiting for webhook-backed payment confirmation."
-              : "Payment is still pending confirmation."}
-          </p>
-        </div>
-        <p className="mt-3 text-sm text-cyan-800">
-          Keep this tab open. Once payment is confirmed, allocation generation starts automatically.
-        </p>
-      </div>
-
-      {paymentError && (
-        <p className="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-medium text-rose-700">
-          {paymentError}
-        </p>
-      )}
-
-      <div className="mt-6 flex items-center justify-between gap-3">
-        <button
-          type="button"
-          onClick={onBackToReview}
-          disabled={isConfirmingCardCheckout}
-          className="rounded-full border border-slate-400 bg-white px-5 py-2.5 text-sm font-semibold text-slate-700 transition hover:border-slate-500 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          Back to Review
-        </button>
-        <button
-          type="button"
-          onClick={onCheckPaymentStatus}
-          disabled={isConfirmingCardCheckout}
-          className="rounded-full bg-cyan-500 px-5 py-2.5 text-sm font-semibold text-slate-950 shadow-sm transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500 disabled:shadow-none"
-        >
-          {confirmationLabel}
-        </button>
-      </div>
-      <p className="mt-3 text-center text-xs font-medium text-slate-500">
-        Non-custodial allocation. Selun never holds client assets.
-      </p>
     </section>
   );
 }
@@ -1713,7 +2685,7 @@ function ProcessingStepView({
 
   return (
     <section className="rounded-2xl border border-slate-300/70 bg-white/70 p-6 backdrop-blur">
-      <h2 className="text-2xl font-semibold text-slate-900">Step 4. Agent Execution</h2>
+      <h2 className="text-2xl font-semibold text-slate-900">Step 3. Agent Execution</h2>
       <p className="mt-2 text-slate-600">Selun is analyzing market conditions and constructing your allocation.</p>
 
       <div className="mt-5 h-2 w-full overflow-hidden rounded-full bg-slate-200">
@@ -2079,6 +3051,7 @@ type CompleteStepProps = {
   regimeDetected: string;
   allocations: AllocationRow[];
   phase7Enabled: boolean;
+  walletAddress: string | null;
   agentPaymentReceipt: AgentPaymentReceipt | null;
   resultEmail: string;
   resultEmailDeliveryStatus: ResultEmailDeliveryStatus;
@@ -2097,6 +3070,7 @@ function CompleteStep({
   regimeDetected,
   allocations,
   phase7Enabled,
+  walletAddress,
   agentPaymentReceipt,
   resultEmail,
   resultEmailDeliveryStatus,
@@ -2476,18 +3450,19 @@ function CompleteStep({
 
   return (
     <section className="rounded-2xl border border-slate-300/70 bg-white/70 p-6 backdrop-blur">
-      <h2 className="text-2xl font-semibold text-slate-900">Step 5. Allocation Complete</h2>
+      <h2 className="text-2xl font-semibold text-slate-900">Step 4. Allocation Complete</h2>
       <p className="mt-2 text-slate-600">
         {phase7Enabled
           ? "Allocation executed successfully. Certified Decision Report is ready."
           : "Allocation executed successfully. Structured Decision Report not included in this run."}
       </p>
 
-      {agentPaymentReceipt && (
+      {(walletAddress || agentPaymentReceipt) && (
         <div className="mt-4 rounded-xl border border-emerald-300/80 bg-emerald-50 px-4 py-3">
-          <p className="text-sm font-semibold text-emerald-900">Stripe payment confirmed</p>
+          <p className="text-sm font-semibold text-emerald-900">Allocation executed via Selun Agent</p>
           <p className="mt-1 text-xs text-emerald-900/80">
-            Decision ID {agentPaymentReceipt.decisionId} | Payment ID {agentPaymentReceipt.transactionId}
+            Wallet: {walletAddress ? shortenAddress(walletAddress) : "n/a"} | Decision ID{" "}
+            {agentPaymentReceipt?.decisionId ?? "n/a"}
           </p>
         </div>
       )}
@@ -2751,38 +3726,83 @@ function CompleteStep({
   );
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  if (!Number.isFinite(ms) || ms <= 0) return promise;
+  return new Promise<T>((resolve, reject) => {
+    const id = window.setTimeout(() => {
+      if (label.toLowerCase().includes("wallet network switch")) {
+        reject(
+          new Error(
+            "Wallet network switch is taking too long. Open your wallet extension/app and confirm the network change, then click Generate again.",
+          ),
+        );
+        return;
+      }
+      reject(new Error(`${label} timed out after ${ms}ms.`));
+    }, ms);
+
+    promise
+      .then((v) => resolve(v))
+      .catch(reject)
+      .finally(() => window.clearTimeout(id));
+  });
+}
+
+type PaymentStage =
+  | "idle"
+  | "preflight"
+  | "agent_pay"
+  | "wallet_tx_prompt"
+  | "verifying"
+  | "starting_execution";
+
 function SelunAllocationWizard() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const referralCodeFromUrl = normalizeReferralCode(searchParams.get("ref"));
   const pageTopRef = useRef<HTMLDivElement | null>(null);
   const wizardDraftHydratedRef = useRef(false);
   const resultEmailAttemptKeyRef = useRef<string | null>(null);
   const stripeConfirmationSessionRef = useRef<string | null>(null);
   const stripeCancelHandledRef = useRef(false);
-  const startPhase1FlowRef = useRef<((jobId: string, overrides?: {
-    riskMode?: RiskMode | null;
-    investmentHorizon?: InvestmentHorizon | null;
-    portfolioSegment?: PortfolioSegment | null;
-  }) => Promise<void>) | null>(null);
   const [wizardState, setWizardState] = useState<WizardState>("CONFIGURE");
   const [riskMode, setRiskMode] = useState<RiskMode | null>(DEFAULT_RISK_MODE);
   const [investmentHorizon, setInvestmentHorizon] = useState<InvestmentHorizon | null>(DEFAULT_HORIZON);
   const [portfolioSegment, setPortfolioSegment] = useState<PortfolioSegment | null>(DEFAULT_PORTFOLIO_SEGMENT);
+  const [paymentMethod, setPaymentMethod] = useState<WizardPaymentMethod>("card");
   const [resultEmail, setResultEmail] = useState("");
   const [resultEmailDeliveryStatus, setResultEmailDeliveryStatus] = useState<ResultEmailDeliveryStatus>("idle");
   const [resultEmailDeliveryMessage, setResultEmailDeliveryMessage] = useState<string | null>(null);
   const [includeCertifiedDecisionRecord, setIncludeCertifiedDecisionRecord] = useState(false);
+  const [promoCode, setPromoCode] = useState("");
+  const [promoQuote, setPromoQuote] = useState<PromoQuoteResult | null>(null);
+  const [promoQuoteError, setPromoQuoteError] = useState<string | null>(null);
+  const [isApplyingPromoCode, setIsApplyingPromoCode] = useState(false);
   const [basePriceUsdc, setBasePriceUsdc] = useState<number>(FALLBACK_BASE_PRICE_USDC);
   const [certifiedDecisionRecordFeeUsdc, setCertifiedDecisionRecordFeeUsdc] = useState<number>(
     FALLBACK_CERTIFIED_DECISION_RECORD_FEE_USDC,
   );
   const [isLoadingPricing, setIsLoadingPricing] = useState(true);
   const [pricingError, setPricingError] = useState<string | null>(null);
+  const [walletAddress, setWalletAddress] = useState<string | null>(null);
+  const [walletProvider, setWalletProvider] = useState<EthereumProvider | null>(null);
+  const [walletConnectionMethod, setWalletConnectionMethod] = useState<WalletConnectionMethod | null>(null);
+  const [usdcNetworkId, setUsdcNetworkId] = useState("backend-configured");
+  const [usdcNetworkLabel, setUsdcNetworkLabel] = useState("Configured in backend");
+  const [usdcBalance, setUsdcBalance] = useState<number | null>(null);
+  const [isLoadingUsdcBalance, setIsLoadingUsdcBalance] = useState(false);
+  const [usdcBalanceError, setUsdcBalanceError] = useState<string | null>(null);
+  const [usdcBalanceRefreshNonce, setUsdcBalanceRefreshNonce] = useState(0);
+  const [isConnectingWallet, setIsConnectingWallet] = useState(false);
+  const [connectingWalletMethod, setConnectingWalletMethod] = useState<WalletConnectionMethod | null>(null);
+  const [walletConnectUri, setWalletConnectUri] = useState<string | null>(null);
+  const [walletConnectQrDataUrl, setWalletConnectQrDataUrl] = useState<string | null>(null);
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [agentPaymentReceipt, setAgentPaymentReceipt] = useState<AgentPaymentReceipt | null>(null);
+  const [isPaying, setIsPaying] = useState(false);
   const [isStartingCardCheckout, setIsStartingCardCheckout] = useState(false);
   const [isConfirmingCardCheckout, setIsConfirmingCardCheckout] = useState(false);
-  const [stripePendingSessionId, setStripePendingSessionId] = useState<string | null>(null);
+  const [paymentStage, setPaymentStage] = useState<PaymentStage>("idle");
   const [phase1JobId, setPhase1JobId] = useState<string | null>(null);
   const [phase1Status, setPhase1Status] = useState<Phase1Status>("idle");
   const [phase1Error, setPhase1Error] = useState<string | null>(null);
@@ -2814,13 +3834,34 @@ function SelunAllocationWizard() {
     createPhase3SubPhaseStates(),
   );
   const [isDownloading, setIsDownloading] = useState(false);
-  const totalPriceUsdc = basePriceUsdc + (includeCertifiedDecisionRecord ? certifiedDecisionRecordFeeUsdc : 0);
+  const walletConnectProviderRef = useRef<EthereumProvider | null>(null);
+  const walletConnectAvailable = WALLETCONNECT_PROJECT_ID.length > 0;
+  const totalPriceUsdc =
+    basePriceUsdc + (includeCertifiedDecisionRecord ? certifiedDecisionRecordFeeUsdc : 0);
+  const requiredAmountUsdc = promoQuote?.chargedAmountUsdc ?? totalPriceUsdc;
+  const requiresPromoApply = promoCode.trim().length > 0 && !promoQuote;
   const regimeDetected = formatMarketRegimeLabel(phase1Output);
   const allocationRows = toAllocationRows(phase5Output, phase6Output, phase6AaaAllocate);
   const phase7Enabled = Boolean(agentPaymentReceipt?.certifiedDecisionRecordPurchased);
   const processingSteps = phase7Enabled
     ? PROCESSING_STEPS
     : PROCESSING_STEPS.filter((step) => step.key !== "REPORT_GENERATION");
+  const isBalanceLow = Boolean(
+    !isLoadingPricing &&
+      !pricingError &&
+      walletAddress &&
+      usdcBalance !== null &&
+      usdcBalance < requiredAmountUsdc,
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !referralCodeFromUrl) return;
+
+    window.localStorage.setItem(ACTIVE_REFERRAL_CODE_STORAGE_KEY, referralCodeFromUrl);
+    if (isAgentProgramReferrerId(referralCodeFromUrl)) {
+      readOrCreateAgentReferralVisitorId(window.localStorage);
+    }
+  }, [referralCodeFromUrl]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -2841,6 +3882,9 @@ function SelunAllocationWizard() {
       }
       if (isPortfolioSegmentValue(draft.portfolioSegment)) {
         setPortfolioSegment(draft.portfolioSegment);
+      }
+      if (draft.paymentMethod === "card" || draft.paymentMethod === "browser" || draft.paymentMethod === "mobile") {
+        setPaymentMethod(draft.paymentMethod);
       }
       if (typeof draft.includeCertifiedDecisionRecord === "boolean") {
         setIncludeCertifiedDecisionRecord(draft.includeCertifiedDecisionRecord);
@@ -2864,6 +3908,7 @@ function SelunAllocationWizard() {
       riskMode: riskMode ?? DEFAULT_RISK_MODE,
       investmentHorizon: investmentHorizon ?? DEFAULT_HORIZON,
       portfolioSegment: portfolioSegment ?? DEFAULT_PORTFOLIO_SEGMENT,
+      paymentMethod,
       includeCertifiedDecisionRecord,
       resultEmail,
     };
@@ -2872,10 +3917,50 @@ function SelunAllocationWizard() {
   }, [
     includeCertifiedDecisionRecord,
     investmentHorizon,
+    paymentMethod,
     portfolioSegment,
     resultEmail,
     riskMode,
   ]);
+
+  const resetPaymentUi = useCallback(() => {
+    setIsPaying(false);
+    setPaymentStage("idle");
+    setPaymentError(null);
+  }, []);
+
+  const clearWalletConnectPrompt = useCallback(() => {
+    setWalletConnectUri(null);
+    setWalletConnectQrDataUrl(null);
+  }, []);
+
+  const finishWalletConnection = useCallback(() => {
+    setIsConnectingWallet(false);
+    setConnectingWalletMethod(null);
+  }, []);
+
+  const resolveReferralCheckoutContext = useCallback(() => {
+    const storedReferralCode =
+      typeof window === "undefined"
+        ? null
+        : normalizeReferralCode(window.localStorage.getItem(ACTIVE_REFERRAL_CODE_STORAGE_KEY));
+    const referralCode = referralCodeFromUrl ?? storedReferralCode;
+
+    if (!referralCode || typeof window === "undefined") {
+      return {
+        referralCode,
+        referralUserId: undefined,
+      };
+    }
+
+    window.localStorage.setItem(ACTIVE_REFERRAL_CODE_STORAGE_KEY, referralCode);
+    return {
+      referralCode,
+      referralUserId: isAgentProgramReferrerId(referralCode)
+        ? readOrCreateAgentReferralVisitorId(window.localStorage)
+        : undefined,
+    };
+  }, [referralCodeFromUrl]);
 
   const handleStartCardCheckout = useCallback(async () => {
     if (!riskMode || !investmentHorizon || !portfolioSegment) return;
@@ -2886,12 +3971,11 @@ function SelunAllocationWizard() {
       return;
     }
 
-
+    const { referralCode, referralUserId } = resolveReferralCheckoutContext();
 
     setIsStartingCardCheckout(true);
     setPaymentError(null);
     setAgentPaymentReceipt(null);
-    setStripePendingSessionId(null);
 
     try {
       const response = await fetch("/api/stripe/wizard-checkout", {
@@ -2903,17 +3987,19 @@ function SelunAllocationWizard() {
           portfolioSegment,
           includeCertifiedDecisionRecord,
           resultEmail: trimmedResultEmail || undefined,
+          referralCode: referralCode ?? undefined,
+          referralUserId,
         }),
       });
 
       const body = (await response.json().catch(() => ({}))) as StripeWizardCheckoutResponse;
       if (!response.ok || !body.success || !body.checkoutUrl) {
-        throw new Error(body.error || "Unable to start secure Stripe checkout.");
+        throw new Error(body.error || "Unable to start secure card checkout.");
       }
 
       window.location.assign(body.checkoutUrl);
     } catch (error) {
-      setPaymentError(error instanceof Error ? error.message : "Unable to start secure Stripe checkout.");
+      setPaymentError(error instanceof Error ? error.message : "Unable to start secure card checkout.");
     } finally {
       setIsStartingCardCheckout(false);
     }
@@ -2921,56 +4007,51 @@ function SelunAllocationWizard() {
     includeCertifiedDecisionRecord,
     investmentHorizon,
     portfolioSegment,
+    promoCode,
+    promoQuote,
+    resolveReferralCheckoutContext,
     resultEmail,
     riskMode,
   ]);
 
-  const confirmStripeCheckoutSession = useCallback(
-    async (stripeSessionId: string, isCancelled?: () => boolean) => {
-      const hasCancelled = isCancelled ?? (() => false);
-      setWizardState("PAYMENT_PENDING");
-      setIsConfirmingCardCheckout(true);
-      setPaymentError(null);
+  useEffect(() => {
+    const stripeCheckoutStatus = searchParams.get("stripe_checkout");
+    const stripeSessionId = searchParams.get("session_id");
 
+    if (!stripeCheckoutStatus) return;
+
+    if (stripeCheckoutStatus === "cancelled") {
+      if (stripeCancelHandledRef.current) return;
+      stripeCancelHandledRef.current = true;
+      setPaymentMethod("card");
+      setPaymentError("Card checkout was cancelled.");
+      setWizardState("REVIEW");
+      if (typeof window !== "undefined") {
+        window.history.replaceState(window.history.state, "", "/wizard");
+      }
+      return;
+    }
+
+    if (stripeCheckoutStatus !== "success" || !stripeSessionId) return;
+    if (stripeConfirmationSessionRef.current === stripeSessionId) return;
+
+    stripeConfirmationSessionRef.current = stripeSessionId;
+    setIsConfirmingCardCheckout(true);
+    setPaymentError(null);
+
+    let cancelled = false;
+
+    void (async () => {
       try {
-        const pollIntervalMs = 4_000;
-        const maxAttempts = 30;
-        let confirmBody: StripeWizardConfirmResponse | null = null;
+        const response = await fetch("/api/stripe/wizard-confirm", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId: stripeSessionId }),
+        });
 
-        for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-          if (hasCancelled()) return;
-
-          const response = await fetch("/api/stripe/wizard-confirm", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ sessionId: stripeSessionId }),
-          });
-
-          const payload = (await response.json().catch(() => ({}))) as StripeWizardConfirmResponse;
-          if (!response.ok || !payload.success) {
-            throw new Error(payload.error || "Unable to confirm secure card payment.");
-          }
-
-          if (payload.status === "paid") {
-            confirmBody = payload;
-            break;
-          }
-
-          if (payload.status !== "pending") {
-            throw new Error(payload.error || "Unexpected Stripe payment confirmation status.");
-          }
-
-          if (!hasCancelled()) {
-            setPaymentError(payload.pendingReason || "Payment is processing with Stripe. Waiting for confirmation...");
-          }
-
-          if (attempt < maxAttempts) {
-            await new Promise((resolve) => window.setTimeout(resolve, pollIntervalMs));
-          }
-        }
-
-        if (!confirmBody) {
-          throw new Error("Payment is still processing. Select \"Check Payment Status\" to retry confirmation.");
+        const confirmBody = (await response.json().catch(() => ({}))) as StripeWizardConfirmResponse;
+        if (!response.ok || !confirmBody.success || confirmBody.status !== "paid") {
+          throw new Error(confirmBody.error || "Unable to confirm secure card payment.");
         }
 
         if (
@@ -2989,9 +4070,7 @@ function SelunAllocationWizard() {
           throw new Error("Invalid Stripe payment amount.");
         }
 
-        if (hasCancelled()) return;
-        setPaymentError(null);
-        setStripePendingSessionId(null);
+        if (cancelled) return;
 
         const confirmedRiskMode = confirmBody.riskMode;
         const confirmedInvestmentHorizon = confirmBody.investmentHorizon;
@@ -3004,9 +4083,13 @@ function SelunAllocationWizard() {
         setPortfolioSegment(confirmedPortfolioSegment);
         setIncludeCertifiedDecisionRecord(confirmedIncludeReport);
         setResultEmail(confirmedResultEmail);
+        setPromoCode("");
+        setPromoQuote(null);
+        setPromoQuoteError(null);
         setResultEmailDeliveryStatus("idle");
         setResultEmailDeliveryMessage(null);
         resultEmailAttemptKeyRef.current = null;
+        setPaymentMethod("card");
         setAgentPaymentReceipt({
           transactionId: confirmBody.transactionId,
           decisionId: confirmBody.decisionId,
@@ -3022,64 +4105,83 @@ function SelunAllocationWizard() {
           /[^a-zA-Z0-9-_]/g,
           "-",
         );
-        const runPhase1Flow = startPhase1FlowRef.current;
-        if (!runPhase1Flow) {
-          throw new Error("Phase 1 starter is unavailable.");
-        }
-        await runPhase1Flow(nextPhase1JobId, {
+        await startPhase1Flow(nextPhase1JobId, {
           riskMode: confirmedRiskMode,
           investmentHorizon: confirmedInvestmentHorizon,
           portfolioSegment: confirmedPortfolioSegment,
+          walletAddress: null,
         });
 
         await router.replace("/wizard", { scroll: false });
       } catch (error) {
-        if (hasCancelled()) return;
+        if (cancelled) return;
         stripeConfirmationSessionRef.current = null;
-        setWizardState("PAYMENT_PENDING");
         setPaymentError(error instanceof Error ? error.message : "Unable to confirm secure card payment.");
       } finally {
-        if (!hasCancelled()) {
+        if (!cancelled) {
           setIsConfirmingCardCheckout(false);
         }
       }
-    },
-    [router],
-  );
-
-  useEffect(() => {
-    const stripeCheckoutStatus = searchParams.get("stripe_checkout");
-    const stripeSessionId = searchParams.get("session_id");
-
-    if (!stripeCheckoutStatus) return;
-
-    if (stripeCheckoutStatus === "cancelled") {
-      if (stripeCancelHandledRef.current) return;
-      stripeCancelHandledRef.current = true;
-      setStripePendingSessionId(null);
-      setPaymentError("Card checkout was cancelled.");
-      setWizardState("REVIEW");
-      if (typeof window !== "undefined") {
-        window.history.replaceState(window.history.state, "", "/wizard");
-      }
-      return;
-    }
-
-    if (stripeCheckoutStatus !== "success" || !stripeSessionId) return;
-    setWizardState("PAYMENT_PENDING");
-    setStripePendingSessionId(stripeSessionId);
-    if (stripeConfirmationSessionRef.current === stripeSessionId) return;
-
-    stripeConfirmationSessionRef.current = stripeSessionId;
-
-    let cancelled = false;
-
-    void confirmStripeCheckoutSession(stripeSessionId, () => cancelled);
+    })();
 
     return () => {
       cancelled = true;
     };
-  }, [confirmStripeCheckoutSession, searchParams]);
+  }, [router, searchParams]);
+
+  useEffect(() => {
+    if (!walletProvider?.on) return;
+
+    const handleAccountsChanged = (rawAccounts: unknown) => {
+      const nextAccounts = parseWalletAccounts(rawAccounts);
+      if (nextAccounts.length === 0) {
+        setWalletAddress(null);
+        setWalletProvider(null);
+        setWalletConnectionMethod(null);
+        setConnectingWalletMethod(null);
+        setUsdcBalance(null);
+        setUsdcBalanceError(null);
+        clearWalletConnectPrompt();
+        if (walletProvider === walletConnectProviderRef.current) {
+          walletConnectProviderRef.current = null;
+        }
+        return;
+      }
+
+      setWalletAddress(nextAccounts[0]);
+      setAgentPaymentReceipt(null);
+      setPromoQuote(null);
+      setPromoQuoteError(null);
+      setPaymentError(null);
+    };
+
+    const handleDisconnect = () => {
+      setWalletAddress(null);
+      setWalletProvider(null);
+      setWalletConnectionMethod(null);
+      setConnectingWalletMethod(null);
+      setUsdcBalance(null);
+      setUsdcBalanceError(null);
+      if (walletProvider === walletConnectProviderRef.current) {
+        walletConnectProviderRef.current = null;
+      }
+    };
+
+    walletProvider.on("accountsChanged", handleAccountsChanged);
+    walletProvider.on("disconnect", handleDisconnect);
+
+    return () => {
+      if (walletProvider.off) {
+        walletProvider.off("accountsChanged", handleAccountsChanged);
+        walletProvider.off("disconnect", handleDisconnect);
+        return;
+      }
+      if (walletProvider.removeListener) {
+        walletProvider.removeListener("accountsChanged", handleAccountsChanged);
+        walletProvider.removeListener("disconnect", handleDisconnect);
+      }
+    };
+  }, [clearWalletConnectPrompt, walletProvider]);
 
   useEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: "auto" });
@@ -3093,6 +4195,8 @@ function SelunAllocationWizard() {
       const pricing = await queryPricing();
       setBasePriceUsdc(pricing.structuredAllocationPriceUsdc);
       setCertifiedDecisionRecordFeeUsdc(pricing.certifiedDecisionRecordFeeUsdc);
+      setPromoQuote(null);
+      setPromoQuoteError(null);
     } catch (error: unknown) {
       setPricingError(error instanceof Error ? error.message : "Unable to load pricing from backend.");
     } finally {
@@ -3106,7 +4210,55 @@ function SelunAllocationWizard() {
 
   const handleToggleCertifiedDecisionRecord = useCallback((nextValue: boolean) => {
     setIncludeCertifiedDecisionRecord(nextValue);
+    setPromoQuote(null);
+    setPromoQuoteError(null);
   }, []);
+
+  const handlePromoCodeChange = useCallback((value: string) => {
+    setPromoCode(value);
+    setPromoQuote(null);
+    setPromoQuoteError(null);
+  }, []);
+
+  const handleApplyPromoCode = useCallback(async () => {
+    const normalizedCode = promoCode.trim();
+    if (!normalizedCode) {
+      setPromoQuote(null);
+      setPromoQuoteError("Enter a promo code first.");
+      return;
+    }
+    if (!walletAddress) {
+      setPromoQuote(null);
+      setPromoQuoteError("Connect wallet first to validate promo code pricing.");
+      return;
+    }
+    if (isLoadingPricing) {
+      setPromoQuote(null);
+      setPromoQuoteError("Pricing is still loading. Please wait and retry.");
+      return;
+    }
+    if (pricingError) {
+      setPromoQuote(null);
+      setPromoQuoteError("Pricing is unavailable. Refresh pricing before applying a code.");
+      return;
+    }
+
+    setIsApplyingPromoCode(true);
+    setPromoQuoteError(null);
+    try {
+      const quote = await queryPaymentQuote({
+        walletAddress,
+        includeCertifiedDecisionRecord,
+        promoCode: normalizedCode,
+      });
+      setPromoQuote(quote);
+    } catch (error) {
+      setPromoQuote(null);
+      setPromoQuoteError(error instanceof Error ? error.message : "Unable to apply promo code.");
+    } finally {
+      setIsApplyingPromoCode(false);
+    }
+  }, [promoCode, walletAddress, includeCertifiedDecisionRecord, isLoadingPricing, pricingError]);
 
   useEffect(() => {
     if (wizardState !== "PROCESSING") return;
@@ -3240,6 +4392,48 @@ function SelunAllocationWizard() {
     };
   }, [wizardState, phase1JobId]);
 
+  useEffect(() => {
+    if (!walletAddress) {
+      setUsdcNetworkId("backend-configured");
+      setUsdcNetworkLabel("Configured in backend");
+      setUsdcBalance(null);
+      setUsdcBalanceError(null);
+      setIsLoadingUsdcBalance(false);
+      return;
+    }
+
+    if (!isHexAddress(walletAddress)) {
+      setUsdcBalance(null);
+      setUsdcBalanceError("Connected wallet address is invalid.");
+      setIsLoadingUsdcBalance(false);
+      return;
+    }
+
+    let cancelled = false;
+    setIsLoadingUsdcBalance(true);
+    setUsdcBalanceError(null);
+
+    void queryUsdcBalance(walletAddress)
+      .then((result) => {
+        if (cancelled) return;
+        setUsdcNetworkId(result.networkId);
+        setUsdcNetworkLabel(result.networkLabel);
+        setUsdcBalance(Number.isFinite(result.usdcBalance) ? result.usdcBalance : 0);
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setUsdcBalance(null);
+        setUsdcBalanceError(error instanceof Error ? error.message : "Unable to read USDC balance from backend.");
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingUsdcBalance(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [walletAddress, usdcBalanceRefreshNonce]);
+
   const canContinueFromConfigure = Boolean(riskMode && investmentHorizon && portfolioSegment);
 
   const handleContinueFromConfigure = () => {
@@ -3249,20 +4443,136 @@ function SelunAllocationWizard() {
   };
 
   const handleBackToConfigure = () => {
-    if (isStartingCardCheckout || isConfirmingCardCheckout) return;
+    if (isPaying || isStartingCardCheckout || isConfirmingCardCheckout) return;
     setPaymentError(null);
     setWizardState("CONFIGURE");
   };
 
-  const handleBackToReviewFromPending = useCallback(() => {
-    if (isConfirmingCardCheckout) return;
-    setWizardState("REVIEW");
-  }, [isConfirmingCardCheckout]);
+  const handleConnectBrowserWallet = async () => {
+    const provider = getBrowserWalletProvider();
+    if (!provider?.request) {
+      setPaymentError("No Ethereum wallet detected. Install MetaMask or another EVM wallet.");
+      return;
+    }
 
-  const handleCheckPaymentStatus = useCallback(() => {
-    if (!stripePendingSessionId || isConfirmingCardCheckout) return;
-    void confirmStripeCheckoutSession(stripePendingSessionId);
-  }, [confirmStripeCheckoutSession, isConfirmingCardCheckout, stripePendingSessionId]);
+    setIsConnectingWallet(true);
+    setConnectingWalletMethod("browser");
+    setPaymentError(null);
+    clearWalletConnectPrompt();
+
+    try {
+      if (walletConnectProviderRef.current?.disconnect) {
+        await walletConnectProviderRef.current.disconnect().catch(() => undefined);
+        walletConnectProviderRef.current = null;
+      }
+
+      const accountsResult = await provider.request({ method: "eth_requestAccounts" });
+      const accounts = parseWalletAccounts(accountsResult);
+
+      if (accounts.length === 0) {
+        throw new Error("Wallet connection did not return an account.");
+      }
+
+      setWalletProvider(provider);
+      setWalletConnectionMethod("browser");
+      setWalletAddress(accounts[0]);
+      setAgentPaymentReceipt(null);
+      setPromoQuote(null);
+      setPromoQuoteError(null);
+    } catch (error) {
+      setPaymentError(error instanceof Error ? error.message : "Wallet connection failed.");
+    } finally {
+      finishWalletConnection();
+    }
+  };
+
+  const handleConnectQrWallet = async () => {
+    if (!walletConnectAvailable) {
+      setPaymentError("QR / mobile wallet connection is not configured.");
+      return;
+    }
+
+    setIsConnectingWallet(true);
+    setConnectingWalletMethod("mobile");
+    setPaymentError(null);
+    clearWalletConnectPrompt();
+
+    try {
+      if (walletConnectProviderRef.current?.disconnect) {
+        await walletConnectProviderRef.current.disconnect().catch(() => undefined);
+        walletConnectProviderRef.current = null;
+      }
+
+      const { default: UniversalProvider } = await import("@walletconnect/universal-provider");
+      const siteUrl = process.env.NEXT_PUBLIC_SITE_URL?.trim() || window.location.origin;
+      const provider = (await UniversalProvider.init({
+        projectId: WALLETCONNECT_PROJECT_ID,
+        metadata: {
+          name: "Selun",
+          description: "Selun wallet connection for portfolio allocation.",
+          url: siteUrl,
+          icons: [`${siteUrl}/favicon.ico`],
+        },
+      })) as EthereumProvider;
+
+      provider.on?.("display_uri", (uri: unknown) => {
+        if (typeof uri !== "string") return;
+        setWalletConnectUri(uri);
+        setWalletConnectQrDataUrl(
+          `https://api.qrserver.com/v1/create-qr-code/?size=280x280&data=${encodeURIComponent(uri)}`,
+        );
+      });
+
+      await provider.connect?.({
+        namespaces: {
+          eip155: {
+            methods: [
+              "eth_sendTransaction",
+              "eth_requestAccounts",
+              "eth_accounts",
+              "eth_chainId",
+              "wallet_switchEthereumChain",
+              "wallet_addEthereumChain",
+            ],
+            events: ["accountsChanged", "chainChanged", "disconnect"],
+            chains: [toWalletConnectChain("base-mainnet"), toWalletConnectChain("base-sepolia")],
+            rpcMap: getWalletConnectRpcMap(),
+          },
+        },
+      });
+
+      let accounts = extractWalletConnectSessionAccounts(provider);
+      if (accounts.length === 0) {
+        accounts = parseWalletAccounts(provider.accounts ?? []);
+      }
+      if (accounts.length === 0) {
+        accounts = parseWalletAccounts(await provider.request({ method: "eth_accounts" }));
+      }
+
+      if (accounts.length === 0) {
+        throw new Error("QR / mobile wallet connection did not return an account.");
+      }
+
+      walletConnectProviderRef.current = provider;
+      setWalletProvider(provider);
+      setWalletConnectionMethod("mobile");
+      setWalletAddress(accounts[0]);
+      setAgentPaymentReceipt(null);
+      setPromoQuote(null);
+      setPromoQuoteError(null);
+      clearWalletConnectPrompt();
+    } catch (error) {
+      setPaymentError(error instanceof Error ? error.message : "QR / mobile wallet connection failed.");
+    } finally {
+      finishWalletConnection();
+    }
+  };
+
+  const handleRefreshUsdcBalance = () => {
+    if (!walletAddress) return;
+    setUsdcBalanceRefreshNonce((current) => current + 1);
+    setPaymentError(null);
+  };
 
   const startPhase1Flow = async (
     jobId: string,
@@ -3270,11 +4580,16 @@ function SelunAllocationWizard() {
       riskMode?: RiskMode | null;
       investmentHorizon?: InvestmentHorizon | null;
       portfolioSegment?: PortfolioSegment | null;
+      walletAddress?: string | null;
     },
   ) => {
     const effectiveRiskMode = overrides?.riskMode ?? riskMode;
     const effectiveInvestmentHorizon = overrides?.investmentHorizon ?? investmentHorizon;
     const effectivePortfolioSegment = overrides?.portfolioSegment ?? portfolioSegment;
+    const effectiveWalletAddress =
+      overrides && Object.prototype.hasOwnProperty.call(overrides, "walletAddress")
+        ? (overrides.walletAddress ?? undefined)
+        : (walletAddress ?? undefined);
 
     if (!effectiveRiskMode || !effectiveInvestmentHorizon || !effectivePortfolioSegment) {
       throw new Error("Risk mode, investment horizon, and portfolio segment are required to run Phase 1.");
@@ -3315,12 +4630,12 @@ function SelunAllocationWizard() {
       investmentTimeframe: toBackendInvestmentTimeframe(effectiveInvestmentHorizon),
       portfolioSegment: toBackendPortfolioSegment(effectivePortfolioSegment),
       timeWindow: toBackendTimeWindow(effectiveInvestmentHorizon),
+      walletAddress: effectiveWalletAddress,
     });
 
     setPhase1Status("in_progress");
     setWizardState("PROCESSING");
   };
-  startPhase1FlowRef.current = startPhase1Flow;
 
   const handleRetryPhase1 = async () => {
     if (wizardState !== "PROCESSING") return;
@@ -3530,6 +4845,10 @@ function SelunAllocationWizard() {
       investmentHorizon,
       includeCertifiedDecisionRecord: agentPaymentReceipt.certifiedDecisionRecordPurchased,
       totalPriceUsdc,
+      walletAddress,
+      usdcNetworkId,
+      usdcNetworkLabel,
+      observedUsdcBalance: usdcBalance,
       payment: {
         status: "paid" as const,
         transactionId: agentPaymentReceipt.transactionId,
@@ -3564,6 +4883,10 @@ function SelunAllocationWizard() {
     regimeDetected,
     riskMode,
     totalPriceUsdc,
+    usdcBalance,
+    usdcNetworkId,
+    usdcNetworkLabel,
+    walletAddress,
   ]);
 
   const sendResultSummaryEmail = useCallback(async () => {
@@ -3630,8 +4953,209 @@ function SelunAllocationWizard() {
   }, [agentPaymentReceipt?.decisionId, resultEmail, sendResultSummaryEmail, wizardState]);
 
   const handleGenerateAllocation = async () => {
-    if (!riskMode || !investmentHorizon || !portfolioSegment) return;
-    await handleStartCardCheckout();
+    if (!riskMode || !investmentHorizon || !portfolioSegment || isPaying) return;
+
+    if (paymentMethod === "card") {
+      await handleStartCardCheckout();
+      return;
+    }
+
+    setIsPaying(true);
+    setPaymentStage("preflight");
+    setPaymentError(null);
+    setAgentPaymentReceipt(null);
+
+    try {
+      const trimmedResultEmail = resultEmail.trim();
+      if (trimmedResultEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedResultEmail)) {
+        throw new Error("Enter a valid results email or leave the field blank before generating.");
+      }
+
+      if (isLoadingPricing) {
+        throw new Error("Loading backend pricing. Please wait.");
+      }
+      if (pricingError) {
+        throw new Error("Pricing unavailable. Retry after backend pricing is restored.");
+      }
+      if (!walletAddress) {
+        throw new Error("Connect wallet to authorize Selun agent payment.");
+      }
+      if (isApplyingPromoCode) {
+        throw new Error("Applying promo code. Please wait.");
+      }
+      if (requiresPromoApply) {
+        throw new Error("Apply promo code first to confirm final price before purchase.");
+      }
+      if (requiredAmountUsdc > 0 && isLoadingUsdcBalance) {
+        throw new Error("Checking USDC balance. Please wait.");
+      }
+      if (requiredAmountUsdc > 0 && (usdcBalanceError || usdcBalance === null)) {
+        throw new Error("USDC balance unavailable. Refresh balance and try again.");
+      }
+      const availableUsdc = usdcBalance ?? 0;
+      if (requiredAmountUsdc > 0 && availableUsdc < requiredAmountUsdc) {
+        throw new Error(
+          `Insufficient USDC on ${usdcNetworkLabel}. Required ${formatUsdcValue(requiredAmountUsdc)} USDC.`,
+        );
+      }
+
+      const { referralCode } = resolveReferralCheckoutContext();
+      const agentWallet = await withTimeout(queryAgentWallet(), 20_000, "Agent wallet lookup");
+      const activeProvider = walletProvider;
+      if (!activeProvider?.request) {
+        throw new Error("Wallet provider unavailable. Reconnect your wallet and try again.");
+      }
+
+      // CHANGED: 30s -> 120s (wallet UI often needs user attention)
+      await withTimeout(
+        ensureWalletOnChain(activeProvider, agentWallet.networkId, walletConnectionMethod),
+        120_000,
+        "Wallet network switch",
+      );
+
+      setPaymentStage("agent_pay");
+      resultEmailAttemptKeyRef.current = null;
+      setResultEmailDeliveryStatus("idle");
+      setResultEmailDeliveryMessage(null);
+      const preAuthorizeResponse = await withTimeout(
+        fetch("/api/agent/pay", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            walletAddress,
+            includeCertifiedDecisionRecord,
+            riskMode,
+            investmentHorizon,
+            portfolioSegment,
+            promoCode: promoCode.trim() || undefined,
+            resultEmail: trimmedResultEmail || undefined,
+            referralCode: referralCode ?? undefined,
+          }),
+        }),
+        30_000,
+        "Agent pay request",
+      );
+
+      const paymentResult = (await preAuthorizeResponse.json()) as AgentPaymentResponse;
+      if (!preAuthorizeResponse.ok || !paymentResult.success) {
+        throw new Error(paymentResult.error || "Agent payment failed.");
+      }
+
+      if (
+        !paymentResult.transactionId ||
+        !paymentResult.decisionId ||
+        !paymentResult.agentNote ||
+        typeof paymentResult.certifiedDecisionRecordPurchased !== "boolean"
+      ) {
+        throw new Error("Incomplete agent payment response.");
+      }
+      const chargedAmountUsdcString = paymentResult.chargedAmountUsdc?.trim() ?? "";
+      const chargedAmountUsdc = Number.parseFloat(chargedAmountUsdcString);
+      if (!Number.isFinite(chargedAmountUsdc) || chargedAmountUsdc < 0) {
+        throw new Error("Invalid charged amount received from backend.");
+      }
+
+      const paymentMethod = paymentResult.paymentMethod ?? "onchain";
+      const freeCodeApplied = Boolean(paymentResult.freeCodeApplied);
+      const isFreeCodeCheckout = paymentMethod === "free_code" || freeCodeApplied || chargedAmountUsdc === 0;
+
+      if (isFreeCodeCheckout) {
+        setPaymentStage("starting_execution");
+        setAgentPaymentReceipt({
+          transactionId: paymentResult.transactionId,
+          decisionId: paymentResult.decisionId,
+          agentNote: paymentResult.agentNote,
+          chargedAmountUsdc,
+          certifiedDecisionRecordPurchased: paymentResult.certifiedDecisionRecordPurchased,
+          paymentMethod: "free_code",
+          freeCodeApplied: true,
+        });
+
+        const phase1JobId = `selun-phase1-${paymentResult.decisionId}-${Date.now()}`.replace(/[^a-zA-Z0-9-_]/g, "-");
+        await withTimeout(startPhase1Flow(phase1JobId), 20_000, "Phase 1 start");
+        return;
+      }
+
+      const provider = activeProvider;
+
+      const pendingLocal = await hasPendingTransactions(provider, walletAddress);
+      const pendingRpc = await hasPendingTransactionsOnRpc(agentWallet.networkId, walletAddress);
+      if (pendingLocal || pendingRpc) {
+        const recovered = await tryRecoverExistingPayment(
+          { fromAddress: walletAddress, expectedAmountUSDC: chargedAmountUsdcString, decisionId: paymentResult.decisionId },
+          30_000,
+        );
+        if (recovered) {
+          setPaymentStage("starting_execution");
+          setAgentPaymentReceipt({
+            transactionId: recovered.transactionHash,
+            decisionId: paymentResult.decisionId,
+            agentNote: paymentResult.agentNote!,
+            chargedAmountUsdc,
+            certifiedDecisionRecordPurchased: Boolean(paymentResult.certifiedDecisionRecordPurchased),
+            paymentMethod: "onchain",
+            freeCodeApplied: false,
+          });
+          const phase1JobId = `selun-phase1-${paymentResult.decisionId}-${Date.now()}`.replace(/[^a-zA-Z0-9-_]/g, "-");
+          await withTimeout(startPhase1Flow(phase1JobId), 20_000, "Phase 1 start");
+          return;
+        }
+      }
+
+      setPaymentStage("wallet_tx_prompt");
+      const transferData = encodeUsdcTransferCall(agentWallet.walletAddress, parseUsdcToBaseUnits(chargedAmountUsdcString));
+
+      const transferHashRaw = await withTimeout(
+        provider.request({
+          method: "eth_sendTransaction",
+          params: [
+            {
+              from: walletAddress,
+              to: agentWallet.usdcContractAddress,
+              data: transferData,
+              value: "0x0",
+            },
+          ],
+        }) as Promise<unknown>,
+        120_000,
+        "Wallet transaction approval",
+      );
+
+      if (typeof transferHashRaw !== "string" || !/^0x[a-fA-F0-9]{64}$/.test(transferHashRaw)) {
+        throw new Error("Wallet did not return a valid transfer transaction hash.");
+      }
+
+      setPaymentStage("verifying");
+      const verification = await withTimeout(
+        verifyPaymentOnBackend({
+          fromAddress: walletAddress,
+          expectedAmountUSDC: chargedAmountUsdcString,
+          transactionHash: transferHashRaw,
+          decisionId: paymentResult.decisionId,
+        }),
+        120_000,
+        "Payment verification",
+      );
+
+      setAgentPaymentReceipt({
+        transactionId: verification.transactionHash,
+        decisionId: paymentResult.decisionId,
+        agentNote: paymentResult.agentNote!,
+        chargedAmountUsdc,
+        certifiedDecisionRecordPurchased: Boolean(paymentResult.certifiedDecisionRecordPurchased),
+        paymentMethod: "onchain",
+        freeCodeApplied: false,
+      });
+
+      setPaymentStage("starting_execution");
+      const phase1JobId = `selun-phase1-${paymentResult.decisionId}-${Date.now()}`.replace(/[^a-zA-Z0-9-_]/g, "-");
+      await withTimeout(startPhase1Flow(phase1JobId), 20_000, "Phase 1 start");
+    } catch (error) {
+      setPaymentError(error instanceof Error ? error.message : "Agent payment failed.");
+    } finally {
+      setIsPaying(false);
+      setPaymentStage("idle");
+    }
   };
 
   const handleDownloadReport = async () => {
@@ -3725,46 +5249,59 @@ const handleStartOver = () => {
   setWizardState("CONFIGURE");
   setRiskMode(DEFAULT_RISK_MODE);
   setInvestmentHorizon(DEFAULT_HORIZON);
-  setPortfolioSegment(DEFAULT_PORTFOLIO_SEGMENT);
-  setResultEmail("");
-  setResultEmailDeliveryStatus("idle");
-  setResultEmailDeliveryMessage(null);
-  resultEmailAttemptKeyRef.current = null;
-  stripeConfirmationSessionRef.current = null;
-  stripeCancelHandledRef.current = false;
-  setIncludeCertifiedDecisionRecord(false);
-  setPaymentError(null);
-  setAgentPaymentReceipt(null);
-  setIsStartingCardCheckout(false);
-  setIsConfirmingCardCheckout(false);
-  setStripePendingSessionId(null);
-  setPhase1JobId(null);
-  setPhase1Status("idle");
-  setPhase1Error(null);
-  setPhase1Output(null);
-  setPhase2Status("idle");
-  setPhase2Output(null);
-  setPhase2Error(null);
-  setPhase3Status("idle");
-  setPhase3Output(null);
-  setPhase3Error(null);
-  setIsStartingPhase3(false);
-  setPhase4Status("idle");
-  setPhase4Output(null);
-  setPhase4Error(null);
-  setIsStartingPhase4(false);
-  setPhase5Status("idle");
-  setPhase5Output(null);
-  setPhase5Error(null);
-  setIsStartingPhase5(false);
-  setPhase6Status("idle");
-  setPhase6Output(null);
-  setPhase6AaaAllocate(null);
-  setPhase6Error(null);
-  setIsStartingPhase6(false);
-  setPhase1SubPhaseStates(createPhase1SubPhaseStates());
-  setPhase3SubPhaseStates(createPhase3SubPhaseStates());
-  setIsDownloading(false);
+    setPortfolioSegment(DEFAULT_PORTFOLIO_SEGMENT);
+    setResultEmail("");
+    setResultEmailDeliveryStatus("idle");
+    setResultEmailDeliveryMessage(null);
+    resultEmailAttemptKeyRef.current = null;
+    stripeConfirmationSessionRef.current = null;
+    setIncludeCertifiedDecisionRecord(false);
+    setPaymentMethod("card");
+    setPromoCode("");
+    setPromoQuote(null);
+    setPromoQuoteError(null);
+    setIsApplyingPromoCode(false);
+    setWalletAddress(null);
+    setUsdcNetworkId("backend-configured");
+    setUsdcNetworkLabel("Configured in backend");
+    setUsdcBalance(null);
+    setIsLoadingUsdcBalance(false);
+    setUsdcBalanceError(null);
+    setUsdcBalanceRefreshNonce(0);
+    finishWalletConnection();
+    setPaymentError(null);
+    setAgentPaymentReceipt(null);
+    setIsPaying(false);
+    setPaymentStage("idle");
+    setIsStartingCardCheckout(false);
+    setIsConfirmingCardCheckout(false);
+    setPhase1JobId(null);
+    setPhase1Status("idle");
+    setPhase1Error(null);
+    setPhase1Output(null);
+    setPhase2Status("idle");
+    setPhase2Output(null);
+    setPhase2Error(null);
+    setPhase3Status("idle");
+    setPhase3Output(null);
+    setPhase3Error(null);
+    setIsStartingPhase3(false);
+    setPhase4Status("idle");
+    setPhase4Output(null);
+    setPhase4Error(null);
+    setIsStartingPhase4(false);
+    setPhase5Status("idle");
+    setPhase5Output(null);
+    setPhase5Error(null);
+    setIsStartingPhase5(false);
+    setPhase6Status("idle");
+    setPhase6Output(null);
+    setPhase6AaaAllocate(null);
+    setPhase6Error(null);
+    setIsStartingPhase6(false);
+    setPhase1SubPhaseStates(createPhase1SubPhaseStates());
+    setPhase3SubPhaseStates(createPhase3SubPhaseStates());
+    setIsDownloading(false);
   };
 
   return (
@@ -3807,11 +5344,11 @@ const handleStartOver = () => {
         </div>
       </header>
 
-      <div className="mb-6 grid grid-cols-2 gap-2 md:grid-cols-5">
+      <div className="mb-6 grid grid-cols-2 gap-2 md:grid-cols-4">
         {WIZARD_FLOW.map((state, index) => {
           const isActive = wizardState === state;
           const isComplete = WIZARD_FLOW.indexOf(wizardState) > index;
-          const stateLabel = WIZARD_FLOW_LABELS[state];
+          const stateLabel = state.charAt(0) + state.slice(1).toLowerCase();
 
           return (
             <div
@@ -3858,30 +5395,47 @@ const handleStartOver = () => {
           riskMode={riskMode}
           investmentHorizon={investmentHorizon}
           portfolioSegment={portfolioSegment}
+          paymentMethod={paymentMethod}
           basePriceUsdc={basePriceUsdc}
           certifiedDecisionRecordFeeUsdc={certifiedDecisionRecordFeeUsdc}
           resultEmail={resultEmail}
           includeCertifiedDecisionRecord={includeCertifiedDecisionRecord}
+          promoCode={promoCode}
+          promoQuote={promoQuote}
+          promoQuoteError={promoQuoteError}
+          isApplyingPromoCode={isApplyingPromoCode}
+          requiresPromoApply={requiresPromoApply}
+          requiredAmountUsdc={requiredAmountUsdc}
           totalPriceUsdc={totalPriceUsdc}
           isLoadingPricing={isLoadingPricing}
           pricingError={pricingError}
+          walletAddress={walletAddress}
+          walletConnectionMethod={walletConnectionMethod}
+          walletConnectAvailable={walletConnectAvailable}
+          walletConnectUri={walletConnectUri}
+          walletConnectQrDataUrl={walletConnectQrDataUrl}
+          usdcNetworkLabel={usdcNetworkLabel}
+          usdcBalance={usdcBalance}
+          isLoadingUsdcBalance={isLoadingUsdcBalance}
+          usdcBalanceError={usdcBalanceError}
+          isBalanceLow={isBalanceLow}
+          isConnectingWallet={isConnectingWallet}
+          connectingWalletMethod={connectingWalletMethod}
           isStartingCardCheckout={isStartingCardCheckout}
           isConfirmingCardCheckout={isConfirmingCardCheckout}
           paymentError={paymentError}
+          isPaying={isPaying}
+          onSelectPaymentMethod={setPaymentMethod}
           onResultEmailChange={setResultEmail}
           onToggleCertifiedDecisionRecord={handleToggleCertifiedDecisionRecord}
+          onPromoCodeChange={handlePromoCodeChange}
+          onApplyPromoCode={handleApplyPromoCode}
+          onConnectBrowserWallet={handleConnectBrowserWallet}
+          onConnectQrWallet={handleConnectQrWallet}
+          onRefreshUsdcBalance={handleRefreshUsdcBalance}
           onRefreshPricing={refreshPricing}
           onBack={handleBackToConfigure}
           onGenerate={handleGenerateAllocation}
-        />
-      )}
-
-      {wizardState === "PAYMENT_PENDING" && (
-        <PaymentPendingStep
-          paymentError={paymentError}
-          isConfirmingCardCheckout={isConfirmingCardCheckout}
-          onBackToReview={handleBackToReviewFromPending}
-          onCheckPaymentStatus={handleCheckPaymentStatus}
         />
       )}
 
@@ -3921,6 +5475,7 @@ const handleStartOver = () => {
           regimeDetected={regimeDetected}
           allocations={allocationRows}
           phase7Enabled={phase7Enabled}
+          walletAddress={walletAddress}
           agentPaymentReceipt={agentPaymentReceipt}
           resultEmail={resultEmail}
           resultEmailDeliveryStatus={resultEmailDeliveryStatus}
@@ -3948,7 +5503,4 @@ export default function WizardPage() {
     </main>
   );
 }
-
-
-
 

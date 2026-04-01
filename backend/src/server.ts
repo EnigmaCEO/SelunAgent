@@ -3,9 +3,13 @@ import { createHash } from "node:crypto";
 import dotenv from "dotenv";
 import express from "express";
 import { createAgentRouter, getX402AllocateMetadataByJobId, getX402CapabilitiesData } from "./routes/agent.routes";
+import { createAgentProgramRouter } from "./routes/agent-program.routes";
+import { createReferralRouter } from "./routes/referral.routes";
 import { EXECUTION_MODEL_VERSION, getConfig } from "./config";
 import { resolveBackendPath } from "./runtime-paths";
+import { initializeAgentProgramPersistence, isAgentProgramDatabaseConfigured } from "./services/agent-program.service";
 import { getExecutionStatus, getExecutionStatusByWallet } from "./services/phase1-execution.service";
+import { initializeReferralPersistence, isReferralDatabaseConfigured } from "./services/referral.service";
 
 type JsonRecord = Record<string, unknown>;
 type OpenApiHttpMethod = "get" | "post" | "put" | "delete" | "patch" | "options" | "head" | "trace";
@@ -286,6 +290,8 @@ function buildPaidRouteOpenApiOperation(capabilities: X402Capabilities, resource
     resource.inputSchema && typeof resource.inputSchema === "object"
       ? resource.inputSchema
       : { type: "object", additionalProperties: true };
+  const isAllocateResource =
+    resource.endpoint === "/agent/x402/allocate" || resource.endpoint === "/agent/x402/allocate-with-report";
 
   return {
     tags: ["x402"],
@@ -300,6 +306,17 @@ function buildPaidRouteOpenApiOperation(capabilities: X402Capabilities, resource
         schema: { type: "string" },
         description: "Recommended for retries. Selun also accepts decisionId in the request body.",
       },
+      ...(isAllocateResource
+        ? [
+          {
+            name: "ref",
+            in: "query",
+            required: false,
+            schema: { type: "string" },
+            description: "Optional referral code. You can also send referralCode in the request body.",
+          },
+        ]
+        : []),
     ],
     requestBody: {
       required: true,
@@ -572,6 +589,8 @@ app.get("/openapi", async (req, res) => {
   }
 });
 
+app.use("/referral", createReferralRouter());
+app.use("/api", createAgentProgramRouter());
 app.use("/agent", createAgentRouter());
 
 app.get("/execution-status/wallet/:walletAddress", (req, res) => {
@@ -618,13 +637,25 @@ app.get("/execution-status/:jobId", (req, res) => {
 
 const port = Number.parseInt(process.env.PORT ?? "8787", 10);
 
-try {
-  getConfig();
-} catch (error) {
-  console.error(error instanceof Error ? error.message : "Invalid configuration.");
-  process.exit(1);
+async function startServer(): Promise<void> {
+  try {
+    getConfig();
+
+    if (isReferralDatabaseConfigured()) {
+      await initializeReferralPersistence();
+    }
+
+    if (isAgentProgramDatabaseConfigured()) {
+      await initializeAgentProgramPersistence();
+    }
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : "Invalid configuration.");
+    process.exit(1);
+  }
+
+  app.listen(port, () => {
+    console.log(`Selun Express backend listening on port ${port}`);
+  });
 }
 
-app.listen(port, () => {
-  console.log(`Selun Express backend listening on port ${port}`);
-});
+void startServer();

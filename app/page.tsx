@@ -1,10 +1,18 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import styles from "./page.module.css";
+import {
+  ACTIVE_REFERRAL_CODE_STORAGE_KEY,
+  isAgentProgramReferrerId,
+  appendReferralParam,
+  normalizeReferralCode,
+  readOrCreateAgentReferralVisitorId,
+  stripReferralParam,
+} from "@/app/lib/referral";
 
 const DECORATIVE_STEPS = ["1. Risk Tolerance", "2. Crypto Assets", "3. Decision Report"] as const;
 const TOKEN_CONTRACT = "0xc0ffee254729296a45a3885639AC7E10F9d54979";
@@ -12,8 +20,9 @@ const TOKEN_TICKER = "$SELUN";
 
 type ActivationPhase = "idle" | "activating" | "redirecting";
 
-export default function Home() {
+function HomeContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [phase, setPhase] = useState<ActivationPhase>("idle");
   const activationTimerRef = useRef<number | null>(null);
   const redirectTimerRef = useRef<number | null>(null);
@@ -21,6 +30,8 @@ export default function Home() {
   const currentYear = new Date().getFullYear();
   const tokenLabel = `${TOKEN_CONTRACT.slice(0, 8)}...${TOKEN_CONTRACT.slice(-6)}`;
   const isBusy = phase !== "idle";
+  const referralCode = normalizeReferralCode(searchParams.get("ref"));
+  const trackedAgentReferralRef = useRef<string | null>(null);
 
   const ctaLabel =
   phase === "idle"
@@ -52,10 +63,51 @@ const coreTitle =
       setPhase("redirecting");
 
       redirectTimerRef.current = window.setTimeout(() => {
-        router.push("/wizard");
+        router.push(appendReferralParam("/wizard", referralCode));
       }, 700);
     }, 1400);
-  }, [isBusy, router]);
+  }, [isBusy, referralCode, router]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !referralCode) return;
+    window.localStorage.setItem(ACTIVE_REFERRAL_CODE_STORAGE_KEY, referralCode);
+  }, [referralCode]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !referralCode || !isAgentProgramReferrerId(referralCode)) {
+      return;
+    }
+
+    const visitorId = readOrCreateAgentReferralVisitorId(window.localStorage);
+    const trackingKey = `${referralCode}:${visitorId}`;
+    if (trackedAgentReferralRef.current === trackingKey) {
+      return;
+    }
+    trackedAgentReferralRef.current = trackingKey;
+
+    void fetch("/api/referral/agent-track", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        referrer_id: referralCode,
+        user_id: visitorId,
+        event: "click",
+        source: "site_referral",
+      }),
+    }).catch(() => {
+      trackedAgentReferralRef.current = null;
+    });
+  }, [referralCode]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !referralCode) return;
+
+    const currentPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    const cleanPath = stripReferralParam(currentPath);
+    if (cleanPath !== currentPath) {
+      router.replace(cleanPath, { scroll: false });
+    }
+  }, [referralCode, router]);
 
   useEffect(() => {
     return () => {
@@ -76,6 +128,7 @@ const coreTitle =
           </Link>
 
           <nav className={styles.nav} aria-label="Primary navigation">
+            <Link href="/earn">Referral Program</Link>
             <Link href="/x402">x402 API</Link>
           </nav>
 
@@ -156,5 +209,13 @@ const coreTitle =
         </footer>
       </div>
     </main>
+  );
+}
+
+export default function Home() {
+  return (
+    <Suspense fallback={null}>
+      <HomeContent />
+    </Suspense>
   );
 }

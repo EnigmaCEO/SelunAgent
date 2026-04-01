@@ -80,7 +80,10 @@ const FALLBACK_CAPABILITIES: CapabilitiesPayload = {
       pricing: { amountUsdc: "19", price: "$19.00" },
       inputSchema: {
         required: ["decisionId", "riskTolerance", "timeframe"],
-        properties: { portfolioSegment: { enum: ["Bluechips", "Memecoins", "Gaming", "Yield Farm"] } },
+        properties: {
+          portfolioSegment: { enum: ["Bluechips", "Memecoins", "Gaming", "Yield Farm"] },
+          referralCode: { type: "string" },
+        },
       },
     },
     {
@@ -92,7 +95,10 @@ const FALLBACK_CAPABILITIES: CapabilitiesPayload = {
       pricing: { amountUsdc: "34", price: "$34.00" },
       inputSchema: {
         required: ["decisionId", "riskTolerance", "timeframe"],
-        properties: { portfolioSegment: { enum: ["Bluechips", "Memecoins", "Gaming", "Yield Farm"] } },
+        properties: {
+          portfolioSegment: { enum: ["Bluechips", "Memecoins", "Gaming", "Yield Farm"] },
+          referralCode: { type: "string" },
+        },
       },
     },
     {

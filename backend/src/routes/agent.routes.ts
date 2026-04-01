@@ -18,6 +18,8 @@ import {
   PORTFOLIO_SEGMENTS,
 } from "../services/portfolio-segments";
 import { isValidEmail, sendAdminUsageEmail, sendUserReportEmail, sendUserSummaryEmail } from "../services/email.service";
+import { normalizeReferralCode, recordReferralConversion } from "../services/referral.service";
+import { confirmAgentAllocation, isAgentProgramReferrerId, normalizeAgentProgramReferrerId } from "../services/agent-program.service";
 import {
   authorizeWizardPayment,
   getAgentAddress,
@@ -236,6 +238,66 @@ function getX402FromAddressDailyCap() {
 
 function getX402GlobalConcurrencyCap() {
   return readPositiveIntEnv("X402_GLOBAL_CONCURRENCY_CAP", 8);
+}
+
+function extractReferralCode(req: Request): string | null {
+  const queryRef = Array.isArray(req.query?.ref)
+    ? req.query.ref[0]
+    : typeof req.query?.ref === "string"
+      ? req.query.ref
+      : undefined;
+  const bodyRef = typeof req.body?.referralCode === "string" ? req.body.referralCode : undefined;
+  const raw = (queryRef ?? bodyRef)?.trim() ?? "";
+  if (!raw) {
+    return null;
+  }
+
+  const agentProgramReferrerId = normalizeAgentProgramReferrerId(raw);
+  if (agentProgramReferrerId) {
+    return agentProgramReferrerId;
+  }
+
+  return normalizeReferralCode(raw);
+}
+
+async function recordPaidAllocationReferral(params: {
+  referralCode: string | null;
+  transactionId: string;
+  amountUsd: number;
+  routePath: string;
+  userId: string;
+  allocationAmountUsd?: number;
+  reportAmountUsd?: number;
+  paymentReference?: string;
+}) {
+  if (!params.referralCode) {
+    return;
+  }
+
+  try {
+    if (isAgentProgramReferrerId(params.referralCode)) {
+      await confirmAgentAllocation({
+        referrerId: params.referralCode,
+        userId: params.userId,
+        allocationId: params.transactionId,
+        amountUsd: params.amountUsd,
+        allocationAmountUsd: params.allocationAmountUsd,
+        reportAmountUsd: params.reportAmountUsd,
+        totalPaidUsd: params.amountUsd,
+        paymentReference: params.paymentReference ?? params.transactionId,
+        source: params.routePath,
+      });
+      return;
+    }
+
+    await recordReferralConversion({
+      referralCode: params.referralCode,
+      transactionId: params.transactionId,
+      amountUsd: params.amountUsd,
+    });
+  } catch (error) {
+    console.error(`Failed to record referral conversion for ${params.routePath}:`, error);
+  }
 }
 
 function sleep(ms: number) {
@@ -986,6 +1048,7 @@ function buildAllocateDiscoveryExtension() {
       riskTolerance: "Balanced",
       timeframe: "1-3_years",
       portfolioSegment: "Bluechips",
+      referralCode: "ASH123",
     },
     inputSchema: {
       type: "object",
@@ -994,6 +1057,7 @@ function buildAllocateDiscoveryExtension() {
         riskTolerance: { enum: ["Conservative", "Balanced", "Growth", "Aggressive"] },
         timeframe: { enum: ["<1_year", "1-3_years", "3+_years"] },
         portfolioSegment: { enum: [...PORTFOLIO_SEGMENTS] },
+        referralCode: { type: "string", description: "Optional affiliate/referral code. You can also send this as ?ref=CODE." },
       },
       required: ["decisionId", "riskTolerance", "timeframe"],
     },
@@ -1021,6 +1085,7 @@ function buildAllocateWithReportDiscoveryExtension() {
       riskTolerance: "Balanced",
       timeframe: "1-3_years",
       portfolioSegment: "Bluechips",
+      referralCode: "ASH123",
     },
     inputSchema: {
       type: "object",
@@ -1029,6 +1094,7 @@ function buildAllocateWithReportDiscoveryExtension() {
         riskTolerance: { enum: ["Conservative", "Balanced", "Growth", "Aggressive"] },
         timeframe: { enum: ["<1_year", "1-3_years", "3+_years"] },
         portfolioSegment: { enum: [...PORTFOLIO_SEGMENTS] },
+        referralCode: { type: "string", description: "Optional affiliate/referral code. You can also send this as ?ref=CODE." },
       },
       required: ["decisionId", "riskTolerance", "timeframe"],
     },
@@ -3388,6 +3454,7 @@ async function handleX402AllocateRequest(
     return sendRateLimited(res, "ip_burst_limit", burst.retryAfterSeconds);
   }
 
+  const referralCode = extractReferralCode(req);
   const paymentSignatureHeader = req.header("payment-signature")?.trim() || req.header("PAYMENT-SIGNATURE")?.trim();
   const hasPaymentSignature = Boolean(paymentSignatureHeader);
   const riskTolerance = normalizeRiskTolerance(req.body?.riskTolerance);
@@ -3718,6 +3785,17 @@ async function handleX402AllocateRequest(
     if (!decisionScopedRecord?.jobId) {
       incrementAddressUsage(payer);
     }
+
+    await recordPaidAllocationReferral({
+      referralCode,
+      transactionId: transactionHash,
+      amountUsd: Number.parseFloat(chargeAmountUsdc),
+      routePath: options.routePath,
+      userId: payer,
+      allocationAmountUsd: withReport ? Number.parseFloat(getAllocateChargeAmountUsdc(false)) : Number.parseFloat(chargeAmountUsdc),
+      reportAmountUsd: withReport ? Number.parseFloat(getAllocateChargeAmountUsdc(true)) - Number.parseFloat(getAllocateChargeAmountUsdc(false)) : 0,
+      paymentReference: transactionHash,
+    });
 
     void sendAdminUsageEmail({
       channel: "x402_allocate",
