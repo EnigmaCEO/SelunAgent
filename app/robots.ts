@@ -10,7 +10,6 @@ export default function robots(): MetadataRoute.Robots {
         disallow: [
           "/api/",
           "/admin",
-          "/_next/",
         ],
       },
       // Block GPTBot (OpenAI training crawler) from all content
@@ -22,13 +21,13 @@ export default function robots(): MetadataRoute.Robots {
       {
         userAgent: "OAI-SearchBot",
         allow: "/",
-        disallow: ["/api/", "/admin", "/_next/"],
+        disallow: ["/api/", "/admin"],
       },
       // Allow Anthropic's crawler (retrieval / product context)
       {
         userAgent: "ClaudeBot",
         allow: "/",
-        disallow: ["/api/", "/admin", "/_next/"],
+        disallow: ["/api/", "/admin"],
       },
     ],
     sitemap: "https://selun.sagitta.systems/sitemap.xml",
