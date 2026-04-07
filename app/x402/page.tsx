@@ -257,7 +257,13 @@ export default function X402Page() {
             <Image src="/selun-logo.svg" alt="Selun" width={154} height={48} className={styles.brandLogo} priority />
           </Link>
 
-          
+          <nav className={styles.nav} aria-label="Primary navigation">
+            <Link href="/what-is-selun">What Is Selun</Link>
+            <Link href="/capabilities">Capabilities</Link>
+            <Link href="/pricing">Pricing</Link>
+            <Link href="/for-developers">For Developers</Link>
+            <Link href="/faq">FAQ</Link>
+          </nav>
         </header>
 
         <section className={styles.hero}>
@@ -385,6 +391,64 @@ export default function X402Page() {
             <div className={styles.integrationCard}>
               <span className={styles.integrationLabel}>Discovery alias</span>
               <code>{discoveryRoot}/agent/x402/discovery</code>
+            </div>
+          </div>
+        </section>
+
+        <section className={styles.integrationSection} style={{ marginTop: 20 }}>
+          <div className={styles.sectionHeader}>
+            <div>
+              <p className={styles.sectionEyebrow}>Learn More</p>
+              <h2>Human-Readable Explainers</h2>
+            </div>
+            <p className={styles.sectionNote}>
+              This page is the machine-facing endpoint catalog. The pages below explain each
+              capability in plain language.
+            </p>
+          </div>
+
+          <div className={styles.integrationGrid} style={{ marginTop: 18 }}>
+            <div className={styles.integrationCard}>
+              <span className={styles.integrationLabel}>Product overview</span>
+              <Link href="/what-is-selun" style={{ display: "block", marginTop: 8, color: "#17486f", fontWeight: 600, fontSize: 14 }}>
+                What Is Selun? →
+              </Link>
+            </div>
+            <div className={styles.integrationCard}>
+              <span className={styles.integrationLabel}>Workflow</span>
+              <Link href="/how-it-works" style={{ display: "block", marginTop: 8, color: "#17486f", fontWeight: 600, fontSize: 14 }}>
+                How It Works →
+              </Link>
+            </div>
+            <div className={styles.integrationCard}>
+              <span className={styles.integrationLabel}>Capability explainers</span>
+              <Link href="/capabilities" style={{ display: "block", marginTop: 8, color: "#17486f", fontWeight: 600, fontSize: 14 }}>
+                All Capabilities →
+              </Link>
+            </div>
+            <div className={styles.integrationCard}>
+              <span className={styles.integrationLabel}>Endpoint pricing</span>
+              <Link href="/pricing" style={{ display: "block", marginTop: 8, color: "#17486f", fontWeight: 600, fontSize: 14 }}>
+                Pricing →
+              </Link>
+            </div>
+            <div className={styles.integrationCard}>
+              <span className={styles.integrationLabel}>Developer guide</span>
+              <Link href="/for-developers" style={{ display: "block", marginTop: 8, color: "#17486f", fontWeight: 600, fontSize: 14 }}>
+                For Developers →
+              </Link>
+            </div>
+            <div className={styles.integrationCard}>
+              <span className={styles.integrationLabel}>Decision report</span>
+              <Link href="/decision-report" style={{ display: "block", marginTop: 8, color: "#17486f", fontWeight: 600, fontSize: 14 }}>
+                About the Report →
+              </Link>
+            </div>
+            <div className={styles.integrationCard}>
+              <span className={styles.integrationLabel}>Referral program</span>
+              <Link href="/earn" style={{ display: "block", marginTop: 8, color: "#17486f", fontWeight: 600, fontSize: 14 }}>
+                Earn 50% per Allocation →
+              </Link>
             </div>
           </div>
         </section>

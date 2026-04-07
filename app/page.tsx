@@ -128,8 +128,12 @@ const coreTitle =
           </Link>
 
           <nav className={styles.nav} aria-label="Primary navigation">
-            <Link href="/earn">Referral Program</Link>
+            <Link href="/what-is-selun">About</Link>
+            <Link href="/capabilities">Capabilities</Link>
+            <Link href="/pricing">Pricing</Link>
+            <Link href="/faq">FAQ</Link>
             <Link href="/x402">x402 API</Link>
+            <Link href="/earn">Referral</Link>
           </nav>
 
           {/* <div className={styles.contractPill} title={TOKEN_CONTRACT}>
@@ -194,17 +198,27 @@ const coreTitle =
         <footer className={styles.siteFooter}>
           <p className={styles.footerCopy}>(c) {currentYear} Sagitta Labs</p>
           <nav className={styles.footerLinks} aria-label="Footer links">
-            <Link className={styles.footerLink} href="/terms">
-              Terms of Service
-            </Link>
+            <Link className={styles.footerLink} href="/what-is-selun">What Is Selun</Link>
             <span aria-hidden>|</span>
-            <Link className={styles.footerLink} href="/privacy">
-              Privacy Policy
-            </Link>
+            <Link className={styles.footerLink} href="/how-it-works">How it Works</Link>
             <span aria-hidden>|</span>
-            <Link className={styles.footerLink} href="/support">
-              Support
-            </Link>
+            <Link className={styles.footerLink} href="/capabilities">Capabilities</Link>
+            <span aria-hidden>|</span>
+            <Link className={styles.footerLink} href="/pricing">Pricing</Link>
+            <span aria-hidden>|</span>
+            <Link className={styles.footerLink} href="/faq">FAQ</Link>
+            <span aria-hidden>|</span>
+            <Link className={styles.footerLink} href="/security">Security</Link>
+            <span aria-hidden>|</span>
+            <Link className={styles.footerLink} href="/for-developers">For Developers</Link>
+            <span aria-hidden>|</span>
+            <Link className={styles.footerLink} href="/x402">x402 API</Link>
+            <span aria-hidden>|</span>
+            <Link className={styles.footerLink} href="/terms">Terms</Link>
+            <span aria-hidden>|</span>
+            <Link className={styles.footerLink} href="/privacy">Privacy</Link>
+            <span aria-hidden>|</span>
+            <Link className={styles.footerLink} href="/support">Support</Link>
           </nav>
         </footer>
       </div>
