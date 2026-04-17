@@ -2307,6 +2307,8 @@ async function handleX402ToolRequest(
     void sendAdminUsageEmail({
       channel: "x402_allocate",
       decisionId: confirmedDecisionId,
+      endpoint: definition.routePath,
+      productId,
       walletAddress: payer,
       resultEmail:
         typeof req.body?.resultEmail === "string" && isValidEmail(req.body.resultEmail.trim().toLowerCase())
@@ -2318,10 +2320,17 @@ async function handleX402ToolRequest(
       chargedAmountUsdc: getX402ToolPriceUsdc(productId),
       transactionHash,
       paymentMethod: "x402",
+      paymentNetwork: settlement.network ?? null,
       includeCertifiedDecisionRecord: false,
       riskTolerance: normalizedInput.riskTolerance as string,
       timeframe: normalizedInput.timeframe as string,
       jobId,
+      requestInput: normalizedInput,
+      responseOutput: {
+        success: true,
+        executionModelVersion: EXECUTION_MODEL_VERSION,
+        data: responseData,
+      },
     }).catch((error) => {
       console.error(`Failed to send Selun admin usage email (${productId}):`, error);
     });
@@ -3800,6 +3809,8 @@ async function handleX402AllocateRequest(
     void sendAdminUsageEmail({
       channel: "x402_allocate",
       decisionId: decisionId as string,
+      endpoint: options.routePath,
+      productId: withReport ? "allocation_with_report" : "allocation_only",
       walletAddress: payer,
       resultEmail:
         typeof req.body?.resultEmail === "string" && isValidEmail(req.body.resultEmail.trim().toLowerCase())
@@ -3811,10 +3822,34 @@ async function handleX402AllocateRequest(
       chargedAmountUsdc: chargeAmountUsdc,
       transactionHash,
       paymentMethod: "x402",
+      paymentNetwork: settlement.network ?? null,
       includeCertifiedDecisionRecord: withReport,
       riskTolerance: inputShape.riskTolerance,
       timeframe: inputShape.timeframe,
       jobId,
+      requestInput: inputShape,
+      responseOutput: {
+        success: true,
+        executionModelVersion: EXECUTION_MODEL_VERSION,
+        data: {
+          status: decisionScopedRecord?.jobId ? "already_accepted" : "accepted",
+          idempotentReplay: Boolean(decisionScopedRecord?.jobId),
+          endpoint: options.routePath,
+          jobId,
+          decisionId,
+          inputs: inputShape,
+          payment: {
+            required: true,
+            chargedAmountUsdc: chargeAmountUsdc,
+            verified: true,
+            fromAddress: payer,
+            transactionHash,
+            network: settlement.network,
+          },
+          quoteExpiresAt: activeQuoteWindow.expiresAt,
+          statusPath: `/execution-status/${encodeURIComponent(jobId)}`,
+        },
+      },
     }).catch((error) => {
       console.error("Failed to send Selun admin usage email (x402_allocate):", error);
     });

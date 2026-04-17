@@ -3,16 +3,21 @@ type AdminUsageChannel = "legacy_pay" | "x402_allocate";
 type AdminUsageEmailInput = {
   channel: AdminUsageChannel;
   decisionId: string;
+  endpoint?: string | null;
+  productId?: string | null;
   walletAddress?: string | null;
   resultEmail?: string | null;
   promoCode?: string | null;
   chargedAmountUsdc?: string | number | null;
   transactionHash?: string | null;
   paymentMethod?: string | null;
+  paymentNetwork?: string | null;
   includeCertifiedDecisionRecord?: boolean | null;
   riskTolerance?: string | null;
   timeframe?: string | null;
   jobId?: string | null;
+  requestInput?: Record<string, unknown> | null;
+  responseOutput?: Record<string, unknown> | null;
 };
 
 export type UserResultEmailStatus = "sent" | "skipped" | "failed";
@@ -87,6 +92,25 @@ function escapeHtml(value: string | number | boolean | null | undefined): string
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;");
+}
+
+function serializeAdminPayload(value: Record<string, unknown> | null | undefined): string {
+  if (!value) return "n/a";
+
+  try {
+    const serialized = JSON.stringify(
+      value,
+      (_key, entry) => (typeof entry === "bigint" ? entry.toString() : entry),
+      2,
+    );
+    if (!serialized) return "n/a";
+
+    const maxLength = 12000;
+    if (serialized.length <= maxLength) return serialized;
+    return `${serialized.slice(0, maxLength)}\n... [truncated ${serialized.length - maxLength} chars]`;
+  } catch {
+    return "[unserializable payload]";
+  }
 }
 
 function isAdminEmailEnabled() {
@@ -181,42 +205,62 @@ async function sendViaResend(params: {
 }
 
 function buildAdminUsageTextPayload(input: AdminUsageEmailInput): string {
+  const requestInput = serializeAdminPayload(input.requestInput);
+  const responseOutput = serializeAdminPayload(input.responseOutput);
   const lines = [
     "Selun usage event received.",
     "",
     `Channel: ${input.channel}`,
     `Decision ID: ${input.decisionId}`,
+    `Endpoint: ${input.endpoint ?? "n/a"}`,
+    `Product ID: ${input.productId ?? "n/a"}`,
     `Wallet: ${input.walletAddress ?? "n/a"}`,
     `Result Email: ${input.resultEmail ?? "n/a"}`,
     `Promo Code: ${input.promoCode ?? "n/a"}`,
     `Charged Amount (USDC): ${input.chargedAmountUsdc ?? "n/a"}`,
     `Payment Method: ${input.paymentMethod ?? "n/a"}`,
+    `Payment Network: ${input.paymentNetwork ?? "n/a"}`,
     `Transaction Hash: ${input.transactionHash ?? "n/a"}`,
     `Certified Report: ${input.includeCertifiedDecisionRecord === null || input.includeCertifiedDecisionRecord === undefined ? "n/a" : String(input.includeCertifiedDecisionRecord)}`,
     `Risk Tolerance: ${input.riskTolerance ?? "n/a"}`,
     `Timeframe: ${input.timeframe ?? "n/a"}`,
     `Job ID: ${input.jobId ?? "n/a"}`,
     `Timestamp: ${new Date().toISOString()}`,
+    "",
+    "Request Input:",
+    requestInput,
+    "",
+    "Response Output:",
+    responseOutput,
   ];
   return lines.join("\n");
 }
 
 function buildAdminUsageHtmlPayload(input: AdminUsageEmailInput): string {
+  const requestInput = serializeAdminPayload(input.requestInput);
+  const responseOutput = serializeAdminPayload(input.responseOutput);
   return `
     <h2>Selun Usage Event</h2>
     <p><strong>Channel:</strong> ${escapeHtml(input.channel)}</p>
     <p><strong>Decision ID:</strong> ${escapeHtml(input.decisionId)}</p>
+    <p><strong>Endpoint:</strong> ${escapeHtml(input.endpoint)}</p>
+    <p><strong>Product ID:</strong> ${escapeHtml(input.productId)}</p>
     <p><strong>Wallet:</strong> ${escapeHtml(input.walletAddress)}</p>
     <p><strong>Result Email:</strong> ${escapeHtml(input.resultEmail)}</p>
     <p><strong>Promo Code:</strong> ${escapeHtml(input.promoCode)}</p>
     <p><strong>Charged Amount (USDC):</strong> ${escapeHtml(input.chargedAmountUsdc)}</p>
     <p><strong>Payment Method:</strong> ${escapeHtml(input.paymentMethod)}</p>
+    <p><strong>Payment Network:</strong> ${escapeHtml(input.paymentNetwork)}</p>
     <p><strong>Transaction Hash:</strong> ${escapeHtml(input.transactionHash)}</p>
     <p><strong>Certified Report:</strong> ${escapeHtml(input.includeCertifiedDecisionRecord)}</p>
     <p><strong>Risk Tolerance:</strong> ${escapeHtml(input.riskTolerance)}</p>
     <p><strong>Timeframe:</strong> ${escapeHtml(input.timeframe)}</p>
     <p><strong>Job ID:</strong> ${escapeHtml(input.jobId)}</p>
     <p><strong>Timestamp:</strong> ${escapeHtml(new Date().toISOString())}</p>
+    <h3>Request Input</h3>
+    <pre style="white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;">${escapeHtml(requestInput)}</pre>
+    <h3>Response Output</h3>
+    <pre style="white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;">${escapeHtml(responseOutput)}</pre>
   `.trim();
 }
 
