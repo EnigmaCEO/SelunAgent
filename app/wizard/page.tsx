@@ -2439,9 +2439,9 @@ function ReviewStep({
 
   return (
     <section className="rounded-2xl border border-slate-300/70 bg-white/70 p-6 backdrop-blur">
-      <h2 className="text-2xl font-semibold text-slate-900">Step 2. Preview Your Plan</h2>
+      <h2 className="text-2xl font-semibold text-slate-900">Step 2. Preview & Pay</h2>
       <p className="mt-2 text-slate-600">
-        Based on your answers, here&apos;s a sample of the plan you&apos;ll receive.
+        Based on your answers, here&apos;s a <strong>sample</strong> of the plan you&apos;ll receive.
       </p>
 
       {/* Main two-column layout: purchase left, preview right */}
@@ -2663,9 +2663,9 @@ function ReviewStep({
             </div>
 
             <div className="mt-4 rounded-xl border border-slate-100 bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-600">
-              This is just a preview. Your full plan will include{" "}
+            <strong>This is just a preview</strong>. Your full plan will include{" "}
               <strong>exact percentages</strong>, <strong>clear reasoning</strong>, and a{" "}
-              <strong>plain-English explanation</strong> made just for you.
+              <strong>Explanation</strong> made just for you.
             </div>
           </div>
 
@@ -2691,7 +2691,7 @@ function ReviewStep({
           disabled={isPaying}
           className="inline-flex items-center justify-center rounded-full bg-cyan-500 px-8 py-3.5 text-base font-semibold text-slate-950 shadow-sm transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          ← Back to questions
+          ← Back
         </button>
       </div>
     </section>
@@ -5470,7 +5470,7 @@ const handleStartOver = () => {
               </span>
               <span className="truncate">{
                 state === "CONFIGURE" ? "Your Profile"
-                : state === "REVIEW" ? "Preview Your Plan"
+                : state === "REVIEW" ? "Preview & Pay"
                 : state === "PROCESSING" ? "Market Analysis"
                 : "Get Your Plan"
               }</span>

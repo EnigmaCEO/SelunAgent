@@ -172,10 +172,12 @@ function HomeContent() {
               >
                 {phase === "idle" ? "Start My Plan" : phase === "activating" ? "Loading..." : "Opening..."}
               </button>
+
+              <div>&nbsp;</div>
               <p className={styles.planPriceNote}>
-              For $19, you get recommended assets, target percentages, and a plain-English explanation of why the plan fits you.
+              For $19, you get recommended assets, target percentages, and an explanation of why the plan fits you.
               </p>
-              <p className={styles.planDisclaimer}>No wallet required for card checkout.</p>
+              <p className={styles.planDisclaimer}>No wallet required.</p>
             </div>
 
             <div className={styles.planCard}>

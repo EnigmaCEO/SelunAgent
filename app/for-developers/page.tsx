@@ -297,7 +297,7 @@ export default function ForDevelopersPage() {
                 <p className={styles.cardEyebrow}>Human-facing</p>
                 <h3 className={styles.cardTitle}>Capabilities Page</h3>
                 <p className={styles.cardBody}>
-                  Plain-language explanation of what each capability does, when to use it,
+                  Explanation of what each capability does, when to use it,
                   and what it returns. Use this to understand the service before building
                   the integration.
                 </p>

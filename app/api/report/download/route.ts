@@ -1017,7 +1017,7 @@ async function buildPdf(payload: DownloadRequestPayload, integrityHash: string, 
     lineGap: 4,
     paragraphGap: 0,
   });
-  drawWrapped("Model-generated allocation output with plain-language reasoning for this market environment.", {
+  drawWrapped("Model-generated allocation output with reasoning for this market environment.", {
     size: 10.5,
     color: colors.muted,
     maxChars: 92,

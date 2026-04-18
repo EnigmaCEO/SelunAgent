@@ -19,7 +19,7 @@ export const metadata: Metadata = {
 const REPORT_SECTIONS = [
   {
     title: "Summary dashboard",
-    desc: "Market condition (with confidence %), strategy name, Fear & Greed index, concentration snapshot (largest position, top 3 combined). Plain-language explanation of why the allocation fits current market conditions. Key control decisions applied.",
+    desc: "Market condition (with confidence %), strategy name, Fear & Greed index, concentration snapshot (largest position, top 3 combined). Explanation of why the allocation fits current market conditions. Key control decisions applied.",
     example: "Market Condition: Defensive · Confidence 82% · Fear & Greed: 11 (Extreme Fear)",
   },
   {
@@ -29,7 +29,7 @@ const REPORT_SECTIONS = [
   },
   {
     title: "Role explanations + Action Plan",
-    desc: "Plain-language explanation of what each role category means in the context of this allocation. Numbered action plan: how to use target weights, when to rebalance, when to re-run the allocation, and how to maintain risk discipline.",
+    desc: "Explanation of what each role category means in the context of this allocation. Numbered action plan: how to use target weights, when to rebalance, when to re-run the allocation, and how to maintain risk discipline.",
     example: "Review weekly. Rebalance when allocations drift meaningfully from targets.",
   },
   {
