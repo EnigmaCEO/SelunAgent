@@ -87,6 +87,13 @@
   z-index: 1;
   max-width: 1160px;
   margin: 0 auto;
+  min-height: calc(100vh - 66px);
+  display: flex;
+  flex-direction: column;
+}
+
+.shell .siteFooter {
+  margin-top: auto;
 }
 
 .topbar {
@@ -173,11 +180,12 @@
 }
 
 .hero {
-  margin-top: 18px;
-  position: relative;
-  display: grid;
-  place-items: center;
-  min-height: min(72vh, 760px);
+  margin-top: 48px;
+  padding: 40px clamp(16px, 4vw, 52px);
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(44, 95, 145, 0.14);
+  border-radius: 20px;
 }
 
 .heroCopy {
@@ -568,6 +576,248 @@
 
 .delay3 {
   animation-delay: 0.33s;
+}
+
+.delay4 {
+  animation-delay: 0.42s;
+}
+
+.planSection {
+  margin-top: 56px;
+  padding: 40px clamp(16px, 4vw, 52px);
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(44, 95, 145, 0.14);
+  border-radius: 20px;
+}
+
+.planGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 40px;
+  align-items: center;
+}
+
+.planHeadline {
+  margin: 0 0 14px;
+  font-family: var(--font-display), "Space Grotesk", "Avenir Next", sans-serif;
+  font-size: clamp(24px, 3.6vw, 40px);
+  line-height: 1.08;
+  letter-spacing: -0.02em;
+  color: #08213d;
+}
+
+.planDesc {
+  margin: 0 0 22px;
+  font-size: clamp(14px, 1.8vw, 17px);
+  line-height: 1.6;
+  color: #2f557a;
+}
+
+.planPriceNote {
+  margin: 16px 0 4px;
+  font-size: 14px;
+  line-height: 1.55;
+  color: #2f557a;
+}
+
+.planDisclaimer {
+  margin: 0;
+  font-size: 12px;
+  color: rgba(27, 70, 105, 0.6);
+}
+
+.planCard {
+  background: rgba(245, 251, 255, 0.92);
+  border: 1px solid rgba(44, 95, 145, 0.18);
+  border-radius: 14px;
+  padding: 22px 24px 20px;
+  min-height: 480px;
+  display: flex;
+  flex-direction: column;
+}
+
+.planCardLabel {
+  margin: 0 0 14px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(27, 70, 105, 0.55);
+}
+
+.planRows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.planRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.planAsset {
+  font-size: 13px;
+  color: #0d2f51;
+  min-width: 130px;
+  flex-shrink: 0;
+}
+
+.planAsset strong {
+  font-weight: 700;
+}
+
+.planBar {
+  flex: 1;
+  height: 6px;
+  background: rgba(44, 95, 145, 0.12);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.planBarFill {
+  height: 100%;
+  background: linear-gradient(90deg, #4dc4ff, #2caee7);
+  border-radius: 999px;
+  max-width: 100%;
+}
+
+.planCardCaption {
+  margin: 12px 0 0;
+  font-size: 11px;
+  color: rgba(27, 70, 105, 0.5);
+  border-top: 1px solid rgba(44, 95, 145, 0.1);
+  padding-top: 10px;
+}
+
+.sampleCondition {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.sampleConditionBadge {
+  font-family: var(--font-display), "Space Grotesk", "Avenir Next", sans-serif;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #08213d;
+}
+
+.sampleStrategy {
+  font-size: 11px;
+  color: rgba(27, 70, 105, 0.6);
+}
+
+.sampleTags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.sampleTag {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(44, 95, 145, 0.22);
+  color: #1b4669;
+  background: rgba(220, 240, 255, 0.6);
+}
+
+.sampleGroups {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  flex: 1;
+}
+
+.sampleGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 14px;
+}
+
+.sampleGroup:first-child {
+  padding-top: 0;
+}
+
+.sampleGroupHeading {
+  margin: 0;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(27, 70, 105, 0.45);
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(44, 95, 145, 0.08);
+}
+
+.sampleAssetRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.sampleAssetMeta {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  flex-shrink: 0;
+}
+
+.sampleTicker {
+  font-size: 12px;
+  font-weight: 700;
+  color: #0d2f51;
+}
+
+.sampleName {
+  font-size: 11px;
+  color: rgba(27, 70, 105, 0.55);
+}
+
+.sampleRole {
+  font-size: 10px;
+  color: rgba(27, 70, 105, 0.4);
+}
+
+.sampleAssetRight {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  justify-content: flex-end;
+}
+
+.samplePct {
+  font-size: 12px;
+  font-weight: 600;
+  color: #0d2f51;
+  min-width: 34px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.sampleAssetRight .planBar {
+  width: 80px;
+  flex-shrink: 0;
+}
+
+@media (max-width: 760px) {
+  .planGrid {
+    grid-template-columns: 1fr;
+  }
 }
 
 @keyframes rise {

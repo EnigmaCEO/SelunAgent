@@ -16,7 +16,7 @@ const bodyFont = Manrope({
 });
 
 const siteUrl = process.env.NEXT_PUBLIC_SITE_URL?.trim() || "https://selun.sagitta.systems";
-const siteTitle = "Selun | Sagitta AAA Portfolio Infrastructure";
+const siteTitle = "Selun | Crypto Portfolio Plan";
 const siteDescription =
   "Payment-gated x402 endpoints exposing Sagitta AAA portfolio allocation, market regime classification, policy evaluation, asset scoring, and portfolio rebalancing.";
 

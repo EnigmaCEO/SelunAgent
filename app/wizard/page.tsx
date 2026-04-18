@@ -2040,7 +2040,7 @@ function ConfigureStep({
 
   return (
     <section className="rounded-2xl border border-slate-300/70 bg-white/70 p-6 backdrop-blur">
-      <h2 className="text-2xl font-semibold text-slate-900">Step 1. Set Your Allocation Profile</h2>
+      <h2 className="text-2xl font-semibold text-slate-900">Step 1. Set Your Profile</h2>
       <p className="mt-2 text-slate-600">Choose your risk tolerance, investment timeframe, and preferred portfolio segment.</p>
 
       <div className="mt-6 grid gap-6 md:grid-cols-2">
@@ -2164,6 +2164,9 @@ function ReviewStep({
   onBack,
   onGenerate,
 }: ReviewStepProps) {
+  // Default to card payment — wallet/USDC option not surfaced in this UI
+  useEffect(() => { onSelectPaymentMethod("card"); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   const hasPromoCode = promoCode.trim().length > 0;
   const promoApplied = Boolean(promoQuote?.promoCodeApplied);
   const normalizedResultEmail = resultEmail.trim();
@@ -2243,358 +2246,452 @@ function ReviewStep({
       ? "Generate Allocation"
     : `Authorize ${formatUsdcValue(requiredAmountUsdc)} USDC & Generate Allocation`;
 
+  // Derive a sample mix from segment + risk
+  const sampleSlices: { label: string; pct: number; color: string }[] =
+    portfolioSegment === "Memecoins"
+      ? riskMode === "Conservative"
+        ? [
+            { label: "BTC",   pct: 30, color: "#f97316" },
+            { label: "ETH",   pct: 20, color: "#8b5cf6" },
+            { label: "DOGE",  pct: 25, color: "#fbbf24" },
+            { label: "PEPE",  pct: 15, color: "#4ade80" },
+            { label: "WIF",   pct: 10, color: "#34d399" },
+          ]
+        : riskMode === "Aggressive"
+        ? [
+            { label: "PEPE",  pct: 30, color: "#4ade80" },
+            { label: "WIF",   pct: 25, color: "#34d399" },
+            { label: "DOGE",  pct: 20, color: "#fbbf24" },
+            { label: "SHIB",  pct: 15, color: "#f87171" },
+            { label: "FLOKI", pct: 10, color: "#fb923c" },
+          ]
+        : riskMode === "Growth"
+        ? [
+            { label: "DOGE",  pct: 25, color: "#fbbf24" },
+            { label: "PEPE",  pct: 25, color: "#4ade80" },
+            { label: "BTC",   pct: 20, color: "#f97316" },
+            { label: "WIF",   pct: 20, color: "#34d399" },
+            { label: "SHIB",  pct: 10, color: "#f87171" },
+          ]
+        : /* Balanced */ [
+            { label: "DOGE",  pct: 30, color: "#fbbf24" },
+            { label: "PEPE",  pct: 25, color: "#4ade80" },
+            { label: "BTC",   pct: 20, color: "#f97316" },
+            { label: "SHIB",  pct: 15, color: "#f87171" },
+            { label: "WIF",   pct: 10, color: "#34d399" },
+          ]
+    : portfolioSegment === "Gaming"
+      ? riskMode === "Conservative"
+        ? [
+            { label: "BTC",  pct: 25, color: "#f97316" },
+            { label: "ETH",  pct: 20, color: "#8b5cf6" },
+            { label: "IMX",  pct: 25, color: "#818cf8" },
+            { label: "RON",  pct: 20, color: "#38bdf8" },
+            { label: "GALA", pct: 10, color: "#a78bfa" },
+          ]
+        : riskMode === "Aggressive"
+        ? [
+            { label: "IMX",  pct: 30, color: "#818cf8" },
+            { label: "RON",  pct: 25, color: "#38bdf8" },
+            { label: "GALA", pct: 25, color: "#a78bfa" },
+            { label: "AXS",  pct: 10, color: "#34d399" },
+            { label: "SAND", pct: 10, color: "#fcd34d" },
+          ]
+        : riskMode === "Growth"
+        ? [
+            { label: "IMX",  pct: 30, color: "#818cf8" },
+            { label: "RON",  pct: 25, color: "#38bdf8" },
+            { label: "GALA", pct: 20, color: "#a78bfa" },
+            { label: "BTC",  pct: 15, color: "#f97316" },
+            { label: "SAND", pct: 10, color: "#fcd34d" },
+          ]
+        : /* Balanced */ [
+            { label: "IMX",  pct: 25, color: "#818cf8" },
+            { label: "RON",  pct: 25, color: "#38bdf8" },
+            { label: "BTC",  pct: 20, color: "#f97316" },
+            { label: "GALA", pct: 20, color: "#a78bfa" },
+            { label: "AXS",  pct: 10, color: "#34d399" },
+          ]
+    : portfolioSegment === "Yield Farm"
+      ? riskMode === "Conservative"
+        ? [
+            { label: "USDC",  pct: 30, color: "#60a5fa" },
+            { label: "stETH", pct: 25, color: "#818cf8" },
+            { label: "AAVE",  pct: 20, color: "#7c3aed" },
+            { label: "LDO",   pct: 15, color: "#06b6d4" },
+            { label: "GMX",   pct: 10, color: "#10b981" },
+          ]
+        : riskMode === "Aggressive"
+        ? [
+            { label: "GMX",    pct: 30, color: "#10b981" },
+            { label: "AAVE",   pct: 25, color: "#7c3aed" },
+            { label: "LDO",    pct: 20, color: "#06b6d4" },
+            { label: "PENDLE", pct: 15, color: "#f472b6" },
+            { label: "stETH",  pct: 10, color: "#818cf8" },
+          ]
+        : riskMode === "Growth"
+        ? [
+            { label: "AAVE",   pct: 30, color: "#7c3aed" },
+            { label: "LDO",    pct: 25, color: "#06b6d4" },
+            { label: "GMX",    pct: 25, color: "#10b981" },
+            { label: "stETH",  pct: 10, color: "#818cf8" },
+            { label: "PENDLE", pct: 10, color: "#f472b6" },
+          ]
+        : /* Balanced */ [
+            { label: "AAVE",  pct: 25, color: "#7c3aed" },
+            { label: "LDO",   pct: 20, color: "#06b6d4" },
+            { label: "stETH", pct: 20, color: "#818cf8" },
+            { label: "GMX",   pct: 20, color: "#10b981" },
+            { label: "USDC",  pct: 15, color: "#60a5fa" },
+          ]
+    : /* Bluechips */
+      riskMode === "Conservative"
+        ? [
+            { label: "USDT", pct: 30, color: "#60a5fa" },
+            { label: "BTC",  pct: 30, color: "#f97316" },
+            { label: "ETH",  pct: 20, color: "#8b5cf6" },
+            { label: "SOL",  pct: 10, color: "#22c55e" },
+            { label: "BNB",  pct: 10, color: "#fbbf24" },
+          ]
+        : riskMode === "Aggressive"
+        ? [
+            { label: "SOL",  pct: 25, color: "#22c55e" },
+            { label: "BTC",  pct: 20, color: "#f97316" },
+            { label: "BNB",  pct: 20, color: "#fbbf24" },
+            { label: "ETH",  pct: 15, color: "#8b5cf6" },
+            { label: "XRP",  pct: 20, color: "#60a5fa" },
+          ]
+        : riskMode === "Growth"
+        ? [
+            { label: "BTC",  pct: 25, color: "#f97316" },
+            { label: "ETH",  pct: 20, color: "#8b5cf6" },
+            { label: "SOL",  pct: 20, color: "#22c55e" },
+            { label: "BNB",  pct: 15, color: "#fbbf24" },
+            { label: "XRP",  pct: 20, color: "#60a5fa" },
+          ]
+        : /* Balanced */ [
+            { label: "BTC",  pct: 35, color: "#f97316" },
+            { label: "ETH",  pct: 25, color: "#8b5cf6" },
+            { label: "SOL",  pct: 15, color: "#22c55e" },
+            { label: "USDT", pct: 15, color: "#60a5fa" },
+            { label: "BNB",  pct: 10, color: "#fbbf24" },
+          ];
+
+  const tagline =
+    portfolioSegment === "Memecoins"
+      ? riskMode === "Conservative" ? "Anchored in blue chips, with targeted memecoin upside."
+        : riskMode === "Aggressive" ? "Pure momentum — built for the highest-upside memecoin cycle."
+        : "Community-driven tokens, weighted for your risk appetite."
+    : portfolioSegment === "Gaming"
+      ? riskMode === "Conservative" ? "Blue-chip anchor with selective gaming ecosystem exposure."
+        : riskMode === "Aggressive" ? "Full allocation to top gaming and metaverse protocols."
+        : "Gaming tokens with a balance of growth and stability."
+    : portfolioSegment === "Yield Farm"
+      ? riskMode === "Conservative" ? "Income-first: stablecoins and staking protocols dominate."
+        : riskMode === "Aggressive" ? "High-yield DeFi protocols positioned for maximum return."
+        : "DeFi yield strategies blending income and capital growth."
+    : riskMode === "Conservative" ? "Built to protect your capital with measured growth potential."
+    : riskMode === "Growth"       ? "Positioned for strong returns with managed downside risk."
+    : riskMode === "Aggressive"   ? "High-conviction positions built for maximum upside potential."
+    : "Built for steady growth with smart risk control.";
+
+  const segmentWhyTitle =
+    portfolioSegment === "Memecoins" ? "Your Focus: Memecoins"
+    : portfolioSegment === "Gaming"  ? "Your Focus: Gaming Tokens"
+    : portfolioSegment === "Yield Farm" ? "Your Focus: Yield & DeFi"
+    : "Your Focus: Bluechip Leaders";
+
+  const segmentWhyBody =
+    portfolioSegment === "Memecoins"
+      ? "Memecoin positions are sized to your risk level — more anchor in BTC/ETH at lower risk, more pure memecoin exposure at higher risk."
+    : portfolioSegment === "Gaming"
+      ? "Gaming tokens like IMX, RON, and GALA are weighted against blue-chip anchors based on how much volatility you're comfortable with."
+    : portfolioSegment === "Yield Farm"
+      ? "DeFi yield protocols are blended with stablecoins or aggressive high-yield positions depending on your risk setting."
+    : "Established market leaders — BTC, ETH, SOL — form the core, with allocation shifts based on your risk tolerance.";
+
+  const whyReasons = [
+    {
+      title: "Matches Your Risk",
+      body:
+        riskMode === "Conservative" ? "A defensive mix that shields your capital while still participating in crypto upside."
+        : riskMode === "Growth"     ? "A growth-weighted mix that captures upside while keeping core positions stable."
+        : riskMode === "Aggressive" ? "High-conviction positions sized for your willingness to ride volatility."
+        : "Balanced mix gives you growth potential without taking on more risk than you're comfortable with.",
+    },
+    {
+      title: "Fits Your Timeframe",
+      body:
+        investmentHorizon === "< 1 Year"  ? "Built for a short horizon — liquid, high-confidence assets that perform in the near term."
+        : investmentHorizon === "3+ Years" ? "Positioned for a long horizon, letting compounding and market cycles work for you."
+        : "Designed for 1–3 years, so it focuses on real progress, not short-term noise.",
+    },
+    { title: segmentWhyTitle, body: segmentWhyBody },
+  ];
+
+  // Build conic-gradient string
+  let cursor = 0;
+  const conicStops = sampleSlices.map(({ color, pct }) => {
+    const start = cursor;
+    cursor += pct;
+    return `${color} ${start}% ${cursor}%`;
+  }).join(", ");
+
   return (
     <section className="rounded-2xl border border-slate-300/70 bg-white/70 p-6 backdrop-blur">
-      <h2 className="text-2xl font-semibold text-slate-900">Step 2. Review & Authorize</h2>
-      <p className="mt-2 text-slate-600">Review your allocation profile and authorize execution on-chain.</p>
+      <h2 className="text-2xl font-semibold text-slate-900">Step 2. Preview Your Plan</h2>
+      <p className="mt-2 text-slate-600">
+        Based on your answers, here&apos;s a sample of the plan you&apos;ll receive.
+      </p>
 
-      <div className="mt-6 grid gap-4 md:grid-cols-4">
-        <div className="rounded-xl border border-slate-300/60 bg-slate-50/70 p-4">
-          <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Risk Tolerance</p>
-          <p className="mt-2 text-lg font-semibold text-slate-800">{riskMode}</p>
-        </div>
-        <div className="rounded-xl border border-slate-300/60 bg-slate-50/70 p-4">
-          <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Investment Timeframe</p>
-          <p className="mt-2 text-lg font-semibold text-slate-800">{investmentHorizon}</p>
-        </div>
-        <div className="rounded-xl border border-slate-300/60 bg-slate-50/70 p-4">
-          <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Portfolio Segment</p>
-          <p className="mt-2 text-lg font-semibold text-slate-800">{portfolioSegment}</p>
-        </div>
-        <div className="rounded-xl border border-slate-300/60 bg-slate-50/70 p-4">
-          <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Structured Allocation</p>
-          <p className="mt-2 text-lg font-semibold text-slate-800">${formatUsdcValue(basePriceUsdc)} USDC</p>
-        </div>
-      </div>
+      {/* Main two-column layout: purchase left, preview right */}
+      <div className="mt-6 grid gap-5 md:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
 
-      <div className="mt-4 rounded-xl border border-slate-300/60 bg-slate-50/70 p-4">
-        <label className="flex cursor-pointer items-start gap-3">
-          <input
-            type="checkbox"
-            checked={includeCertifiedDecisionRecord}
-            onChange={(event) => onToggleCertifiedDecisionRecord(event.target.checked)}
-            disabled={isPaying}
-            className="mt-1 h-4 w-4 accent-cyan-700"
-          />
-          <div className="space-y-1">
-            <p className="text-sm font-semibold text-slate-800">Add Certified Decision Report</p>
-            <p className="text-sm font-semibold text-slate-700">${formatUsdcValue(certifiedDecisionRecordFeeUsdc)} USDC</p>
-            <p className="text-xs text-slate-600">
-            Exhaustive report detailing current market conditions, allocation rationale, and token selection logic.
-            <br /><strong>Recommended for in-depth analysis and documentation.</strong>
-            </p>
-          </div>
-        </label>
-      </div>
+        {/* ── LEFT: Purchase form ── */}
+        <div className="flex flex-col gap-4">
 
-      <div className="mt-4 rounded-xl border border-slate-300/60 bg-slate-50/70 p-4">
-        <label htmlFor="review-result-email" className="block text-xs font-bold uppercase tracking-[0.12em] text-slate-500">
-          Optional Results Email
-        </label>
-        <input
-          id="review-result-email"
-          type="email"
-          value={resultEmail}
-          onChange={(event) => onResultEmailChange(event.target.value)}
-          placeholder="you@example.com"
-          className={`mt-2 w-full rounded-lg border bg-white px-3 py-2 text-sm text-slate-800 focus:outline-none ${
-            invalidResultEmail ? "border-rose-300 focus:border-rose-400" : "border-slate-300 focus:border-cyan-400"
-          }`}
-        />
-        <p className="mt-1 text-xs text-slate-500">
-          If provided, Selun will email your allocation summary after generation. If you later download the certified
-          record, the same address will be used for PDF delivery.
-        </p>
-        {invalidResultEmail && (
-          <p className="mt-2 text-xs font-medium text-rose-700">Enter a valid email address or leave this field blank.</p>
-        )}
-      </div>
+          {/* What you're buying */}
+          <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">You&apos;re Buying</p>
+            <p className="mt-1 font-semibold text-slate-900">Personalized Crypto Portfolio Plan</p>
+            <p className="mt-0.5 text-2xl font-bold text-slate-900">${formatUsdcValue(basePriceUsdc)}</p>
 
-      <div className="mt-4 rounded-xl border border-slate-300/60 bg-white/80 p-4">
-        <div className="flex items-center justify-between text-sm text-slate-700">
-          <span>Structured Allocation</span>
-          <span>${formatUsdcValue(basePriceUsdc)} USDC</span>
-        </div>
-        <div className="mt-1 flex items-center justify-between text-sm text-slate-700">
-          <span>Certified Decision Report</span>
-          <span>
-            {includeCertifiedDecisionRecord ? `$${formatUsdcValue(certifiedDecisionRecordFeeUsdc)} USDC` : "$0 USDC"}
-          </span>
-        </div>
-        {promoApplied && promoQuote && (
-          <div className="mt-1 flex items-center justify-between text-sm text-emerald-700">
-            <span>Promo Discount ({formatUsdcValue(promoQuote.discountPercent)}%)</span>
-            <span>- ${formatUsdcValue(promoQuote.discountAmountUsdc)} USDC</span>
-          </div>
-        )}
-        <div className="mt-3 flex items-center justify-between border-t border-slate-200 pt-3 text-base font-bold text-slate-950">
-          <span>Final Total</span>
-          <span>${formatUsdcValue(requiredAmountUsdc)} USDC</span>
-        </div>
-        {requiresPromoApply && (
-          <p className="mt-2 text-xs font-medium text-amber-700">
-            Apply your code to confirm the final checkout price before purchase.
-          </p>
-        )}
-        {promoApplied && promoQuote?.message && (
-          <p className="mt-2 text-xs font-medium text-emerald-700">{promoQuote.message}</p>
-        )}
-        <p className="mt-2 text-xs font-medium text-slate-500">
-          Allocation executed using Sagitta AAA v4 market-aware allocator.
-        </p>
-      </div>
-
-      {pricingError && (
-        <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
-          <p className="text-sm font-medium text-amber-700">{pricingError}</p>
-          <button
-            type="button"
-            onClick={() => void onRefreshPricing()}
-            disabled={isLoadingPricing || isPaying}
-            className="rounded-full border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold text-amber-800 transition hover:border-amber-400 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {isLoadingPricing ? "Refreshing..." : "Refresh Pricing"}
-          </button>
-        </div>
-      )}
-
-      <div className="mt-4 rounded-xl border border-slate-300/60 bg-slate-50/70 p-4">
-        <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Payment Method</p>
-        <div className="mt-3 flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => onSelectPaymentMethod("card")}
-            disabled={isPaying || isStartingCardCheckout || isConfirmingCardCheckout}
-            className={`rounded-full px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${
-              paymentMethod === "card"
-                ? "border border-slate-400 bg-slate-200 text-slate-800 shadow-[0_0_0_3px_rgba(34,211,238,0.2),0_8px_20px_rgba(34,211,238,0.18)]"
-                : "border border-slate-400 bg-white text-slate-700 hover:border-cyan-400"
-            }`}
-          >
-            Card
-          </button>
-          <button
-            type="button"
-            onClick={() => onSelectPaymentMethod("browser")}
-            disabled={isConnectingWallet || isPaying}
-            className={`rounded-full px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${
-              paymentMethod === "browser"
-                ? "border border-slate-400 bg-slate-200 text-slate-800 shadow-[0_0_0_3px_rgba(34,211,238,0.2),0_8px_20px_rgba(34,211,238,0.18)]"
-                : "border border-slate-400 bg-white text-slate-700 hover:border-cyan-400"
-            }`}
-          >
-            Browser Wallet
-          </button>
-          <button
-            type="button"
-            onClick={() => onSelectPaymentMethod("mobile")}
-            disabled={isConnectingWallet || isPaying || !walletConnectAvailable}
-            className={`rounded-full px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${
-              paymentMethod === "mobile"
-                ? "border border-slate-400 bg-slate-200 text-slate-800 shadow-[0_0_0_3px_rgba(34,211,238,0.2),0_8px_20px_rgba(34,211,238,0.18)]"
-                : "border border-slate-400 bg-white text-slate-700 hover:border-cyan-400 disabled:border-slate-300 disabled:bg-slate-100 disabled:text-slate-400"
-            }`}
-          >
-            QR / Mobile Wallet
-          </button>
-        </div>
-        <p className="mt-2 text-xs text-slate-600">
-          {isCardPayment
-            ? "Secure card checkout opens with Stripe. After payment is confirmed, you will return here and Selun will begin processing your allocation."
-            : "Crypto payment is signed by your connected wallet and then executed by the Selun agent."}
-        </p>
-      </div>
-
-      {!isCardPayment && (
-        <div className="mt-4 rounded-xl border border-slate-300/60 bg-slate-50/70 p-4">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Wallet</p>
-            <p className="mt-1 text-sm font-semibold text-slate-800">
-              {walletAddress ? `Connected: ${shortenAddress(walletAddress)}` : "Not connected"}
-            </p>
-            {walletConnectionLabel && <p className="mt-1 text-xs font-medium text-cyan-800">{walletConnectionLabel}</p>}
-            <p className="mt-1 text-xs text-slate-600">
-              Payment is signed by your connected wallet and then executed by the Selun agent.
-            </p>
-          </div>
-
-          <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={onConnectBrowserWallet}
-            disabled={isConnectingWallet || isPaying || paymentMethod !== "browser"}
-            className={`rounded-full px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${
-                paymentMethod === "browser" && (!walletAddress || walletConnectionMethod === "browser" || shouldLeadWithConnect)
-                  ? "border border-slate-400 bg-slate-200 text-slate-800 shadow-[0_0_0_3px_rgba(34,211,238,0.2),0_8px_20px_rgba(34,211,238,0.18)] hover:border-cyan-500 hover:bg-slate-100 hover:shadow-[0_0_0_4px_rgba(34,211,238,0.28),0_10px_24px_rgba(34,211,238,0.24)]"
-                  : "border border-slate-400 bg-white text-slate-700 hover:border-cyan-400"
-              }`}
-            >
-              {browserWalletButtonLabel}
-            </button>
-          <button
-            type="button"
-            onClick={onConnectQrWallet}
-            disabled={isConnectingWallet || isPaying || !walletConnectAvailable || paymentMethod !== "mobile"}
-            className={`rounded-full px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${
-                paymentMethod === "mobile" && walletAddress && walletConnectionMethod === "mobile"
-                  ? "border border-slate-400 bg-slate-200 text-slate-800 shadow-[0_0_0_3px_rgba(34,211,238,0.2),0_8px_20px_rgba(34,211,238,0.18)] hover:border-cyan-500 hover:bg-slate-100 hover:shadow-[0_0_0_4px_rgba(34,211,238,0.28),0_10px_24px_rgba(34,211,238,0.24)]"
-                  : "border border-slate-400 bg-white text-slate-700 hover:border-cyan-400 disabled:border-slate-300 disabled:bg-slate-100 disabled:text-slate-400"
-              }`}
-            >
-              {qrWalletButtonLabel}
-            </button>
-          </div>
-        </div>
-        {!walletConnectAvailable && (
-          <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-700">
-            QR / mobile wallet connection is not configured. Set <code>NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID</code> to enable it.
-          </p>
-        )}
-        {(walletConnectQrDataUrl || walletConnectUri) && (
-          <div className="mt-4 rounded-2xl border border-slate-300/60 bg-white/90 p-4">
-            <div className="flex flex-col gap-4 md:flex-row md:items-center">
-              <div className="flex min-w-[220px] justify-center">
-                {walletConnectQrDataUrl ? (
-                  <img
-                    src={walletConnectQrDataUrl}
-                    alt="WalletConnect QR code"
-                    width={220}
-                    height={220}
-                    className="rounded-2xl border border-slate-200 bg-white p-3"
-                  />
-                ) : (
-                  <div className="flex h-[220px] w-[220px] items-center justify-center rounded-2xl border border-dashed border-slate-300 bg-slate-50 text-sm text-slate-500">
-                    Waiting for QR code...
-                  </div>
-                )}
+            {/* Add-on */}
+            <label className="mt-3 flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
+              <input
+                type="checkbox"
+                checked={includeCertifiedDecisionRecord}
+                onChange={(e) => onToggleCertifiedDecisionRecord(e.target.checked)}
+                disabled={isPaying}
+                className="mt-0.5 h-4 w-4 shrink-0 accent-cyan-600"
+              />
+              <div>
+                <span className="text-[9px] font-bold uppercase tracking-[0.16em] text-cyan-700">Optional Add&#8209;on</span>
+                <p className="text-sm font-semibold text-slate-800">Detailed Reasoning Report</p>
+                <p className="text-xs text-slate-500">A deep dive into your plan. <span className="font-semibold">+${formatUsdcValue(certifiedDecisionRecordFeeUsdc)}</span></p>
               </div>
-              <div className="flex-1">
-                <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Mobile Wallet</p>
-                <h4 className="mt-2 text-lg font-semibold text-slate-900">Scan with your wallet app</h4>
-                <p className="mt-2 text-sm leading-6 text-slate-600">
-                  Open a WalletConnect-compatible wallet on your phone and scan this QR code to connect without relying on a browser extension.
-                </p>
-                {walletConnectUri && (
-                  <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
-                    <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-slate-500">Manual Link</p>
-                    <p className="mt-2 break-all font-mono text-xs text-slate-700">{walletConnectUri}</p>
-                  </div>
-                )}
-              </div>
+            </label>
+
+            {/* Total line */}
+            <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-3 text-sm font-bold text-slate-900">
+              <span>Total</span>
+              <span>${formatUsdcValue(totalPriceUsdc)}</span>
             </div>
           </div>
-        )}
 
-        <div className="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
-          <div className="rounded-lg border border-slate-300/60 bg-white/80 px-3 py-2">
-            <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-slate-500">USDC Network</p>
-            <p className="mt-1 text-sm font-semibold text-slate-800">{usdcNetworkLabel}</p>
+          {/* Payment method */}
+          <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">Payment Method</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {(["card", "browser", "mobile"] as const).map((method) => (
+                <button
+                  key={method}
+                  type="button"
+                  onClick={() => onSelectPaymentMethod(method)}
+                  disabled={isPaying || isStartingCardCheckout || isConfirmingCardCheckout || (method === "mobile" && !walletConnectAvailable)}
+                  className={`rounded-full px-3 py-1.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                    paymentMethod === method
+                      ? "bg-slate-900 text-white shadow"
+                      : "border border-slate-300 bg-white text-slate-700 hover:border-cyan-400"
+                  }`}
+                >
+                  {method === "card" ? "Card" : method === "browser" ? "Browser Wallet" : "QR / Mobile"}
+                </button>
+              ))}
+            </div>
+
+            {/* Wallet connection (non-card) */}
+            {!isCardPayment && (
+              <div className="mt-3 space-y-2">
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={onConnectBrowserWallet}
+                    disabled={isConnectingWallet || isPaying || paymentMethod !== "browser"}
+                    className={`rounded-full px-3 py-1.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                      paymentMethod === "browser" ? "border border-cyan-500 bg-cyan-50 text-cyan-800 hover:bg-cyan-100" : "border border-slate-300 bg-white text-slate-500"
+                    }`}
+                  >
+                    {isConnectingWallet && connectingWalletMethod === "browser" ? "Connecting..." : walletAddress && walletConnectionMethod === "browser" ? "Reconnect Browser" : "Connect Browser"}
+                  </button>
+                  {walletConnectAvailable && (
+                    <button
+                      type="button"
+                      onClick={onConnectQrWallet}
+                      disabled={isConnectingWallet || isPaying || paymentMethod !== "mobile"}
+                      className={`rounded-full px-3 py-1.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                        paymentMethod === "mobile" ? "border border-cyan-500 bg-cyan-50 text-cyan-800 hover:bg-cyan-100" : "border border-slate-300 bg-white text-slate-500"
+                      }`}
+                    >
+                      {isConnectingWallet && connectingWalletMethod === "mobile" ? "Connecting..." : "Connect QR / Mobile"}
+                    </button>
+                  )}
+                </div>
+
+                {walletAddress && (
+                  <p className="text-xs font-medium text-slate-600">
+                    Connected: <span className="font-mono text-slate-800">{shortenAddress(walletAddress)}</span>
+                    {walletConnectionLabel && <span className="ml-1 text-slate-400">({walletConnectionLabel})</span>}
+                  </p>
+                )}
+
+                {/* QR code */}
+                {walletConnectQrDataUrl && paymentMethod === "mobile" && (
+                  <div className="flex justify-center pt-1">
+                    <img src={walletConnectQrDataUrl} alt="WalletConnect QR" width={160} height={160} className="rounded-xl border border-slate-200 bg-white p-2" />
+                  </div>
+                )}
+
+                {/* USDC balance */}
+                <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs">
+                  <span className="text-slate-500">USDC available</span>
+                  <div className="flex items-center gap-2">
+                    <span className={`font-semibold ${isBalanceLow && walletAddress ? "text-rose-600" : "text-slate-800"}`}>
+                      {walletAddress ? (isLoadingUsdcBalance ? "Checking…" : usdcBalance !== null ? `${formatUsdcValue(usdcBalance)} USDC` : "Unavailable") : "—"}
+                    </span>
+                    <button type="button" onClick={onRefreshUsdcBalance} disabled={!walletAddress || isLoadingUsdcBalance || isPaying} className="text-cyan-700 underline disabled:cursor-not-allowed disabled:opacity-40">Refresh</button>
+                  </div>
+                </div>
+                {usdcBalanceError && <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700">{usdcBalanceError}</p>}
+                {isBalanceLow && walletAddress && !usdcBalanceError && (
+                  <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700">
+                    Insufficient USDC on {usdcNetworkLabel}. Required: {formatUsdcValue(requiredAmountUsdc)} USDC.
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* Promo code */}
+            <div className="mt-3 border-t border-slate-100 pt-3">
+              <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400">Promo Code</p>
+              <div className="mt-1 flex gap-2">
+                <input
+                  type="text"
+                  value={promoCode}
+                  onChange={(e) => onPromoCodeChange(e.target.value)}
+                  placeholder={isCardPayment ? "Enter at checkout" : "Enter code"}
+                  disabled={isPaying || isApplyingPromoCode || isCardPayment}
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-800 outline-none focus:border-cyan-400 disabled:bg-slate-100"
+                />
+                {!isCardPayment && (
+                  <button
+                    type="button"
+                    onClick={() => void onApplyPromoCode()}
+                    disabled={!walletAddress || !promoCode.trim() || isPaying || isApplyingPromoCode}
+                    className="shrink-0 rounded-full border border-cyan-500 bg-cyan-50 px-3 py-1.5 text-xs font-semibold text-cyan-800 transition hover:bg-cyan-100 disabled:cursor-not-allowed disabled:border-slate-300 disabled:bg-slate-100 disabled:text-slate-400"
+                  >
+                    {isApplyingPromoCode ? "Applying…" : promoApplied ? "Applied" : "Apply"}
+                  </button>
+                )}
+              </div>
+              {promoApplied && promoQuote?.message && <p className="mt-1 text-xs text-emerald-700">{promoQuote.message}</p>}
+              {promoQuoteError && <p className="mt-1 text-xs text-rose-700">{promoQuoteError}</p>}
+            </div>
           </div>
 
+          {/* Email */}
+          <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            <label htmlFor="review-email" className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">
+              Results Email <span className="normal-case font-normal text-slate-400">(optional)</span>
+            </label>
+            <input
+              id="review-email"
+              type="email"
+              value={resultEmail}
+              onChange={(e) => onResultEmailChange(e.target.value)}
+              placeholder="you@example.com"
+              className={`mt-1.5 w-full rounded-lg border bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-cyan-300 ${
+                invalidResultEmail ? "border-rose-300" : "border-slate-300 focus:border-cyan-400"
+              }`}
+            />
+            <p className="mt-1 text-xs text-slate-400">We&apos;ll email your plan summary when it&apos;s ready.</p>
+            {invalidResultEmail && <p className="mt-1 text-xs font-medium text-rose-600">Enter a valid email or leave blank.</p>}
+          </div>
+
+          {/* Errors */}
+          {pricingError && (
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+              <p className="text-xs font-medium text-amber-700">{pricingError}</p>
+              <button type="button" onClick={() => void onRefreshPricing()} disabled={isLoadingPricing || isPaying} className="shrink-0 rounded-full border border-amber-300 bg-white px-3 py-1 text-xs font-semibold text-amber-800 hover:border-amber-400 disabled:opacity-50">
+                {isLoadingPricing ? "Refreshing…" : "Refresh"}
+              </button>
+            </div>
+          )}
+          {paymentError && <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700">{paymentError}</p>}
+
+          {/* CTA */}
           <button
             type="button"
-            onClick={onRefreshUsdcBalance}
-            disabled={!walletAddress || isLoadingUsdcBalance || isPaying}
-            className="self-end rounded-full border border-slate-400 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-cyan-400 disabled:cursor-not-allowed disabled:opacity-50"
+            onClick={onGenerate}
+            disabled={!canGenerate}
+            className="w-full rounded-full bg-emerald-500 py-3.5 text-sm font-bold text-white shadow-lg transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500 disabled:shadow-none"
           >
-            {isLoadingUsdcBalance ? "Checking..." : "Refresh Balance"}
+            {authorizeLabel.replace("Generate Allocation", "Continue to Checkout →").replace("Authorize", "Pay")}
           </button>
+          <p className="text-center text-xs text-slate-400">Secure checkout &bull; Takes 1 minute</p>
         </div>
 
-        <div className="mt-3 rounded-lg border border-slate-300/60 bg-white/80 px-3 py-2">
-          <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-slate-500">USDC Available</p>
-          <p className="mt-1 text-lg font-semibold text-slate-900">
-            {walletAddress
-              ? isLoadingUsdcBalance
-                ? "Checking..."
-                : usdcBalance !== null
-                  ? `${formatUsdcValue(usdcBalance)} USDC`
-                  : "Unavailable"
-              : "Connect wallet to check"}
-          </p>
-          <p className="text-xs text-slate-600">Required: {formatUsdcValue(requiredAmountUsdc)} USDC</p>
+        {/* ── RIGHT: Preview ── */}
+        <div className="flex flex-col gap-4">
+
+          {/* Sample plan card */}
+          <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+            <span className="inline-block rounded-full border border-slate-300 bg-slate-100 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">
+              Sample Plan
+            </span>
+            <h3 className="mt-3 text-xl font-semibold text-slate-900">{riskMode} &bull; {investmentHorizon} &bull; {portfolioSegment}</h3>
+            <p className="mt-1 text-sm text-slate-500">{tagline}</p>
+
+            <hr className="my-4 border-slate-100" />
+
+            <div className="flex items-center gap-6">
+              <div className="relative shrink-0" style={{ width: 140, height: 140 }}>
+                <div className="rounded-full" style={{ width: 140, height: 140, background: `conic-gradient(${conicStops})` }} />
+                <div className="absolute flex flex-col items-center justify-center rounded-full bg-white text-center" style={{ width: 72, height: 72, top: "50%", left: "50%", transform: "translate(-50%,-50%)" }}>
+                  <span className="text-[9px] font-bold uppercase leading-tight tracking-[0.1em] text-slate-400">Example<br />Only</span>
+                </div>
+              </div>
+              <ul className="flex flex-col gap-2">
+                {sampleSlices.map(({ label, pct, color }) => (
+                  <li key={label} className="flex items-center gap-2 text-sm">
+                    <span className="inline-block h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: color }} />
+                    <span className="font-medium text-slate-800">{label}</span>
+                    <span className="ml-auto pl-3 font-semibold text-slate-900">{pct}%</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            <div className="mt-4 rounded-xl border border-slate-100 bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-600">
+              This is just a preview. Your full plan will include{" "}
+              <strong>exact percentages</strong>, <strong>clear reasoning</strong>, and a{" "}
+              <strong>plain-English explanation</strong> made just for you.
+            </div>
+          </div>
+
+          {/* Why this works */}
+          <div className="rounded-xl border border-blue-100 bg-blue-50/60 p-5">
+            <p className="text-xs font-bold uppercase tracking-[0.18em] text-blue-700">Why This Works for You</p>
+            <div className="mt-4 flex flex-col gap-3">
+              {whyReasons.map(({ title, body }) => (
+                <div key={title} className="rounded-xl border border-blue-100 bg-white p-4 shadow-sm">
+                  <p className="font-semibold text-slate-900">{title}</p>
+                  <p className="mt-1 text-sm leading-6 text-slate-600">{body}</p>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
-
-        {usdcBalanceError && (
-          <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-700">
-            {usdcBalanceError}
-          </p>
-        )}
-
-        {walletAddress && requiresUsdcBalance && isBalanceLow && !usdcBalanceError && !requiresPromoApply && (
-          <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-700">
-            Low USDC balance on {usdcNetworkLabel}. Add funds before continuing.
-          </p>
-        )}
-      </div>
-      )}
-
-      <div className="mt-4 rounded-xl border border-slate-300/60 bg-slate-50/70 p-4">
-        <label className="block text-xs font-bold uppercase tracking-[0.16em] text-slate-500" htmlFor="promo-code-input">
-          Promo Code (Optional)
-        </label>
-        <div className="mt-2 grid gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
-          <input
-            id="promo-code-input"
-            type="text"
-            value={promoCode}
-            onChange={(event) => onPromoCodeChange(event.target.value)}
-            placeholder={isCardPayment ? "Enter code at secure checkout" : "Enter promo code"}
-            disabled={isPaying || isApplyingPromoCode || isCardPayment}
-            className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-800 outline-none ring-cyan-500/30 transition placeholder:text-slate-400 focus:border-cyan-400 focus:ring-4 disabled:cursor-not-allowed disabled:bg-slate-100"
-          />
-          <button
-            type="button"
-            onClick={() => void onApplyPromoCode()}
-            disabled={!walletAddress || !hasPromoCode || isPaying || isApplyingPromoCode || isCardPayment}
-            className="rounded-full border border-cyan-500 bg-cyan-50 px-4 py-2 text-sm font-semibold text-cyan-800 transition hover:bg-cyan-100 disabled:cursor-not-allowed disabled:border-slate-300 disabled:bg-slate-100 disabled:text-slate-400"
-          >
-            {isApplyingPromoCode ? "Applying..." : promoApplied ? "Code Applied" : "Apply Code"}
-          </button>
-        </div>
-        {isCardPayment && (
-          <p className="mt-2 text-xs font-medium text-slate-600">Promotion codes are entered on the secure Stripe checkout page.</p>
-        )}
-        {!walletAddress && (
-          <p className="mt-2 text-xs font-medium text-amber-700">
-            {isCardPayment ? "Wallet connection is not required for card checkout." : "Connect wallet first, then apply promo code."}
-          </p>
-        )}
-        {walletAddress && !isCardPayment && (
-          <p className="mt-2 text-xs text-slate-600">
-            Apply code first to lock preview pricing before purchase.
-          </p>
-        )}
-        {promoQuoteError && (
-          <p className="mt-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-medium text-rose-700">
-            {promoQuoteError}
-          </p>
-        )}
       </div>
 
-      {paymentError && (
-        <p className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-medium text-rose-700">
-          {paymentError}
-        </p>
-      )}
-
-      <div className="mt-6 flex items-center justify-between gap-3">
+      <div className="mt-6 flex items-center border-t border-slate-200 pt-5">
         <button
           type="button"
           onClick={onBack}
           disabled={isPaying}
-          className="rounded-full border border-slate-400 bg-white px-5 py-2.5 text-sm font-semibold text-slate-700 transition hover:border-slate-500 disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex items-center justify-center rounded-full bg-cyan-500 px-8 py-3.5 text-base font-semibold text-slate-950 shadow-sm transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          Back
-        </button>
-        <button
-          type="button"
-          onClick={onGenerate}
-          disabled={!canGenerate}
-          className="rounded-full bg-cyan-500 px-5 py-2.5 text-sm font-semibold text-slate-950 shadow-sm transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500 disabled:shadow-none"
-        >
-          {authorizeLabel}
+          ← Back to questions
         </button>
       </div>
     </section>
@@ -2685,8 +2782,8 @@ function ProcessingStepView({
 
   return (
     <section className="rounded-2xl border border-slate-300/70 bg-white/70 p-6 backdrop-blur">
-      <h2 className="text-2xl font-semibold text-slate-900">Step 3. Agent Execution</h2>
-      <p className="mt-2 text-slate-600">Selun is analyzing market conditions and constructing your allocation.</p>
+      <h2 className="text-2xl font-semibold text-slate-900">Step 3. Market Analysis</h2>
+      <p className="mt-2 text-slate-600">Selun is analyzing market conditions and constructing your plan.</p>
 
       <div className="mt-5 h-2 w-full overflow-hidden rounded-full bg-slate-200">
         <div
@@ -3450,16 +3547,16 @@ function CompleteStep({
 
   return (
     <section className="rounded-2xl border border-slate-300/70 bg-white/70 p-6 backdrop-blur">
-      <h2 className="text-2xl font-semibold text-slate-900">Step 4. Allocation Complete</h2>
+      <h2 className="text-2xl font-semibold text-slate-900">Step 4. Plan Complete</h2>
       <p className="mt-2 text-slate-600">
         {phase7Enabled
-          ? "Allocation executed successfully. Certified Decision Report is ready."
-          : "Allocation executed successfully. Structured Decision Report not included in this run."}
+          ? "Plan executed successfully. Detailed Report is ready."
+          : "Plan executed successfully."}
       </p>
 
       {(walletAddress || agentPaymentReceipt) && (
         <div className="mt-4 rounded-xl border border-emerald-300/80 bg-emerald-50 px-4 py-3">
-          <p className="text-sm font-semibold text-emerald-900">Allocation executed via Selun Agent</p>
+          <p className="text-sm font-semibold text-emerald-900">Plan executed via Selun Agent</p>
           <p className="mt-1 text-xs text-emerald-900/80">
             Wallet: {walletAddress ? shortenAddress(walletAddress) : "n/a"} | Decision ID{" "}
             {agentPaymentReceipt?.decisionId ?? "n/a"}
@@ -3532,7 +3629,7 @@ function CompleteStep({
           <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Tier 2 - Portfolio Summary</p>
           <div className="mt-3 flex flex-wrap items-end justify-between gap-4">
             <div>
-              <p className="text-sm font-medium text-slate-600">Portfolio USD</p>
+              <p className="text-sm font-medium text-slate-600">Investment Calculator (USD)</p>
               <div className="mt-1 inline-flex items-center rounded-lg border border-slate-300 bg-white">
                 <button
                   type="button"
@@ -5325,12 +5422,12 @@ const handleStartOver = () => {
             </Link>
 
             <div>
-              <p className="text-xs font-bold uppercase tracking-[0.24em] text-cyan-700">SELUN AGENT</p>
+              <p className="text-xs font-bold uppercase tracking-[0.24em] text-cyan-700">SELUN</p>
               <h1 className="mt-2 text-3xl font-semibold tracking-tight text-slate-900 md:text-5xl">
-                Crypto Allocation Agent
+                Your Crypto Portfolio Plan
               </h1>
               <p className="mt-2 text-slate-600">
-              Smart allocation designed for current market conditions.
+              A strategy for your investment style and today&apos;s market.
               </p>
             </div>
           </div>
@@ -5348,7 +5445,6 @@ const handleStartOver = () => {
         {WIZARD_FLOW.map((state, index) => {
           const isActive = wizardState === state;
           const isComplete = WIZARD_FLOW.indexOf(wizardState) > index;
-          const stateLabel = state.charAt(0) + state.slice(1).toLowerCase();
 
           return (
             <div
@@ -5372,7 +5468,12 @@ const handleStartOver = () => {
               >
                 {index + 1}
               </span>
-              <span className="truncate">{stateLabel}</span>
+              <span className="truncate">{
+                state === "CONFIGURE" ? "Your Profile"
+                : state === "REVIEW" ? "Preview Your Plan"
+                : state === "PROCESSING" ? "Market Analysis"
+                : "Get Your Plan"
+              }</span>
             </div>
           );
         })}

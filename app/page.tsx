@@ -14,9 +14,38 @@ import {
   stripReferralParam,
 } from "@/app/lib/referral";
 
-const DECORATIVE_STEPS = ["1. Risk Tolerance", "2. Crypto Assets", "3. Decision Report"] as const;
-const TOKEN_CONTRACT = "0xc0ffee254729296a45a3885639AC7E10F9d54979";
-const TOKEN_TICKER = "$SELUN";
+const DECORATIVE_STEPS = ["1. Your Profile", "2. Market Check", "3. Your Portfolio Plan"] as const;
+
+const SAMPLE_CONDITION = {
+  label: "BALANCED",
+  strategy: "Balanced Growth",
+  tags: ["Portfolio Strategy", "Market Analysis", "Crypto Education", "Investment Calculator"],
+} as const;
+
+const SAMPLE_GROUPS = [
+  {
+    heading: "STABLE HOLDINGS — 15%",
+    assets: [
+      { ticker: "USDT", name: "Tether", role: "Defensive", pct: 15 },
+    ],
+  },
+  {
+    heading: "CORE HOLDINGS — 45%",
+    assets: [
+      { ticker: "BTC", name: "Bitcoin", role: "Core", pct: 25 },
+      { ticker: "ETH", name: "Ethereum", role: "Core", pct: 20 },
+    ],
+  },
+  {
+    heading: "GROWTH POSITIONS — 40%",
+    assets: [
+      { ticker: "SOL", name: "Solana", role: "Growth", pct: 15 },
+      { ticker: "BNB", name: "BNB", role: "Growth", pct: 10 },
+      { ticker: "XRP", name: "XRP", role: "Growth", pct: 8 },
+      { ticker: "LINK", name: "Chainlink", role: "Growth", pct: 7 },
+    ],
+  },
+] as const;
 
 type ActivationPhase = "idle" | "activating" | "redirecting";
 
@@ -28,31 +57,10 @@ function HomeContent() {
   const redirectTimerRef = useRef<number | null>(null);
 
   const currentYear = new Date().getFullYear();
-  const tokenLabel = `${TOKEN_CONTRACT.slice(0, 8)}...${TOKEN_CONTRACT.slice(-6)}`;
   const isBusy = phase !== "idle";
   const referralCode = normalizeReferralCode(searchParams.get("ref"));
   const trackedAgentReferralRef = useRef<string | null>(null);
 
-  const ctaLabel =
-  phase === "idle"
-    ? "Engage Selun"
-    : phase === "activating"
-    ? "Engaging Selun..."
-    : "Opening Allocation Wizard...";
-
-const coreEyebrow =
-  phase === "idle"
-    ? "SELUN AGENT"
-    : phase === "activating"
-    ? "ENGAGING SELUN"
-    : "SELUN AGENT";
-
-const coreTitle =
-  phase === "idle"
-    ? "LIVE"
-    : phase === "activating"
-    ? "ONLINE"
-    : "READY";
 
   const handleEngage = useCallback(() => {
     if (isBusy) return;
@@ -144,55 +152,70 @@ const coreTitle =
         </header>
 
         <section className={`${styles.hero} ${styles.reveal} ${styles.delay1}`}>
-          <div className={styles.heroCopy}>
-            <p className={styles.eyebrow}>Sagitta AAA - Allocator v4</p>
-            <h1>Simple Crypto Allocation</h1>
-            <p className={styles.subhead}>Powered by Market Intelligence.</p>
-          </div>
-
-          <div className={styles.hudStage} aria-label="Selun decision status">
-            <div
-              className={`${styles.hud} ${
-                phase === "activating" ? styles.hudActivating : phase === "redirecting" ? styles.hudRedirecting : ""
-              }`}
-            >
-              <div className={styles.hudRingA} />
-              <div className={styles.hudRingB} />
-              <div className={styles.hudRingC} />
-              <div className={styles.hudCore}>
-                <span>{coreEyebrow}</span>
-                <strong>{coreTitle}</strong>
+          <div className={styles.planGrid}>
+            <div className={styles.planCopy}>
+              <div className={styles.signalRow} style={{ marginBottom: 20 }}>
+                {DECORATIVE_STEPS.map((item) => (
+                  <span key={item} className={styles.signalChip}>{item}</span>
+                ))}
               </div>
+              <h1 className={styles.planHeadline}>Get Your Crypto Portfolio Plan</h1>
+              <p className={styles.planDesc}>
+                Answer 3 quick questions and see a recommended crypto plan for your risk level,
+                time horizon, and current market conditions.
+              </p>
+              <button
+                type="button"
+                className={`${styles.primaryCta} ${styles.talkingCta} ${isBusy ? styles.talkingCtaActivating : ""}`}
+                onClick={handleEngage}
+                disabled={isBusy}
+              >
+                {phase === "idle" ? "Start My Plan" : phase === "activating" ? "Loading..." : "Opening..."}
+              </button>
+              <p className={styles.planPriceNote}>
+              For $19, you get recommended assets, target percentages, and a plain-English explanation of why the plan fits you.
+              </p>
+              <p className={styles.planDisclaimer}>No wallet required for card checkout.</p>
             </div>
 
-            <button
-              type="button"
-              className={`${styles.primaryCta} ${styles.talkingCta} ${
-                phase !== "idle" ? styles.talkingCtaActivating : ""
-              }`}
-              onClick={handleEngage}
-              disabled={isBusy}
-            >
-              {ctaLabel}
-            </button>
+            <div className={styles.planCard}>
+              <p className={styles.planCardLabel}>Sample Plan</p>
+              <div className={styles.sampleCondition}>
+                <span className={styles.sampleConditionBadge}>{SAMPLE_CONDITION.label}</span>
+                <span className={styles.sampleStrategy}>Strategy: {SAMPLE_CONDITION.strategy}</span>
+              </div>
+              <div className={styles.sampleTags}>
+                {SAMPLE_CONDITION.tags.map((tag) => (
+                  <span key={tag} className={styles.sampleTag}>{tag}</span>
+                ))}
+              </div>
+              <div className={styles.sampleGroups}>
+                {SAMPLE_GROUPS.map((group) => (
+                  <div key={group.heading} className={styles.sampleGroup}>
+                    <p className={styles.sampleGroupHeading}>{group.heading}</p>
+                    {group.assets.map(({ ticker, name, role, pct }) => (
+                      <div key={ticker} className={styles.sampleAssetRow}>
+                        <div className={styles.sampleAssetMeta}>
+                          <span className={styles.sampleTicker}>{ticker}</span>
+                          <span className={styles.sampleName}>{name}</span>
+                          <span className={styles.sampleRole}>{role}</span>
+                        </div>
+                        <div className={styles.sampleAssetRight}>
+                          <span className={styles.samplePct}>{pct}%</span>
+                          <div className={styles.planBar}>
+                            <div className={styles.planBarFill} style={{ width: `${pct * 2.8}%` }} />
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+              <p className={styles.planCardCaption}>
+                Sample only. Your plan is generated fresh from current market conditions.
+              </p>
+            </div>
           </div>
-        </section>
-
-        <section id="loop" className={`${styles.loopSection} ${styles.reveal} ${styles.delay2}`}>
-          <div className={styles.signalRow}>
-            {DECORATIVE_STEPS.map((item) => (
-              <span key={item} className={styles.signalChip}>
-                {item}
-              </span>
-            ))}
-          </div>
-        </section>
-
-        <section id="access" className={`${styles.ctaBand} ${styles.reveal} ${styles.delay3}`}>
-          <p>In and out in seconds.</p>
-          <a className={styles.secondaryCta} href="mailto:selun@sagitta.systems?subject=Selun%20Team%20Inquiry">
-            Contact Team
-          </a>
         </section>
 
         <footer className={styles.siteFooter}>
