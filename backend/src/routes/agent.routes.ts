@@ -3,6 +3,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { createFacilitatorConfig } from "@coinbase/x402";
 import { encodePaymentResponseHeader } from "@x402/core/http";
 import { HTTPFacilitatorClient, type HTTPRequestContext, type ProcessSettleSuccessResponse, type RouteConfig, x402ResourceServer } from "@x402/core/server";
+import { PayAIFacilitatorClient } from "../services/payai-facilitator-client";
 import type { Network, PaymentRequirements } from "@x402/core/types";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { ExactSvmScheme as ExactSvmServerScheme } from "@x402/svm/exact/server";
@@ -678,7 +679,7 @@ function getX402MainnetFacilitatorApiKeySecret() {
   return raw ? normalizeSecret(raw) : getConfig().coinbaseApiSecret;
 }
 
-function createX402FacilitatorClients(): HTTPFacilitatorClient | HTTPFacilitatorClient[] {
+function createX402FacilitatorClients(): HTTPFacilitatorClient | (HTTPFacilitatorClient | PayAIFacilitatorClient)[] {
   const primaryClient =
     getConfig().networkId === "base-mainnet"
       ? new HTTPFacilitatorClient(
@@ -692,7 +693,9 @@ function createX402FacilitatorClients(): HTTPFacilitatorClient | HTTPFacilitator
   const payAiUrl = process.env.PAYAI_FACILITATOR_URL?.trim();
   if (!payAiUrl) return primaryClient;
 
-  return [primaryClient, new HTTPFacilitatorClient({ url: payAiUrl })];
+  // payAI goes first so its getSupported() (filtered to non-eip155) registers Solana/etc.
+  // CDP is second and wins for eip155:8453 (Base) since payAI excludes it.
+  return [new PayAIFacilitatorClient(payAiUrl), primaryClient];
 }
 
 function getX402MaxTimeoutSeconds() {
