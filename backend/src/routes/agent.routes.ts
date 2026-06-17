@@ -975,7 +975,7 @@ function getX402ToolDefinitions(): X402ToolDefinition[] {
       routePath: "/agent/x402/sce/continuity-mode",
       title: "Selun SCE Continuity Mode",
       description:
-        "Evaluates continuity mode for an on-chain scope. Accepts `scope` (global | chain | threat_family | doctrine_tag), `chain_id` (integer), `threat_family`, `doctrine_tag`, and `requested_action`. Returns `mode` (NORMAL | INCIDENT | DEGRADED), `recommended_posture`, `reason_codes`, `risk_domains`, and `recommended_next` from the Sagitta Continuity Engine. If `mode` is not NORMAL, escalate to risk-evaluate. Use as the default pre-execution check before any protocol interaction or capital movement.",
+        "Pre-execution safety check. Returns `mode` (NORMAL | INCIDENT | DEGRADED), `recommended_posture`, `reason_codes`, and per-domain `risk_domains`. If mode !== NORMAL or recommended_posture is require_review or pause, call /agent/x402/sce/risk-evaluate before proceeding. Call this before any protocol interaction, routing, rebalance, or capital movement.",
       category: "intelligence:continuity-mode",
       tags: ["sce", "continuity-mode", "active-intelligence", "agent-safety", "execution-preflight", "continuity-intelligence", "doctrine-action", "protocol-risk", "x402"],
       amountUsdc: () => getX402ToolPriceUsdc("sce_continuity_mode"),
@@ -1023,7 +1023,7 @@ function getX402ToolDefinitions(): X402ToolDefinition[] {
       routePath: "/agent/x402/sce/case-relevance",
       title: "Selun SCE Case Relevance",
       description:
-        "Classifies whether a protocol, asset type, or threat family is relevant to the active SCE intelligence context. Accepts `protocol_name`, `chain_id` (integer), `asset_types`, `threat_families`, `doctrine_tags`, and `requested_action`. Returns `relevance_score`, `reason_codes`, and `valid_until`. Use to screen case-library candidates and filter irrelevant execution paths before committing capital.",
+        "Classifies whether a protocol or threat family is active in the SCE corpus. Returns `relevance_level` (NONE | LOW | MEDIUM | HIGH), `relevance_score`, `matched_threat_families`, and `matched_doctrine_tags`. Only call when you already have specific threat context to evaluate — not a default preflight. Pass `threat_families`, `doctrine_tags`, or `protocol_name` to get a meaningful result.",
       category: "intelligence:case-relevance",
       tags: ["sce", "case-relevance", "active-intelligence", "agent-safety", "execution-preflight", "case-library", "protocol-risk", "x402"],
       amountUsdc: () => getX402ToolPriceUsdc("sce_case_relevance"),
@@ -1076,7 +1076,7 @@ function getX402ToolDefinitions(): X402ToolDefinition[] {
       routePath: "/agent/x402/sce/risk-evaluate",
       title: "Selun SCE Risk Evaluate",
       description:
-        "Scores and classifies protocol risk across one or more on-chain addresses. Accepts `protocol_name`, `chain_id` (integer), `addresses`, `asset_types`, `threat_families`, `doctrine_tags`, `requested_action`, and `risk_tolerance`. Returns `risk_domains`, `reason_codes`, `doctrine_action`, and `valid_until`. Use for execution preflight risk-gating and doctrine-action routing in autonomous agent workflows.",
+        "Protocol risk gate. Returns `doctrine_action` (BLOCK | ALLOW | ESCALATE), `risk_level`, `risk_score`, and per-domain `risk_domains`. If doctrine_action === BLOCK, halt the action and return `reason_codes` and `recommended_next` to the user. Recheck after `valid_until`. Call this when continuity-mode returns mode !== NORMAL or recommended_posture is require_review or pause.",
       category: "intelligence:risk-evaluate",
       tags: ["sce", "risk-evaluate", "active-intelligence", "agent-safety", "execution-preflight", "doctrine-action", "case-library", "protocol-risk", "x402"],
       amountUsdc: () => getX402ToolPriceUsdc("sce_risk_evaluate"),
