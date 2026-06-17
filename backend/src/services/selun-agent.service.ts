@@ -169,6 +169,7 @@ export type TreasuryWalletSetupSnapshot = {
   ownerName: string;
   smartAccountName: string;
   paymasterUrl: string | null;
+  solanaAddress: string | null;
   owner: TreasuryOwnerWalletSnapshot | null;
   smartAccount: TreasurySmartAccountSnapshot | null;
 };
@@ -1229,6 +1230,7 @@ export async function getTreasuryWalletSetupSnapshot(): Promise<TreasuryWalletSe
     ownerName: config.treasuryOwnerName,
     smartAccountName: config.treasurySmartAccountName,
     paymasterUrl: config.treasuryPaymasterUrl,
+    solanaAddress: config.treasurySolanaAddress,
     owner: resolvedOwnerAccount ? await buildTreasuryOwnerWalletSnapshot(resolvedOwnerAccount) : null,
     smartAccount: smartAccount
       ? await buildTreasurySmartAccountSnapshot({
@@ -1263,6 +1265,7 @@ export async function ensureTreasurySmartAccount(): Promise<TreasuryWalletSetupS
     ownerName: config.treasuryOwnerName,
     smartAccountName: config.treasurySmartAccountName,
     paymasterUrl: config.treasuryPaymasterUrl,
+    solanaAddress: config.treasurySolanaAddress,
     owner: await buildTreasuryOwnerWalletSnapshot({
       name: ownerAccount.name,
       address: ownerAccount.address,

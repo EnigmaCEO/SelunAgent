@@ -57,6 +57,7 @@ type TreasuryWalletSetupSnapshot = {
   ownerName: string;
   smartAccountName: string;
   paymasterUrl: string | null;
+  solanaAddress: string | null;
   owner: TreasuryOwnerWalletSnapshot | null;
   smartAccount: TreasurySmartAccountSnapshot | null;
 };
@@ -532,6 +533,13 @@ export default function AdminPage() {
                   <strong>{overview.treasury.smartAccount?.ownerAddresses.length ?? 0} owner(s)</strong>
                   <small>Policies: {overview.treasury.smartAccount?.policies.length ?? 0}</small>
                 </article>
+                {overview.treasury.solanaAddress ? (
+                  <article className={styles.metricCard}>
+                    <span>Solana treasury</span>
+                    <strong>{overview.treasury.solanaAddress}</strong>
+                    <small>Solana mainnet · x402 payTo</small>
+                  </article>
+                ) : null}
               </div>
             </section>
 
