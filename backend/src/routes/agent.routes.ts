@@ -5,6 +5,7 @@ import { encodePaymentResponseHeader } from "@x402/core/http";
 import { HTTPFacilitatorClient, type HTTPRequestContext, type ProcessSettleSuccessResponse, type RouteConfig, x402ResourceServer } from "@x402/core/server";
 import type { Network, PaymentRequirements } from "@x402/core/types";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
+import { ExactSvmScheme as ExactSvmServerScheme } from "@x402/svm/exact/server";
 import { SOLANA_MAINNET_CAIP2, USDC_MAINNET_ADDRESS as USDC_SOLANA_MAINNET_ADDRESS, validateSvmAddress } from "@x402/svm";
 import { ExpressAdapter, x402HTTPResourceServer } from "@x402/express";
 import { bazaarResourceServerExtension, declareDiscoveryExtension } from "@x402/extensions/bazaar";
@@ -1440,6 +1441,9 @@ async function getX402SellerServer(): Promise<x402ResourceServer> {
     x402SellerServerInitPromise = (async () => {
       const server = new x402ResourceServer(createX402FacilitatorClient());
       server.register(toCaip2Network(getConfig().networkId) as Network, new ExactEvmScheme());
+      if (getConfig().treasurySolanaAddress) {
+        server.register(SOLANA_MAINNET_CAIP2 as Network, new ExactSvmServerScheme());
+      }
       server.registerExtension(bazaarResourceServerExtension);
       await server.initialize();
       x402SellerServer = server;
