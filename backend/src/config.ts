@@ -14,6 +14,7 @@ export type SelunBackendConfig = {
   treasurySmartAccountName: string;
   treasurySmartAccountAddress: Address | null;
   treasuryPaymasterUrl: string | null;
+  treasurySolanaAddress: string | null;
   baseRpc: string;
   usdcContractAddress: Address;
   networkId: SupportedBaseNetwork;
@@ -122,6 +123,7 @@ export function getConfig(): SelunBackendConfig {
     treasurySmartAccountName,
     treasurySmartAccountAddress,
     treasuryPaymasterUrl: parseOptionalText(process.env.SELUN_TREASURY_PAYMASTER_URL),
+    treasurySolanaAddress: parseOptionalText(process.env.SELUN_TREASURY_SOLANA_ADDRESS),
     baseRpc,
     usdcContractAddress: usdcContractRaw,
     networkId,

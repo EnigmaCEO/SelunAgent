@@ -5,6 +5,7 @@ import { encodePaymentResponseHeader } from "@x402/core/http";
 import { HTTPFacilitatorClient, type HTTPRequestContext, type ProcessSettleSuccessResponse, type RouteConfig, x402ResourceServer } from "@x402/core/server";
 import type { Network, PaymentRequirements } from "@x402/core/types";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
+import { SOLANA_MAINNET_CAIP2, USDC_MAINNET_ADDRESS as USDC_SOLANA_MAINNET_ADDRESS, validateSvmAddress } from "@x402/svm";
 import { ExpressAdapter, x402HTTPResourceServer } from "@x402/express";
 import { bazaarResourceServerExtension, declareDiscoveryExtension } from "@x402/extensions/bazaar";
 import { formatUnits, isAddress, parseUnits } from "viem";
@@ -1539,6 +1540,21 @@ function buildToolChallengeBody(params: {
   };
 }
 
+function buildSolanaToolRequirement(productId: X402ToolProductId): { scheme: string; payTo: string; price: { amount: string; asset: string }; network: Network; maxTimeoutSeconds: number } | null {
+  const solanaAddress = getConfig().treasurySolanaAddress;
+  if (!solanaAddress || !validateSvmAddress(solanaAddress)) return null;
+  return {
+    scheme: "exact",
+    payTo: solanaAddress,
+    price: {
+      amount: toUsdcBaseUnits(getX402ToolPriceUsdc(productId)),
+      asset: USDC_SOLANA_MAINNET_ADDRESS,
+    },
+    network: SOLANA_MAINNET_CAIP2 as Network,
+    maxTimeoutSeconds: getX402MaxTimeoutSeconds(),
+  };
+}
+
 function buildToolRouteConfig(
   req: Request,
   definition: X402ToolDefinition,
@@ -1546,18 +1562,20 @@ function buildToolRouteConfig(
   challengeBody: Record<string, unknown>,
   discoveryExtension: Record<string, unknown>,
 ): RouteConfig {
-  return {
-    accepts: {
-      scheme: requirement.scheme,
-      payTo: requirement.payTo,
-      price: {
-        amount: requirement.amount,
-        asset: requirement.asset,
-      },
-      network: requirement.network,
-      maxTimeoutSeconds: requirement.maxTimeoutSeconds,
-      extra: requirement.extra,
+  const evmOption = {
+    scheme: requirement.scheme,
+    payTo: requirement.payTo,
+    price: {
+      amount: requirement.amount,
+      asset: requirement.asset,
     },
+    network: requirement.network,
+    maxTimeoutSeconds: requirement.maxTimeoutSeconds,
+    extra: requirement.extra,
+  };
+  const solanaOption = buildSolanaToolRequirement(definition.productId);
+  return {
+    accepts: solanaOption ? [evmOption, solanaOption] : evmOption,
     resource: buildAbsoluteResourceUrl(req, definition.routePath),
     description: definition.description,
     mimeType: "application/json",
@@ -2441,7 +2459,7 @@ async function handleX402ToolRequest(
     }
 
     const payer = verifyResult.payer?.trim();
-    if (!payer || !isAddress(payer)) {
+    if (!payer || (!isAddress(payer) && !validateSvmAddress(payer))) {
       return failure(res, new Error("x402 facilitator did not return a valid payer address."), 502);
     }
 
@@ -3985,7 +4003,7 @@ async function handleX402AllocateRequest(
     }
 
     const payer = verifyResult.payer?.trim();
-    if (!payer || !isAddress(payer)) {
+    if (!payer || (!isAddress(payer) && !validateSvmAddress(payer))) {
       return failure(res, new Error("x402 facilitator did not return a valid payer address."), 502);
     }
 
