@@ -18,7 +18,7 @@ import {
   PORTFOLIO_SEGMENTS,
 } from "../services/portfolio-segments";
 import type { AdminUsageChannel } from "../services/email.service";
-import { isValidEmail, sendAdminUsageEmail, sendUserReportEmail, sendUserSummaryEmail } from "../services/email.service";
+import { isValidEmail, sendAdminErrorEmail, sendAdminUsageEmail, sendUserReportEmail, sendUserSummaryEmail } from "../services/email.service";
 import { normalizeReferralCode, recordReferralConversion } from "../services/referral.service";
 import { callSceContinuityMode, callSceCaseRelevance, callSceRiskEvaluate } from "../services/sce-client";
 import { confirmAgentAllocation, isAgentProgramReferrerId, normalizeAgentProgramReferrerId } from "../services/agent-program.service";
@@ -2457,19 +2457,43 @@ async function handleX402ToolRequest(
     );
 
     if (!settlement.success) {
-      return failure(
-        res,
-        new Error(`x402 settlement failed: ${settlement.errorMessage || settlement.errorReason || "unknown error"}`),
-        502,
-        {
-          errorReason: settlement.errorReason || null,
-          errorMessage: settlement.errorMessage || null,
-          network: settlement.network || null,
-          payer: settlement.payer || null,
-          transaction: settlement.transaction || null,
-          facilitatorUrl: getX402FacilitatorUrl(),
-        },
-      );
+      if (settlement.transaction?.trim()) {
+        // Facilitator timed out internally but the tx confirmed on-chain.
+        // The buyer was charged — proceed with delivery rather than returning 502.
+        console.warn("[x402] settlement timeout with on-chain tx — recovering and proceeding", {
+          errorReason: settlement.errorReason,
+          transaction: settlement.transaction,
+          payer: settlement.payer,
+          productId,
+          decisionId,
+        });
+      } else {
+        void sendAdminErrorEmail({
+          decisionId: decisionId ?? "unknown",
+          endpoint: definition.routePath,
+          productId,
+          errorReason: settlement.errorReason ?? null,
+          errorMessage: settlement.errorMessage ?? null,
+          walletAddress: payer ?? null,
+          transactionHash: null,
+          network: settlement.network ?? null,
+          chargedAmountUsdc: getX402ToolPriceUsdc(productId),
+          requestInput: normalizedInput as Record<string, unknown>,
+        });
+        return failure(
+          res,
+          new Error(`x402 settlement failed: ${settlement.errorMessage || settlement.errorReason || "unknown error"}`),
+          502,
+          {
+            errorReason: settlement.errorReason || null,
+            errorMessage: settlement.errorMessage || null,
+            network: settlement.network || null,
+            payer: settlement.payer || null,
+            transaction: settlement.transaction || null,
+            facilitatorUrl: getX402FacilitatorUrl(),
+          },
+        );
+      }
     }
 
     const transactionHash = settlement.transaction?.trim();
@@ -2504,7 +2528,24 @@ async function handleX402ToolRequest(
       });
     }
 
-    const result = await execute(jobId);
+    let result: Awaited<ReturnType<typeof execute>>;
+    try {
+      result = await execute(jobId);
+    } catch (executeErr) {
+      void sendAdminErrorEmail({
+        decisionId: confirmedDecisionId,
+        endpoint: definition.routePath,
+        productId,
+        errorReason: "execute_failed_post_settlement",
+        errorMessage: executeErr instanceof Error ? executeErr.message : String(executeErr),
+        walletAddress: payer,
+        transactionHash,
+        network: settlement.network ?? null,
+        chargedAmountUsdc: getX402ToolPriceUsdc(productId),
+        requestInput: normalizedInput as Record<string, unknown>,
+      });
+      throw executeErr;
+    }
     const acceptedAt = nowIso();
     const responseData: StoredToolResponseData = {
       status: "completed",
@@ -2575,7 +2616,9 @@ async function handleX402ToolRequest(
     });
 
     attachBazaarDiscovery(res, discoveryExtension);
-    applySettlementResponseHeaders(res, settlement);
+    if (settlement.success) {
+      applySettlementResponseHeaders(res, settlement);
+    }
     return res.status(200).json({
       success: true,
       executionModelVersion: EXECUTION_MODEL_VERSION,

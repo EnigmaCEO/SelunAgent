@@ -1,4 +1,4 @@
-export type AdminUsageChannel = "legacy_pay" | "x402_allocate" | "x402_sce";
+export type AdminUsageChannel = "legacy_pay" | "x402_allocate" | "x402_sce" | "x402_error";
 
 type AdminUsageEmailInput = {
   channel: AdminUsageChannel;
@@ -262,6 +262,76 @@ function buildAdminUsageHtmlPayload(input: AdminUsageEmailInput): string {
     <h3>Response Output</h3>
     <pre style="white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;">${escapeHtml(responseOutput)}</pre>
   `.trim();
+}
+
+type AdminErrorEmailInput = {
+  decisionId: string;
+  endpoint: string;
+  productId: string;
+  errorReason: string | null;
+  errorMessage: string | null;
+  walletAddress: string | null;
+  transactionHash: string | null;
+  network: string | null;
+  chargedAmountUsdc: string | number | null;
+  requestInput?: Record<string, unknown> | null;
+};
+
+export async function sendAdminErrorEmail(input: AdminErrorEmailInput): Promise<void> {
+  if (!isAdminEmailEnabled()) return;
+
+  const recipients = parseCsv(process.env.SELUN_ADMIN_USAGE_EMAILS).filter((email) => isValidEmail(email));
+  if (recipients.length === 0) return;
+
+  const requestInput = serializeAdminPayload(input.requestInput);
+  const subject = `Selun Payment Error: ${input.productId} (${input.decisionId})`;
+
+  const text = [
+    "Selun payment error — buyer was charged but received no service.",
+    "",
+    `Decision ID:     ${input.decisionId}`,
+    `Endpoint:        ${input.endpoint}`,
+    `Product ID:      ${input.productId}`,
+    `Error Reason:    ${input.errorReason ?? "n/a"}`,
+    `Error Message:   ${input.errorMessage ?? "n/a"}`,
+    `Wallet:          ${input.walletAddress ?? "n/a"}`,
+    `Transaction:     ${input.transactionHash ?? "n/a"}`,
+    `Network:         ${input.network ?? "n/a"}`,
+    `Charged (USDC):  ${input.chargedAmountUsdc ?? "n/a"}`,
+    `Timestamp:       ${new Date().toISOString()}`,
+    "",
+    "Request Input:",
+    requestInput,
+  ].join("\n");
+
+  const html = `
+    <h2 style="color:#b91c1c;">Selun Payment Error</h2>
+    <p style="color:#b91c1c;font-weight:600;">Buyer was charged on-chain but received no service.</p>
+    <p><strong>Decision ID:</strong> ${escapeHtml(input.decisionId)}</p>
+    <p><strong>Endpoint:</strong> ${escapeHtml(input.endpoint)}</p>
+    <p><strong>Product ID:</strong> ${escapeHtml(input.productId)}</p>
+    <p><strong>Error Reason:</strong> ${escapeHtml(input.errorReason)}</p>
+    <p><strong>Error Message:</strong> ${escapeHtml(input.errorMessage)}</p>
+    <p><strong>Wallet:</strong> ${escapeHtml(input.walletAddress)}</p>
+    <p><strong>Transaction:</strong> ${escapeHtml(input.transactionHash)}</p>
+    <p><strong>Network:</strong> ${escapeHtml(input.network)}</p>
+    <p><strong>Charged (USDC):</strong> ${escapeHtml(input.chargedAmountUsdc)}</p>
+    <p><strong>Timestamp:</strong> ${escapeHtml(new Date().toISOString())}</p>
+    <h3>Request Input</h3>
+    <pre style="white-space:pre-wrap;word-break:break-word;font-family:monospace;">${escapeHtml(requestInput)}</pre>
+  `.trim();
+
+  const result = await sendViaResend({
+    to: recipients,
+    subject,
+    text,
+    html,
+    idempotencyKey: `selun-error-${input.productId}-${input.decisionId}`,
+  });
+
+  if (!result.ok) {
+    console.error("Failed to send admin error email:", result.error);
+  }
 }
 
 export async function sendAdminUsageEmail(input: AdminUsageEmailInput): Promise<void> {
