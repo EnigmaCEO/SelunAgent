@@ -6,7 +6,7 @@ import styles from "../info.module.css";
 export const metadata: Metadata = {
   title: "Pricing | Selun AI Crypto Allocation Agent",
   description:
-    "Selun endpoint pricing: Allocation ($19), Allocation with Report ($34), Market Regime ($0.25), Policy Envelope ($0.25), Asset Scorecard ($0.50), Rebalance ($1.00), SCE Continuity Mode ($0.005), SCE Case Relevance ($0.05), SCE Risk Evaluate ($0.25). Pay per call in USDC on Base.",
+    "Selun endpoint pricing: Allocation ($19), Allocation with Report ($34), Market Regime ($0.25), Policy Envelope ($0.25), Asset Scorecard ($0.50), Rebalance ($1.00), SCE Continuity Mode ($0.01), SCE Case Relevance ($0.05), SCE Risk Evaluate ($0.25). Pay per call in USDC on Base.",
   alternates: { canonical: "/pricing" },
   openGraph: {
     title: "Pricing | Selun",
@@ -92,8 +92,8 @@ const PRICING = [
   {
     id: "sce-continuity-mode",
     title: "SCE Continuity Mode",
-    price: "$0.005",
-    amount: "0.005",
+    price: "$0.01",
+    amount: "0.01",
     kind: "Sync",
     isAsync: false,
     endpoint: "/agent/x402/sce/continuity-mode",

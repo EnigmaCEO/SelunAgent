@@ -760,7 +760,7 @@ const X402_PUBLIC_DESCRIPTIONS = {
 const X402_SERVER_METADATA = {
   name: "Selun | Sagitta AAA Portfolio Infrastructure",
   description:
-    "Payment-gated x402 endpoints for DeFi agent execution: SCE preflight safety checks (continuity-mode, risk-evaluate, case-relevance), portfolio allocation, market regime classification, policy evaluation, asset scoring, and rebalancing. SCE endpoints gate autonomous capital movement via doctrine_action signals from the Sagitta Continuity Engine.",
+    "Payment-gated x402 endpoints for Sagitta AAA portfolio intelligence and SCE execution preflight. Includes allocation, market regime, policy envelope, asset scoring, rebalance, continuity mode, case relevance, and doctrine-based risk evaluation for autonomous agents.",
   provider: {
     name: "Sagitta AAA",
     url: "https://selun.sagitta.systems",
@@ -778,6 +778,8 @@ const X402_SERVER_METADATA = {
     "execution-preflight",
     "defi-safety",
     "doctrine-action",
+    "protocol-risk",
+    "case-library",
     "x402",
   ],
 } as const;

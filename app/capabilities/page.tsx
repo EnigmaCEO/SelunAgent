@@ -85,7 +85,7 @@ const CAPABILITIES = [
   },
   {
     id: "sce-continuity-mode",
-    eyebrow: "$0.005 USDC · Sync",
+    eyebrow: "$0.01 USDC · Sync",
     title: "SCE Continuity Mode",
     endpoint: "/agent/x402/sce/continuity-mode",
     what: "Queries the Sagitta Continuity Engine for the current on-chain threat posture. Returns mode (NORMAL / INCIDENT / DEGRADED), recommended_posture, reason_codes, and per-domain risk_domains across authority, governance, oracle, bridge, dependency, and more.",

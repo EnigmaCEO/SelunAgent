@@ -131,7 +131,7 @@ export function getConfig(): SelunBackendConfig {
     x402PolicyEnvelopePriceUsdc: parseNonNegativeFloat(process.env.X402_POLICY_ENVELOPE_PRICE_USDC, 0.25),
     x402AssetScorecardPriceUsdc: parseNonNegativeFloat(process.env.X402_ASSET_SCORECARD_PRICE_USDC, 0.5),
     x402RebalancePriceUsdc: parseNonNegativeFloat(process.env.X402_REBALANCE_PRICE_USDC, 1),
-    x402SceContinuityModePriceUsdc: parseNonNegativeFloat(process.env.X402_SCE_CONTINUITY_MODE_PRICE_USDC, 0.005),
+    x402SceContinuityModePriceUsdc: parseNonNegativeFloat(process.env.X402_SCE_CONTINUITY_MODE_PRICE_USDC, 0.01),
     x402SceCaseRelevancePriceUsdc: parseNonNegativeFloat(process.env.X402_SCE_CASE_RELEVANCE_PRICE_USDC, 0.05),
     x402SceRiskEvaluatePriceUsdc: parseNonNegativeFloat(process.env.X402_SCE_RISK_EVALUATE_PRICE_USDC, 0.25),
     paymentConfirmations: Math.min(parsePositiveInt(process.env.PAYMENT_CONFIRMATIONS, 2), 2),

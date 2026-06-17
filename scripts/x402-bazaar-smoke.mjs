@@ -232,6 +232,36 @@ function buildRequestBody({ decisionId, targetPathname, withReport }) {
     };
   }
 
+  if (targetPathname.endsWith("/sce/continuity-mode")) {
+    return {
+      decisionId,
+      scope: process.env.SELUN_X402_SMOKE_SCE_SCOPE?.trim() || "global",
+      ...(process.env.SELUN_X402_SMOKE_SCE_CHAIN_ID ? { chain_id: Number(process.env.SELUN_X402_SMOKE_SCE_CHAIN_ID) } : {}),
+      ...(process.env.SELUN_X402_SMOKE_SCE_THREAT_FAMILY?.trim() ? { threat_family: process.env.SELUN_X402_SMOKE_SCE_THREAT_FAMILY.trim() } : {}),
+      ...(process.env.SELUN_X402_SMOKE_SCE_REQUESTED_ACTION?.trim() ? { requested_action: process.env.SELUN_X402_SMOKE_SCE_REQUESTED_ACTION.trim() } : {}),
+    };
+  }
+
+  if (targetPathname.endsWith("/sce/case-relevance")) {
+    return {
+      decisionId,
+      protocol_name: process.env.SELUN_X402_SMOKE_SCE_PROTOCOL_NAME?.trim() || "Uniswap",
+      chain_id: process.env.SELUN_X402_SMOKE_SCE_CHAIN_ID ? Number(process.env.SELUN_X402_SMOKE_SCE_CHAIN_ID) : 8453,
+      threat_families: parseJsonEnv("SELUN_X402_SMOKE_SCE_THREAT_FAMILIES_JSON", ["DeFi Protocol Incident", "Admin Key / Access Control"]),
+      ...(process.env.SELUN_X402_SMOKE_SCE_REQUESTED_ACTION?.trim() ? { requested_action: process.env.SELUN_X402_SMOKE_SCE_REQUESTED_ACTION.trim() } : { requested_action: "swap" }),
+    };
+  }
+
+  if (targetPathname.endsWith("/sce/risk-evaluate")) {
+    return {
+      decisionId,
+      protocol_name: process.env.SELUN_X402_SMOKE_SCE_PROTOCOL_NAME?.trim() || "Aave",
+      chain_id: process.env.SELUN_X402_SMOKE_SCE_CHAIN_ID ? Number(process.env.SELUN_X402_SMOKE_SCE_CHAIN_ID) : 8453,
+      ...(process.env.SELUN_X402_SMOKE_SCE_ADDRESSES_JSON ? { addresses: parseJsonEnv("SELUN_X402_SMOKE_SCE_ADDRESSES_JSON", []) } : {}),
+      ...(process.env.SELUN_X402_SMOKE_SCE_REQUESTED_ACTION?.trim() ? { requested_action: process.env.SELUN_X402_SMOKE_SCE_REQUESTED_ACTION.trim() } : { requested_action: "deposit" }),
+    };
+  }
+
   return base;
 }
 
@@ -317,8 +347,8 @@ Required env:
   SELUN_X402_SMOKE_URL or SELUN_BACKEND_URL
   SELUN_X402_SMOKE_PRIVATE_KEY or EVM_PRIVATE_KEY
 
-Optional env:
-  SELUN_X402_SMOKE_ENDPOINT (allocate | allocate-with-report | market-regime | policy-envelope | asset-scorecard | rebalance)
+Optional env (portfolio endpoints):
+  SELUN_X402_SMOKE_ENDPOINT (allocate | allocate-with-report | market-regime | policy-envelope | asset-scorecard | rebalance | sce/continuity-mode | sce/case-relevance | sce/risk-evaluate)
   SELUN_X402_SMOKE_DECISION_ID
   SELUN_X402_SMOKE_RISK_TOLERANCE (default: Balanced)
   SELUN_X402_SMOKE_TIMEFRAME (default: 1-3_years)
@@ -332,10 +362,28 @@ Optional env:
   SELUN_X402_SMOKE_POLL_INTERVAL_MS (default: 5000)
   SELUN_X402_SMOKE_POLL_TIMEOUT_MS (default: 600000)
 
+Optional env (SCE endpoints):
+  SELUN_X402_SMOKE_SCE_SCOPE          scope for continuity-mode (default: global)
+  SELUN_X402_SMOKE_SCE_CHAIN_ID       chain id (default: 8453 for case-relevance/risk-evaluate)
+  SELUN_X402_SMOKE_SCE_THREAT_FAMILY  single threat_family for continuity-mode
+  SELUN_X402_SMOKE_SCE_PROTOCOL_NAME  protocol name (default: Uniswap/case-relevance, Aave/risk-evaluate)
+  SELUN_X402_SMOKE_SCE_THREAT_FAMILIES_JSON  JSON array for case-relevance (default: ["DeFi Protocol Incident","Admin Key / Access Control"])
+  SELUN_X402_SMOKE_SCE_ADDRESSES_JSON JSON array of addresses for risk-evaluate
+  SELUN_X402_SMOKE_SCE_REQUESTED_ACTION  action string (default: swap/deposit)
+
 Examples:
   node scripts/x402-bazaar-smoke.mjs
-  $env:SELUN_X402_SMOKE_URL=\"https://selun.sagitta.systems/agent/x402/rebalance\"
+  $env:SELUN_X402_SMOKE_URL="https://selun.sagitta.systems/agent/x402/rebalance"
   $env:SELUN_X402_SMOKE_HOLDINGS_JSON='[{"asset":"BTC","usdValue":4300},{"asset":"ETH","usdValue":3700},{"asset":"USDC","usdValue":2000}]'
   node scripts/x402-bazaar-smoke.mjs
+
+  $env:SELUN_BACKEND_URL="https://selun.sagitta.systems"
+  npm run x402:smoke:sce:continuity-mode
+
+  $env:SELUN_X402_SMOKE_SCE_PROTOCOL_NAME="Uniswap"
+  npm run x402:smoke:sce:case-relevance
+
+  $env:SELUN_X402_SMOKE_SCE_PROTOCOL_NAME="Aave"
+  npm run x402:smoke:sce:risk-evaluate
 `);
 }

@@ -57,7 +57,7 @@ const FALLBACK_CAPABILITIES: CapabilitiesPayload = {
     policyEnvelopeUsdc: "0.25",
     assetScorecardUsdc: "0.5",
     rebalanceUsdc: "1",
-    sceContinuityModeUsdc: "0.005",
+    sceContinuityModeUsdc: "0.01",
     sceCaseRelevanceUsdc: "0.05",
     sceRiskEvaluateUsdc: "0.25",
   },
@@ -164,7 +164,7 @@ const FALLBACK_CAPABILITIES: CapabilitiesPayload = {
       productId: "sce_continuity_mode",
       title: "Selun SCE Continuity Mode",
       description: "Pre-execution safety check. Returns mode (NORMAL / INCIDENT / DEGRADED), recommended_posture, reason_codes, and per-domain risk signals. Call before any protocol interaction or capital movement.",
-      pricing: { amountUsdc: "0.005", price: "$0.005" },
+      pricing: { amountUsdc: "0.01", price: "$0.01" },
       inputSchema: {
         required: ["decisionId"],
         properties: {
