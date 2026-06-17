@@ -1,5 +1,5 @@
 const SCE_DEFAULT_BASE_URL = "https://continuityengineserver.fly.dev";
-const SCE_DEFAULT_TIMEOUT_MS = 8000;
+const SCE_DEFAULT_TIMEOUT_MS = 25000;
 
 function getSceBaseUrl(): string {
   const raw = process.env.SCE_API_BASE_URL?.trim() || SCE_DEFAULT_BASE_URL;
@@ -17,31 +17,16 @@ function getSceAdminKey(): string | null {
   return process.env.SCE_ADMIN_KEY?.trim() || null;
 }
 
-async function callSce(path: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const url = `${getSceBaseUrl()}${path}`;
-  const timeoutMs = getSceTimeoutMs();
+async function callSceOnce(url: string, headers: Record<string, string>, body: string, timeoutMs: number): Promise<Record<string, unknown>> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  const adminKey = getSceAdminKey();
-  if (adminKey) headers["X-SCE-Admin-Key"] = adminKey;
-
   try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-
+    const response = await fetch(url, { method: "POST", headers, body, signal: controller.signal });
     const text = await response.text();
-
     if (!response.ok) {
       const excerpt = text.slice(0, 300).trim();
       throw new Error(`SCE upstream returned HTTP ${response.status}${excerpt ? `: ${excerpt}` : ""}`);
     }
-
     try {
       const parsed = JSON.parse(text) as unknown;
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
@@ -61,6 +46,26 @@ async function callSce(path: string, body: Record<string, unknown>): Promise<Rec
     throw error;
   } finally {
     clearTimeout(timer);
+  }
+}
+
+async function callSce(path: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const url = `${getSceBaseUrl()}${path}`;
+  const timeoutMs = getSceTimeoutMs();
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const adminKey = getSceAdminKey();
+  if (adminKey) headers["X-SCE-Admin-Key"] = adminKey;
+  const serialized = JSON.stringify(body);
+
+  try {
+    return await callSceOnce(url, headers, serialized, timeoutMs);
+  } catch (firstError) {
+    // Retry once on timeout to absorb Fly machine cold-start delays.
+    if (firstError instanceof Error && firstError.message.startsWith("SCE upstream timed out")) {
+      console.warn(`[sce-client] first call timed out, retrying once: ${path}`);
+      return await callSceOnce(url, headers, serialized, timeoutMs);
+    }
+    throw firstError;
   }
 }
 
