@@ -18,7 +18,7 @@ import {
   PORTFOLIO_SEGMENTS,
 } from "../services/portfolio-segments";
 import type { AdminUsageChannel } from "../services/email.service";
-import { isValidEmail, sendAdminErrorEmail, sendAdminUsageEmail, sendUserReportEmail, sendUserSummaryEmail } from "../services/email.service";
+import { isValidEmail, sendAdminErrorEmail, sendAdminInterestEmail, sendAdminUsageEmail, sendUserReportEmail, sendUserSummaryEmail } from "../services/email.service";
 import { normalizeReferralCode, recordReferralConversion } from "../services/referral.service";
 import { callSceContinuityMode, callSceCaseRelevance, callSceRiskEvaluate } from "../services/sce-client";
 import { confirmAgentAllocation, isAgentProgramReferrerId, normalizeAgentProgramReferrerId } from "../services/agent-program.service";
@@ -4469,6 +4469,19 @@ router.post("/x402/sce/risk-evaluate", async (req: Request, res: Response) => {
     },
     { skipPhase1: true, usageChannel: "x402_sce" },
   );
+});
+
+router.post("/x402/sce/escalation-brief", (req: Request, res: Response) => {
+  void sendAdminInterestEmail("/agent/x402/sce/escalation-brief", req.body);
+  return res.status(501).json({
+    success: false,
+    error: "endpoint_not_yet_available",
+    message:
+      "SCE Escalation Brief is not yet available as a Selun x402 endpoint. " +
+      "Your interest has been recorded. Check back for updates.",
+    recommended_action: "proceed_with_caution",
+    selunWrapper: true,
+  });
 });
 
 router.post("/phase1/run", (req: Request, res: Response) => {

@@ -334,6 +334,48 @@ export async function sendAdminErrorEmail(input: AdminErrorEmailInput): Promise<
   }
 }
 
+export async function sendAdminInterestEmail(endpoint: string, requestBody: unknown): Promise<void> {
+  if (!isAdminEmailEnabled()) return;
+
+  const recipients = parseCsv(process.env.SELUN_ADMIN_USAGE_EMAILS).filter((email) => isValidEmail(email));
+  if (recipients.length === 0) return;
+
+  const bodyText = serializeAdminPayload(typeof requestBody === "object" && requestBody !== null ? requestBody as Record<string, unknown> : {});
+  const subject = `Selun Interest Probe: ${endpoint}`;
+  const timestamp = new Date().toISOString();
+
+  const text = [
+    "An agent or client probed an endpoint that is not yet available.",
+    "",
+    `Endpoint:   ${endpoint}`,
+    `Timestamp:  ${timestamp}`,
+    "",
+    "Request Body:",
+    bodyText,
+  ].join("\n");
+
+  const html = `
+    <h2 style="color:#0369a1;">Selun Interest Probe</h2>
+    <p>An agent or client attempted to call an endpoint that is not yet available.</p>
+    <p><strong>Endpoint:</strong> ${escapeHtml(endpoint)}</p>
+    <p><strong>Timestamp:</strong> ${escapeHtml(timestamp)}</p>
+    <h3>Request Body</h3>
+    <pre style="white-space:pre-wrap;word-break:break-word;font-family:monospace;">${escapeHtml(bodyText)}</pre>
+  `.trim();
+
+  const result = await sendViaResend({
+    to: recipients,
+    subject,
+    text,
+    html,
+    idempotencyKey: `selun-interest-${endpoint.replace(/\//g, "-")}-${timestamp}`,
+  });
+
+  if (!result.ok) {
+    console.error("Failed to send admin interest email:", result.error);
+  }
+}
+
 export async function sendAdminUsageEmail(input: AdminUsageEmailInput): Promise<void> {
   if (!isAdminEmailEnabled()) return;
 
