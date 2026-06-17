@@ -1,4 +1,4 @@
-type AdminUsageChannel = "legacy_pay" | "x402_allocate";
+export type AdminUsageChannel = "legacy_pay" | "x402_allocate" | "x402_sce";
 
 type AdminUsageEmailInput = {
   channel: AdminUsageChannel;

@@ -6,12 +6,12 @@ import styles from "../info.module.css";
 export const metadata: Metadata = {
   title: "Pricing | Selun AI Crypto Allocation Agent",
   description:
-    "Selun endpoint pricing: Allocation ($19), Allocation with Report ($34), Market Regime ($0.25), Policy Envelope ($0.25), Asset Scorecard ($0.50), Rebalance ($1.00). Pay per call in USDC on Base.",
+    "Selun endpoint pricing: Allocation ($19), Allocation with Report ($34), Market Regime ($0.25), Policy Envelope ($0.25), Asset Scorecard ($0.50), Rebalance ($1.00), SCE Continuity Mode ($0.005), SCE Case Relevance ($0.05), SCE Risk Evaluate ($0.25). Pay per call in USDC on Base.",
   alternates: { canonical: "/pricing" },
   openGraph: {
     title: "Pricing | Selun",
     description:
-      "Pay per call in USDC on Base. No subscription. No API key. Six endpoints priced by capability.",
+      "Pay per call in USDC on Base. No subscription. No API key. Nine endpoints priced by capability.",
     url: "/pricing",
   },
 };
@@ -88,6 +88,42 @@ const PRICING = [
     description:
       "Takes your current holdings and computes the drift vs optimal target allocation. Returns the trade instructions needed to rebalance within policy.",
     whenToUse: "After an initial allocation when holdings have drifted, or on a regular monitoring schedule.",
+  },
+  {
+    id: "sce-continuity-mode",
+    title: "SCE Continuity Mode",
+    price: "$0.005",
+    amount: "0.005",
+    kind: "Sync",
+    isAsync: false,
+    endpoint: "/agent/x402/sce/continuity-mode",
+    description:
+      "Pre-execution safety check. Returns the current on-chain threat posture: mode (NORMAL / INCIDENT / DEGRADED), recommended_posture, reason_codes, and per-domain risk signals from the Sagitta Continuity Engine.",
+    whenToUse: "Before any protocol interaction, capital movement, or rebalance. The default first call in the SCE preflight policy.",
+  },
+  {
+    id: "sce-case-relevance",
+    title: "SCE Case Relevance",
+    price: "$0.05",
+    amount: "0.05",
+    kind: "Sync",
+    isAsync: false,
+    endpoint: "/agent/x402/sce/case-relevance",
+    description:
+      "Classifies whether a specific protocol, asset type, or threat family is relevant to active SCE intelligence. Returns relevance_score, relevance_level, matched threat families, and matched doctrine tags.",
+    whenToUse: "When you have threat context to evaluate — specific threat families, doctrine tags, or a protocol name. Not a default preflight; use after continuity-mode when you have targeted context.",
+  },
+  {
+    id: "sce-risk-evaluate",
+    title: "SCE Risk Evaluate",
+    price: "$0.25",
+    amount: "0.25",
+    kind: "Sync",
+    isAsync: false,
+    endpoint: "/agent/x402/sce/risk-evaluate",
+    description:
+      "Protocol risk gate. Returns doctrine_action (BLOCK / ALLOW / ESCALATE), risk_level, risk_score, and per-domain risk breakdown. If doctrine_action is BLOCK, halt execution and surface reason_codes to the user.",
+    whenToUse: "When continuity-mode returns mode !== NORMAL or recommended_posture is require_review or pause. The action gate in the SCE preflight policy.",
   },
 ];
 

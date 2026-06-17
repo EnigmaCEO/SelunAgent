@@ -17,8 +17,10 @@ import {
   portfolioSegmentKey,
   PORTFOLIO_SEGMENTS,
 } from "../services/portfolio-segments";
+import type { AdminUsageChannel } from "../services/email.service";
 import { isValidEmail, sendAdminUsageEmail, sendUserReportEmail, sendUserSummaryEmail } from "../services/email.service";
 import { normalizeReferralCode, recordReferralConversion } from "../services/referral.service";
+import { callSceContinuityMode, callSceCaseRelevance, callSceRiskEvaluate } from "../services/sce-client";
 import { confirmAgentAllocation, isAgentProgramReferrerId, normalizeAgentProgramReferrerId } from "../services/agent-program.service";
 import {
   authorizeWizardPayment,
@@ -638,7 +640,8 @@ function computePriceContract() {
 function toUsdPrice(amountUsdc: string): string {
   const amount = Number.parseFloat(amountUsdc);
   if (!Number.isFinite(amount)) return `$${amountUsdc}`;
-  return `$${amount.toFixed(2)}`;
+  const rounded2 = Number(amount.toFixed(2));
+  return rounded2 === amount ? `$${amount.toFixed(2)}` : `$${amountUsdc}`;
 }
 
 function toCaip2Network(networkId: string): string {
@@ -730,6 +733,12 @@ function getX402ToolPriceUsdc(productId: X402ToolProductId): string {
       return formatUsdcAmount(config.x402AssetScorecardPriceUsdc);
     case "rebalance":
       return formatUsdcAmount(config.x402RebalancePriceUsdc);
+    case "sce_continuity_mode":
+      return formatUsdcAmount(config.x402SceContinuityModePriceUsdc);
+    case "sce_case_relevance":
+      return formatUsdcAmount(config.x402SceCaseRelevancePriceUsdc);
+    case "sce_risk_evaluate":
+      return formatUsdcAmount(config.x402SceRiskEvaluatePriceUsdc);
   }
 }
 
@@ -751,7 +760,7 @@ const X402_PUBLIC_DESCRIPTIONS = {
 const X402_SERVER_METADATA = {
   name: "Selun | Sagitta AAA Portfolio Infrastructure",
   description:
-    "Payment-gated x402 endpoints exposing Sagitta AAA portfolio allocation, market regime classification, policy evaluation, asset scoring, and portfolio rebalancing.",
+    "Payment-gated x402 endpoints for DeFi agent execution: SCE preflight safety checks (continuity-mode, risk-evaluate, case-relevance), portfolio allocation, market regime classification, policy evaluation, asset scoring, and rebalancing. SCE endpoints gate autonomous capital movement via doctrine_action signals from the Sagitta Continuity Engine.",
   provider: {
     name: "Sagitta AAA",
     url: "https://selun.sagitta.systems",
@@ -763,6 +772,12 @@ const X402_SERVER_METADATA = {
     "policy-engine",
     "asset-scoring",
     "rebalance",
+    "sce",
+    "active-intelligence",
+    "agent-safety",
+    "execution-preflight",
+    "defi-safety",
+    "doctrine-action",
     "x402",
   ],
 } as const;
@@ -952,6 +967,164 @@ function getX402ToolDefinitions(): X402ToolDefinition[] {
               action: "reduce",
             },
           ],
+        },
+      },
+    },
+    {
+      productId: "sce_continuity_mode",
+      routePath: "/agent/x402/sce/continuity-mode",
+      title: "Selun SCE Continuity Mode",
+      description:
+        "Evaluates continuity mode for an on-chain scope. Accepts `scope` (global | chain | threat_family | doctrine_tag), `chain_id` (integer), `threat_family`, `doctrine_tag`, and `requested_action`. Returns `mode` (NORMAL | INCIDENT | DEGRADED), `recommended_posture`, `reason_codes`, `risk_domains`, and `recommended_next` from the Sagitta Continuity Engine. If `mode` is not NORMAL, escalate to risk-evaluate. Use as the default pre-execution check before any protocol interaction or capital movement.",
+      category: "intelligence:continuity-mode",
+      tags: ["sce", "continuity-mode", "active-intelligence", "agent-safety", "execution-preflight", "continuity-intelligence", "doctrine-action", "protocol-risk", "x402"],
+      amountUsdc: () => getX402ToolPriceUsdc("sce_continuity_mode"),
+      inputSchema: {
+        type: "object",
+        properties: {
+          decisionId: { type: "string" },
+          scope: { type: "string", enum: ["global", "chain", "threat_family", "doctrine_tag"] },
+          chain_id: { type: "integer" },
+          threat_family: { type: "string" },
+          doctrine_tag: { type: "string" },
+          requested_action: { type: "string" },
+        },
+        required: ["decisionId"],
+      },
+      exampleInput: {
+        decisionId: "sce-continuity-001",
+        scope: "global",
+      },
+      exampleOutput: {
+        status: "completed",
+        endpoint: "/agent/x402/sce/continuity-mode",
+        decisionId: "sce-continuity-001",
+        productId: "sce_continuity_mode",
+        result: {
+          sce: {
+            schema_version: "sce.continuity_mode.v1",
+            mode: "INCIDENT",
+            recommended_posture: "require_review",
+            confidence: { score: 0.85, label: "high", basis: "Pipeline healthy with adequate corpus coverage" },
+            reason_codes: ["critical_cases_present", "high_severity_cases_present", "threat_matrix_pressure_elevated"],
+            risk_domains: { authority: "warning", governance: "warning", oracle: "normal", bridge: "warning", dependency: "warning", treasury: "unknown", frontend: "warning", keeper: "normal", stablecoin: "warning" },
+            recommended_next: { sce_endpoint: "/v1/sce/risk/evaluate", selun_wrapper_path: "/agent/x402/sce/risk-evaluate", reason: "Runtime risk evaluation recommended before protocol-specific execution.", estimated_price_usdc_min: "0.10", estimated_price_usdc_max: "0.50" },
+            valid_until: "2026-06-17T11:41:37Z",
+          },
+          sceSourceEndpoint: "/v1/sce/continuity-mode",
+          sceEvaluationId: "sce_continuity_31f0ba501e1849c5",
+          validUntil: "2026-06-17T11:41:37Z",
+          selunWrapper: true,
+        },
+      },
+    },
+    {
+      productId: "sce_case_relevance",
+      routePath: "/agent/x402/sce/case-relevance",
+      title: "Selun SCE Case Relevance",
+      description:
+        "Classifies whether a protocol, asset type, or threat family is relevant to the active SCE intelligence context. Accepts `protocol_name`, `chain_id` (integer), `asset_types`, `threat_families`, `doctrine_tags`, and `requested_action`. Returns `relevance_score`, `reason_codes`, and `valid_until`. Use to screen case-library candidates and filter irrelevant execution paths before committing capital.",
+      category: "intelligence:case-relevance",
+      tags: ["sce", "case-relevance", "active-intelligence", "agent-safety", "execution-preflight", "case-library", "protocol-risk", "x402"],
+      amountUsdc: () => getX402ToolPriceUsdc("sce_case_relevance"),
+      inputSchema: {
+        type: "object",
+        properties: {
+          decisionId: { type: "string" },
+          protocol_name: { type: "string" },
+          chain_id: { type: "integer" },
+          asset_types: { type: "array", items: { type: "string" } },
+          threat_families: { type: "array", items: { type: "string" } },
+          doctrine_tags: { type: "array", items: { type: "string" } },
+          requested_action: { type: "string" },
+        },
+        required: ["decisionId"],
+      },
+      exampleInput: {
+        decisionId: "sce-case-001",
+        protocol_name: "Uniswap",
+        chain_id: 8453,
+        asset_types: ["ERC20", "oracle"],
+        threat_families: ["DeFi Protocol Incident", "Admin Key / Access Control"],
+        requested_action: "swap",
+      },
+      exampleOutput: {
+        status: "completed",
+        endpoint: "/agent/x402/sce/case-relevance",
+        decisionId: "sce-case-001",
+        productId: "sce_case_relevance",
+        result: {
+          sce: {
+            schema_version: "sce.case_relevance.v1",
+            relevance_score: 82,
+            relevance_level: "HIGH",
+            confidence: { score: 0.78, label: "high", basis: "Matched indexed threat families and doctrine tags" },
+            matched_threat_families: ["DeFi Protocol Incident", "Admin Key / Access Control"],
+            matched_doctrine_tags: ["emergency_rotation_policy", "user_warning_policy"],
+            reason_codes: ["family_match", "doctrine_tag_match", "high_severity_cases_present"],
+            valid_until: "2026-06-17T11:56:44Z",
+          },
+          sceSourceEndpoint: "/v1/sce/case-relevance",
+          sceEvaluationId: "sce_relevance_8a66e19f06184e1e",
+          validUntil: "2026-06-17T11:56:44Z",
+          selunWrapper: true,
+        },
+      },
+    },
+    {
+      productId: "sce_risk_evaluate",
+      routePath: "/agent/x402/sce/risk-evaluate",
+      title: "Selun SCE Risk Evaluate",
+      description:
+        "Scores and classifies protocol risk across one or more on-chain addresses. Accepts `protocol_name`, `chain_id` (integer), `addresses`, `asset_types`, `threat_families`, `doctrine_tags`, `requested_action`, and `risk_tolerance`. Returns `risk_domains`, `reason_codes`, `doctrine_action`, and `valid_until`. Use for execution preflight risk-gating and doctrine-action routing in autonomous agent workflows.",
+      category: "intelligence:risk-evaluate",
+      tags: ["sce", "risk-evaluate", "active-intelligence", "agent-safety", "execution-preflight", "doctrine-action", "case-library", "protocol-risk", "x402"],
+      amountUsdc: () => getX402ToolPriceUsdc("sce_risk_evaluate"),
+      inputSchema: {
+        type: "object",
+        properties: {
+          decisionId: { type: "string" },
+          protocol_name: { type: "string" },
+          chain_id: { type: "integer" },
+          addresses: { type: "array", items: { type: "string" } },
+          asset_types: { type: "array", items: { type: "string" } },
+          threat_families: { type: "array", items: { type: "string" } },
+          doctrine_tags: { type: "array", items: { type: "string" } },
+          requested_action: { type: "string" },
+          risk_tolerance: { type: "string" },
+        },
+        required: ["decisionId"],
+      },
+      exampleInput: {
+        decisionId: "sce-risk-001",
+        protocol_name: "Aave",
+        chain_id: 8453,
+        addresses: ["0x4d5F47FA6A74757f35C14fD3a6Ef8E3C9BC514E8"],
+        requested_action: "deposit",
+      },
+      exampleOutput: {
+        status: "completed",
+        endpoint: "/agent/x402/sce/risk-evaluate",
+        decisionId: "sce-risk-001",
+        productId: "sce_risk_evaluate",
+        result: {
+          sce: {
+            schema_version: "sce.risk_evaluate.v1",
+            doctrine_action: "BLOCK",
+            recommended_posture: "pause",
+            risk_score: 60,
+            risk_level: "HIGH",
+            confidence: { score: 0.82, label: "high", basis: "Pipeline healthy; composite evaluation complete" },
+            reason_codes: ["critical_cases_present", "high_severity_cases_present", "threat_matrix_pressure_elevated", "doctrine_action_block", "risk_level_high"],
+            risk_domains: { authority: "warning", governance: "warning", oracle: "normal", bridge: "warning", dependency: "warning", treasury: "unknown", frontend: "warning", keeper: "normal", stablecoin: "warning" },
+            continuity_mode: { mode: "INCIDENT", recommended_posture: "require_review" },
+            recommended_next: { sce_endpoint: "/v1/sce/escalation-brief", selun_wrapper_path: "/agent/x402/sce/escalation-brief", reason: "Action blocked. Escalation brief recommended before any protocol interaction.", estimated_price_usdc_min: "1.00", estimated_price_usdc_max: "10.00" },
+            valid_until: "2026-06-17T11:41:52Z",
+          },
+          sceSourceEndpoint: "/v1/sce/risk/evaluate",
+          sceEvaluationId: "sce_risk_a1ace5b8f5144d88",
+          validUntil: "2026-06-17T11:41:52Z",
+          selunWrapper: true,
         },
       },
     },
@@ -1858,12 +2031,16 @@ async function buildX402CapabilitiesData() {
         productId: definition.productId,
         title: definition.title,
         description: definition.description,
+        category: definition.category,
+        tags: definition.tags,
         pricing: {
           amountUsdc: definition.amountUsdc(),
           price: toUsdPrice(definition.amountUsdc()),
         },
         paymentRequirementsV2: [requirement],
         inputSchema: definition.inputSchema,
+        ...(definition.exampleInput !== undefined ? { exampleInput: definition.exampleInput } : {}),
+        ...(definition.exampleOutput !== undefined ? { exampleOutput: definition.exampleOutput } : {}),
       };
     }),
   ];
@@ -1883,6 +2060,9 @@ async function buildX402CapabilitiesData() {
       policyEnvelopeUsdc: getX402ToolPriceUsdc("policy_envelope"),
       assetScorecardUsdc: getX402ToolPriceUsdc("asset_scorecard"),
       rebalanceUsdc: getX402ToolPriceUsdc("rebalance"),
+      sceContinuityModeUsdc: getX402ToolPriceUsdc("sce_continuity_mode"),
+      sceCaseRelevanceUsdc: getX402ToolPriceUsdc("sce_case_relevance"),
+      sceRiskEvaluateUsdc: getX402ToolPriceUsdc("sce_risk_evaluate"),
     },
     resources,
     paymentTransport: {
@@ -1917,8 +2097,57 @@ async function buildX402CapabilitiesData() {
       network: config.networkId,
       caip2Network: toCaip2Network(config.networkId),
       metadataRefreshCadenceHours: 6,
-      category: "finance:portfolio-agent",
+      category: "agent-safety:defi-preflight",
+      categories: ["agent-safety:defi-preflight", "finance:portfolio-agent"],
       tags: [...X402_SERVER_METADATA.discoveryTags],
+    },
+    agentPolicy: {
+      name: "SCE Preflight Policy",
+      intent: "Before autonomous capital movement or protocol interaction, perform a continuity check and gate execution on doctrine_action.",
+      defaultFirstCall: "/agent/x402/sce/continuity-mode",
+      escalationCall: "/agent/x402/sce/risk-evaluate",
+      haltCondition: "doctrine_action === 'BLOCK'",
+      recheckRule: "Recheck after valid_until.",
+      agent_preflight_policy: "SCE continuity-mode is the default pre-execution check. SCE risk-evaluate is the action gate.",
+      recommended_call_order: [
+        {
+          step: 1,
+          endpoint: "/agent/x402/sce/continuity-mode",
+          productId: "sce_continuity_mode",
+          when: "Before any protocol interaction, routing, rebalance, allocation, or capital movement.",
+          escalate_if: "mode !== 'NORMAL' || recommended_posture === 'require_review' || recommended_posture === 'pause'",
+        },
+        {
+          step: 2,
+          endpoint: "/agent/x402/sce/risk-evaluate",
+          productId: "sce_risk_evaluate",
+          when: "When continuity-mode returns mode !== NORMAL or recommended_posture is require_review or pause.",
+          halt_if: "doctrine_action === 'BLOCK'",
+          return_on_halt: ["reason_codes", "risk_domains", "recommended_next", "valid_until"],
+        },
+        {
+          step: 3,
+          endpoint: "/agent/x402/sce/case-relevance",
+          productId: "sce_case_relevance",
+          when: "Only when the agent already has threat context: asset categories, doctrine tags, or specific protocol context to evaluate.",
+        },
+      ],
+      sce_policy_snippet: [
+        "Before any protocol interaction, routing, rebalance, allocation, or capital movement:",
+        "1. Call /agent/x402/sce/continuity-mode.",
+        "   If mode !== 'NORMAL' or recommended_posture is 'require_review' or 'pause', proceed to step 2.",
+        "2. Call /agent/x402/sce/risk-evaluate.",
+        "   If doctrine_action === 'BLOCK', halt the action.",
+        "   Return reason_codes, risk_domains, recommended_next, and valid_until to the user.",
+        "   Recheck after valid_until.",
+        "Use /agent/x402/sce/case-relevance only when you already have threat context,",
+        "asset categories, doctrine tags, or protocol context to evaluate.",
+      ].join("\n"),
+      failure_handling: {
+        sce_upstream_error: "Log the error. Do not block execution solely on SCE unavailability unless policy requires it.",
+        sce_upstream_timeout: "Treat as degraded. Proceed with caution or surface to user.",
+        valid_until_expired: "Recheck: re-call the same endpoint before acting.",
+      },
     },
   };
 }
@@ -2091,12 +2320,18 @@ async function executeToolProduct(productId: X402ToolProductId, jobId: string, i
   return buildRebalanceResult(jobId, input as RebalanceInput);
 }
 
+type X402ToolRequestOptions = {
+  skipPhase1?: boolean;
+  usageChannel?: AdminUsageChannel;
+};
+
 async function handleX402ToolRequest(
   req: Request,
   res: Response,
   productId: X402ToolProductId,
   normalizedInput: Record<string, unknown>,
   execute: (jobId: string) => Promise<Record<string, unknown>>,
+  options?: X402ToolRequestOptions,
 ) {
   const burst = enforceIpBurstLimit(req);
   if (burst.limited) {
@@ -2255,15 +2490,17 @@ async function handleX402ToolRequest(
     }
 
     const jobId = buildToolJobId(productId, confirmedDecisionId);
-    runPhase1({
-      jobId,
-      executionTimestamp: nowIso(),
-      riskMode: deriveRiskMode(normalizedInput.riskTolerance as AllocateRiskTolerance),
-      riskTolerance: normalizedInput.riskTolerance as string,
-      investmentTimeframe: normalizedInput.timeframe as string,
-      portfolioSegment: normalizedInput.portfolioSegment as string,
-      walletAddress: payer,
-    });
+    if (!options?.skipPhase1) {
+      runPhase1({
+        jobId,
+        executionTimestamp: nowIso(),
+        riskMode: deriveRiskMode(normalizedInput.riskTolerance as AllocateRiskTolerance),
+        riskTolerance: normalizedInput.riskTolerance as string,
+        investmentTimeframe: normalizedInput.timeframe as string,
+        portfolioSegment: normalizedInput.portfolioSegment as string,
+        walletAddress: payer,
+      });
+    }
 
     const result = await execute(jobId);
     const acceptedAt = nowIso();
@@ -2305,7 +2542,7 @@ async function handleX402ToolRequest(
     incrementAddressUsage(payer);
 
     void sendAdminUsageEmail({
-      channel: "x402_allocate",
+      channel: options?.usageChannel ?? "x402_allocate",
       decisionId: confirmedDecisionId,
       endpoint: definition.routePath,
       productId,
@@ -4012,6 +4249,180 @@ router.post("/x402/rebalance", async (req: Request, res: Response) => {
   };
   return handleX402ToolRequest(req, res, "rebalance", input, (jobId) =>
     executeToolProduct("rebalance", jobId, input)
+  );
+});
+
+// --- SCE wrapper helpers ---
+
+export function normalizeSceInputForContinuityMode(body: unknown): Record<string, unknown> {
+  if (typeof body !== "object" || body === null) return {};
+  const b = body as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const key of ["scope", "chain_id", "threat_family", "doctrine_tag", "requested_action"]) {
+    if (b[key] !== undefined) out[key] = b[key];
+  }
+  return out;
+}
+
+export function normalizeSceInputForCaseRelevance(body: unknown): Record<string, unknown> {
+  if (typeof body !== "object" || body === null) return {};
+  const b = body as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const key of ["protocol_name", "chain_id", "asset_types", "threat_families", "doctrine_tags", "requested_action"]) {
+    if (b[key] !== undefined) out[key] = b[key];
+  }
+  return out;
+}
+
+export function normalizeSceInputForRiskEvaluate(body: unknown): Record<string, unknown> {
+  if (typeof body !== "object" || body === null) return {};
+  const b = body as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const key of ["protocol_name", "chain_id", "addresses", "asset_types", "threat_families", "doctrine_tags", "requested_action", "risk_tolerance"]) {
+    if (b[key] !== undefined) out[key] = b[key];
+  }
+  return out;
+}
+
+export function buildSceWrappedResult(
+  sceResponse: Record<string, unknown>,
+  sceSourceEndpoint: string,
+): Record<string, unknown> {
+  return {
+    sce: sceResponse,
+    sceSourceEndpoint,
+    sceEvaluationId: typeof sceResponse.evaluation_id === "string" ? sceResponse.evaluation_id : null,
+    validUntil: typeof sceResponse.valid_until === "string" ? sceResponse.valid_until : null,
+    selunWrapper: true,
+  };
+}
+
+function sanitizeSceError(error: unknown): Error {
+  if (error instanceof Error) {
+    if (error.message.startsWith("SCE upstream returned HTTP")) return new Error("sce_upstream_error");
+    if (error.message.startsWith("SCE upstream timed out")) return new Error("sce_upstream_timeout");
+    if (error.message.includes("non-JSON")) return new Error("sce_upstream_error");
+  }
+  return new Error("sce_upstream_unavailable");
+}
+
+// --- SCE continuity-mode in-memory result cache ---
+// Payments are always verified. Only the upstream SCE call is cached.
+
+const SCE_CONTINUITY_MODE_CACHE_MAX_ENTRIES = 1_000;
+const SCE_CONTINUITY_MODE_CACHE_MAX_TTL_MS = 60_000;
+
+type SceContinuityModeCacheEntry = {
+  result: Record<string, unknown>;
+  expiresAt: number;
+};
+
+const sceContinuityModeCache = new Map<string, SceContinuityModeCacheEntry>();
+
+// Exported for test setup and teardown only.
+export const _sceContinuityModeCacheForTest = sceContinuityModeCache;
+
+export function buildSceCacheKey(input: Record<string, unknown>): string {
+  const sorted: Record<string, unknown> = {};
+  for (const key of Object.keys(input).sort()) {
+    sorted[key] = input[key];
+  }
+  return JSON.stringify(sorted);
+}
+
+export function getSceContinuityModeFromCache(key: string): Record<string, unknown> | null {
+  const entry = sceContinuityModeCache.get(key);
+  if (!entry) return null;
+  if (Date.now() >= entry.expiresAt) {
+    sceContinuityModeCache.delete(key);
+    return null;
+  }
+  return entry.result;
+}
+
+export function setSceContinuityModeInCache(key: string, result: Record<string, unknown>): void {
+  if (sceContinuityModeCache.size >= SCE_CONTINUITY_MODE_CACHE_MAX_ENTRIES) {
+    const oldest = sceContinuityModeCache.keys().next().value;
+    if (oldest !== undefined) sceContinuityModeCache.delete(oldest);
+  }
+  const validUntilMs = typeof result.validUntil === "string" ? Date.parse(result.validUntil) : NaN;
+  const ttlFromValidUntil = Number.isFinite(validUntilMs) && validUntilMs > Date.now()
+    ? validUntilMs
+    : NaN;
+  const expiresAt = Number.isFinite(ttlFromValidUntil)
+    ? Math.min(ttlFromValidUntil, Date.now() + SCE_CONTINUITY_MODE_CACHE_MAX_TTL_MS)
+    : Date.now() + SCE_CONTINUITY_MODE_CACHE_MAX_TTL_MS;
+  sceContinuityModeCache.set(key, { result, expiresAt });
+}
+
+export function clearSceContinuityModeCache(): void {
+  sceContinuityModeCache.clear();
+}
+
+// --- SCE x402 wrapper routes ---
+
+router.post("/x402/sce/continuity-mode", async (req: Request, res: Response) => {
+  const sceInput = normalizeSceInputForContinuityMode(req.body);
+  return handleX402ToolRequest(
+    req,
+    res,
+    "sce_continuity_mode",
+    sceInput,
+    async (_jobId) => {
+      const cacheKey = buildSceCacheKey(sceInput);
+      const cached = getSceContinuityModeFromCache(cacheKey);
+      if (cached) return cached;
+      try {
+        const sceResponse = await callSceContinuityMode(sceInput);
+        const result = buildSceWrappedResult(sceResponse, "/v1/sce/continuity-mode");
+        setSceContinuityModeInCache(cacheKey, result);
+        return result;
+      } catch (error) {
+        console.error("SCE continuity-mode upstream error:", error instanceof Error ? error.message : error);
+        throw sanitizeSceError(error);
+      }
+    },
+    { skipPhase1: true, usageChannel: "x402_sce" },
+  );
+});
+
+router.post("/x402/sce/case-relevance", async (req: Request, res: Response) => {
+  const sceInput = normalizeSceInputForCaseRelevance(req.body);
+  return handleX402ToolRequest(
+    req,
+    res,
+    "sce_case_relevance",
+    sceInput,
+    async (_jobId) => {
+      try {
+        const sceResponse = await callSceCaseRelevance(sceInput);
+        return buildSceWrappedResult(sceResponse, "/v1/sce/case-relevance");
+      } catch (error) {
+        console.error("SCE case-relevance upstream error:", error instanceof Error ? error.message : error);
+        throw sanitizeSceError(error);
+      }
+    },
+    { skipPhase1: true, usageChannel: "x402_sce" },
+  );
+});
+
+router.post("/x402/sce/risk-evaluate", async (req: Request, res: Response) => {
+  const sceInput = normalizeSceInputForRiskEvaluate(req.body);
+  return handleX402ToolRequest(
+    req,
+    res,
+    "sce_risk_evaluate",
+    sceInput,
+    async (_jobId) => {
+      try {
+        const sceResponse = await callSceRiskEvaluate(sceInput);
+        return buildSceWrappedResult(sceResponse, "/v1/sce/risk/evaluate");
+      } catch (error) {
+        console.error("SCE risk-evaluate upstream error:", error instanceof Error ? error.message : error);
+        throw sanitizeSceError(error);
+      }
+    },
+    { skipPhase1: true, usageChannel: "x402_sce" },
   );
 });
 

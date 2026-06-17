@@ -6,12 +6,12 @@ import styles from "../info.module.css";
 export const metadata: Metadata = {
   title: "Capabilities | Selun AI Crypto Allocation Agent",
   description:
-    "All six Selun capabilities explained: Allocation, Allocation with Report, Market Regime, Policy Envelope, Asset Scorecard, and Rebalance. What each does, when to use it, and what it returns.",
+    "All nine Selun capabilities: Allocation, Allocation with Report, Market Regime, Policy Envelope, Asset Scorecard, Rebalance, SCE Continuity Mode, SCE Case Relevance, and SCE Risk Evaluate. What each does, when to use it, and what it returns.",
   alternates: { canonical: "/capabilities" },
   openGraph: {
     title: "Capabilities | Selun AI Crypto Allocation Agent",
     description:
-      "All six Selun capabilities explained: Allocation, Allocation with Report, Market Regime, Policy Envelope, Asset Scorecard, and Rebalance.",
+      "All nine Selun capabilities: Allocation, Allocation with Report, Market Regime, Policy Envelope, Asset Scorecard, Rebalance, and three SCE preflight safety endpoints.",
     url: "/capabilities",
   },
 };
@@ -83,6 +83,39 @@ const CAPABILITIES = [
     audience: "Investors with existing holdings who want to maintain policy alignment, automated rebalancing bots, treasury operators running regular portfolio reviews.",
     isAsync: false,
   },
+  {
+    id: "sce-continuity-mode",
+    eyebrow: "$0.005 USDC · Sync",
+    title: "SCE Continuity Mode",
+    endpoint: "/agent/x402/sce/continuity-mode",
+    what: "Queries the Sagitta Continuity Engine for the current on-chain threat posture. Returns mode (NORMAL / INCIDENT / DEGRADED), recommended_posture, reason_codes, and per-domain risk_domains across authority, governance, oracle, bridge, dependency, and more.",
+    when: "Use this as the default pre-execution check before any protocol interaction, routing decision, rebalance, or capital movement. If mode is not NORMAL, escalate to SCE Risk Evaluate before proceeding.",
+    output: "mode, recommended_posture, reason_codes, risk_domains, confidence, and recommended_next — including which Selun endpoint to call next and its estimated price.",
+    audience: "Any autonomous agent that moves capital on-chain. Designed to be called on every execution cycle as a lightweight safety gate.",
+    isAsync: false,
+  },
+  {
+    id: "sce-risk-evaluate",
+    eyebrow: "$0.25 USDC · Sync",
+    title: "SCE Risk Evaluate",
+    endpoint: "/agent/x402/sce/risk-evaluate",
+    what: "Scores and classifies protocol risk for a specific protocol or address set. Returns doctrine_action (BLOCK / ALLOW / ESCALATE), risk_level, risk_score, risk_domains, and reason_codes from the Sagitta Continuity Engine's composite evaluation.",
+    when: "Use this when SCE Continuity Mode returns mode !== NORMAL or recommended_posture is require_review or pause. If doctrine_action is BLOCK, halt the action and surface reason_codes and recommended_next to the user. Recheck after valid_until.",
+    output: "doctrine_action, risk_level, risk_score, risk_domains, reason_codes, continuity_mode summary, and recommended_next.",
+    audience: "Agents executing protocol interactions, swaps, deposits, or capital movements that require a doctrine-gated go/no-go decision.",
+    isAsync: false,
+  },
+  {
+    id: "sce-case-relevance",
+    eyebrow: "$0.05 USDC · Sync",
+    title: "SCE Case Relevance",
+    endpoint: "/agent/x402/sce/case-relevance",
+    what: "Classifies whether a specific protocol, asset type, or threat family is relevant to the active SCE intelligence context. Returns relevance_score, relevance_level, matched_threat_families, matched_doctrine_tags, and reason_codes.",
+    when: "Use this only when you already have threat context to evaluate — specific threat families, doctrine tags, asset categories, or a protocol name. Not a default preflight check; best used when screening case-library candidates or filtering execution paths with known risk context.",
+    output: "relevance_score, relevance_level (NONE / LOW / MEDIUM / HIGH), matched_threat_families, matched_doctrine_tags, and reason_codes.",
+    audience: "Agents with prior threat context that need to determine whether a specific protocol or asset class is implicated in active SCE cases.",
+    isAsync: false,
+  },
 ];
 
 export default function CapabilitiesPage() {
@@ -118,8 +151,9 @@ export default function CapabilitiesPage() {
           <p className={styles.eyebrow}>Endpoint Capabilities</p>
           <h1 className={styles.pageTitle}>Selun Capabilities</h1>
           <p className={styles.pageSubhead}>
-            Selun exposes six capabilities as payment-gated endpoints. Two are asynchronous
-            allocation engines. Four are synchronous tool endpoints that return immediately.
+            Selun exposes nine capabilities as payment-gated endpoints. Two are asynchronous
+            allocation engines. Seven are synchronous tool endpoints that return immediately.
+            The three SCE endpoints are preflight safety checks powered by the Sagitta Continuity Engine.
             Each can be called independently via x402 or through the guided allocation wizard.
           </p>
         </section>

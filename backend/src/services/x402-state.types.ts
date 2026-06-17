@@ -5,7 +5,14 @@ export type AllocateRiskTolerance = "Conservative" | "Balanced" | "Growth" | "Ag
 
 export type AllocateTimeframe = "<1_year" | "1-3_years" | "3+_years";
 
-export type X402ToolProductId = "market_regime" | "policy_envelope" | "asset_scorecard" | "rebalance";
+export type X402ToolProductId =
+  | "market_regime"
+  | "policy_envelope"
+  | "asset_scorecard"
+  | "rebalance"
+  | "sce_continuity_mode"
+  | "sce_case_relevance"
+  | "sce_risk_evaluate";
 
 export type X402RefundRecord = {
   refundedAt: string;

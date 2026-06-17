@@ -23,6 +23,9 @@ export type SelunBackendConfig = {
   x402PolicyEnvelopePriceUsdc: number;
   x402AssetScorecardPriceUsdc: number;
   x402RebalancePriceUsdc: number;
+  x402SceContinuityModePriceUsdc: number;
+  x402SceCaseRelevancePriceUsdc: number;
+  x402SceRiskEvaluatePriceUsdc: number;
   paymentConfirmations: number;
   paymentPollIntervalMs: number;
   paymentTimeoutMs: number;
@@ -128,6 +131,9 @@ export function getConfig(): SelunBackendConfig {
     x402PolicyEnvelopePriceUsdc: parseNonNegativeFloat(process.env.X402_POLICY_ENVELOPE_PRICE_USDC, 0.25),
     x402AssetScorecardPriceUsdc: parseNonNegativeFloat(process.env.X402_ASSET_SCORECARD_PRICE_USDC, 0.5),
     x402RebalancePriceUsdc: parseNonNegativeFloat(process.env.X402_REBALANCE_PRICE_USDC, 1),
+    x402SceContinuityModePriceUsdc: parseNonNegativeFloat(process.env.X402_SCE_CONTINUITY_MODE_PRICE_USDC, 0.005),
+    x402SceCaseRelevancePriceUsdc: parseNonNegativeFloat(process.env.X402_SCE_CASE_RELEVANCE_PRICE_USDC, 0.05),
+    x402SceRiskEvaluatePriceUsdc: parseNonNegativeFloat(process.env.X402_SCE_RISK_EVALUATE_PRICE_USDC, 0.25),
     paymentConfirmations: Math.min(parsePositiveInt(process.env.PAYMENT_CONFIRMATIONS, 2), 2),
     paymentPollIntervalMs: parsePositiveInt(process.env.PAYMENT_POLL_INTERVAL_MS, 4000),
     paymentTimeoutMs: parsePositiveInt(process.env.PAYMENT_TIMEOUT_MS, 120000),

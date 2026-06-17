@@ -57,6 +57,9 @@ const FALLBACK_CAPABILITIES: CapabilitiesPayload = {
     policyEnvelopeUsdc: "0.25",
     assetScorecardUsdc: "0.5",
     rebalanceUsdc: "1",
+    sceContinuityModeUsdc: "0.005",
+    sceCaseRelevanceUsdc: "0.05",
+    sceRiskEvaluateUsdc: "0.25",
   },
   paymentTransport: {
     facilitatorUrl: "https://api.cdp.coinbase.com/platform/v2/x402",
@@ -152,6 +155,64 @@ const FALLBACK_CAPABILITIES: CapabilitiesPayload = {
         properties: {
           portfolioSegment: { enum: ["Bluechips", "Memecoins", "Gaming", "Yield Farm"] },
           holdings: { type: "array" },
+        },
+      },
+    },
+    {
+      endpoint: "/agent/x402/sce/continuity-mode",
+      method: "POST",
+      productId: "sce_continuity_mode",
+      title: "Selun SCE Continuity Mode",
+      description: "Pre-execution safety check. Returns mode (NORMAL / INCIDENT / DEGRADED), recommended_posture, reason_codes, and per-domain risk signals. Call before any protocol interaction or capital movement.",
+      pricing: { amountUsdc: "0.005", price: "$0.005" },
+      inputSchema: {
+        required: ["decisionId"],
+        properties: {
+          scope: { enum: ["global", "chain", "threat_family", "doctrine_tag"] },
+          chain_id: { type: "integer" },
+          threat_family: { type: "string" },
+          doctrine_tag: { type: "string" },
+          requested_action: { type: "string" },
+        },
+      },
+    },
+    {
+      endpoint: "/agent/x402/sce/case-relevance",
+      method: "POST",
+      productId: "sce_case_relevance",
+      title: "Selun SCE Case Relevance",
+      description: "Classifies whether a protocol, asset type, or threat family is relevant to active SCE intelligence. Returns relevance_score, relevance_level, matched threat families, and matched doctrine tags.",
+      pricing: { amountUsdc: "0.05", price: "$0.05" },
+      inputSchema: {
+        required: ["decisionId"],
+        properties: {
+          protocol_name: { type: "string" },
+          chain_id: { type: "integer" },
+          asset_types: { type: "array" },
+          threat_families: { type: "array" },
+          doctrine_tags: { type: "array" },
+          requested_action: { type: "string" },
+        },
+      },
+    },
+    {
+      endpoint: "/agent/x402/sce/risk-evaluate",
+      method: "POST",
+      productId: "sce_risk_evaluate",
+      title: "Selun SCE Risk Evaluate",
+      description: "Protocol risk gate. Returns doctrine_action (BLOCK / ALLOW / ESCALATE), risk_level, risk_score, and per-domain risk breakdown. If doctrine_action is BLOCK, halt execution.",
+      pricing: { amountUsdc: "0.25", price: "$0.25" },
+      inputSchema: {
+        required: ["decisionId"],
+        properties: {
+          protocol_name: { type: "string" },
+          chain_id: { type: "integer" },
+          addresses: { type: "array" },
+          asset_types: { type: "array" },
+          threat_families: { type: "array" },
+          doctrine_tags: { type: "array" },
+          requested_action: { type: "string" },
+          risk_tolerance: { type: "string" },
         },
       },
     },
@@ -271,7 +332,7 @@ export default function X402Page() {
             <p className={styles.eyebrow}>x402 Machine Registry</p>
             <h1>Selun Public Endpoints</h1>
             <p className={styles.subhead}>
-              Payment-gated x402 endpoints exposing Sagitta AAA&apos;s quant allocator, market regime engine, policy envelope logic, asset scorecard, and rebalancing engine.
+              Payment-gated x402 endpoints exposing Sagitta AAA&apos;s quant allocator, market regime engine, policy envelope logic, asset scorecard, and rebalancing engine — plus three SCE preflight safety endpoints (continuity-mode, risk-evaluate, case-relevance) powered by the Sagitta Continuity Engine.
             </p>
           </div>
 
