@@ -2271,7 +2271,10 @@ function normalizeRefundReferences(value: unknown): AdminRefundReference[] {
       entry.productId === "market_regime" ||
       entry.productId === "policy_envelope" ||
       entry.productId === "asset_scorecard" ||
-      entry.productId === "rebalance"
+      entry.productId === "rebalance" ||
+      entry.productId === "sce_continuity_mode" ||
+      entry.productId === "sce_case_relevance" ||
+      entry.productId === "sce_risk_evaluate"
         ? entry.productId
         : undefined;
 

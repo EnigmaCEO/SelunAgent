@@ -76,7 +76,15 @@ function normalizeAllocateInputs(value: unknown): AllocateInputShape | null {
 }
 
 function isToolProductId(value: unknown): value is X402ToolProductId {
-  return value === "market_regime" || value === "policy_envelope" || value === "asset_scorecard" || value === "rebalance";
+  return (
+    value === "market_regime" ||
+    value === "policy_envelope" ||
+    value === "asset_scorecard" ||
+    value === "rebalance" ||
+    value === "sce_continuity_mode" ||
+    value === "sce_case_relevance" ||
+    value === "sce_risk_evaluate"
+  );
 }
 
 function normalizeRecordPayload(value: unknown): Record<string, unknown> | null {
