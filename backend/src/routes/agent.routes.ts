@@ -2096,6 +2096,10 @@ async function buildX402CapabilitiesData() {
     resources,
     paymentTransport: {
       facilitatorUrl: getX402FacilitatorUrl(),
+      facilitators: [
+        getX402FacilitatorUrl(),
+        ...(process.env.PAYAI_FACILITATOR_URL?.trim() ? [process.env.PAYAI_FACILITATOR_URL.trim()] : []),
+      ],
       headers: {
         paymentRequired: "PAYMENT-REQUIRED",
         paymentSignature: "PAYMENT-SIGNATURE",
@@ -2125,6 +2129,10 @@ async function buildX402CapabilitiesData() {
       transportVersion: 2,
       network: config.networkId,
       caip2Network: toCaip2Network(config.networkId),
+      networks: [
+        config.networkId,
+        ...(config.treasurySolanaAddress && validateSvmAddress(config.treasurySolanaAddress) ? ["solana-mainnet"] : []),
+      ],
       metadataRefreshCadenceHours: 6,
       category: "agent-safety:defi-preflight",
       categories: ["agent-safety:defi-preflight", "finance:portfolio-agent"],

@@ -18,9 +18,26 @@
  */
 
 import { createHmac, pbkdf2Sync } from "crypto";
-import { createKeyPairSignerFromBytes, getBase58Decoder } from "@solana/kit";
+import {
+  appendTransactionMessageInstructions,
+  createKeyPairSignerFromBytes,
+  createSolanaRpc,
+  createTransactionMessage,
+  getBase58Decoder,
+  getBase64EncodedWireTransaction,
+  partiallySignTransactionMessageWithSigners,
+  pipe,
+  prependTransactionMessageInstruction,
+  setTransactionMessageFeePayer,
+  setTransactionMessageLifetimeUsingBlockhash,
+} from "@solana/kit";
+import { getSetComputeUnitLimitInstruction, setTransactionMessageComputeUnitPrice } from "@solana-program/compute-budget";
+import {
+  fetchMint,
+  findAssociatedTokenPda,
+  getTransferCheckedInstruction,
+} from "@solana-program/token-2022";
 import { ed25519 } from "@noble/curves/ed25519";
-import { ExactSvmScheme } from "@x402/svm/exact/client";
 
 const BACKEND_URL = process.env.SELUN_BACKEND_URL?.trim() || "https://selun.sagitta.systems";
 const SOLANA_MAINNET = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
@@ -182,10 +199,46 @@ console.log(`\nSolana: ${Number(solanaReq.amount) / 1e6} USDC → ${solanaReq.pa
 console.log("USDC mint:", solanaReq.asset);
 console.log("Fee payer:", solanaReq.extra.feePayer);
 
-// --- Step 2: sign the Solana payment ---
-console.log("\nSigning Solana transaction...");
-const scheme = new ExactSvmScheme(signer);
-const paymentPayload = await scheme.createPaymentPayload(2, solanaReq);
+// --- Step 2: build and sign Solana transaction (with ATA creation for new recipients) ---
+console.log("\nBuilding Solana transaction...");
+const rpc = createSolanaRpc("https://api.mainnet-beta.solana.com");
+const tokenMint = await fetchMint(rpc, solanaReq.asset);
+const tokenProgramAddress = tokenMint.programAddress;
+const [sourceATA] = await findAssociatedTokenPda({ mint: solanaReq.asset, owner: signer.address, tokenProgram: tokenProgramAddress });
+const [destinationATA] = await findAssociatedTokenPda({ mint: solanaReq.asset, owner: solanaReq.payTo, tokenProgram: tokenProgramAddress });
+console.log("Source ATA:", sourceATA);
+console.log("Destination ATA:", destinationATA);
+
+const transferIx = getTransferCheckedInstruction(
+  {
+    source: sourceATA,
+    mint: solanaReq.asset,
+    destination: destinationATA,
+    authority: signer,
+    amount: BigInt(solanaReq.amount),
+    decimals: tokenMint.data.decimals,
+  },
+  { programAddress: tokenMint.programAddress },
+);
+
+const nonce = crypto.getRandomValues(new Uint8Array(16));
+const memoData = new TextEncoder().encode(Array.from(nonce).map((b) => b.toString(16).padStart(2, "0")).join(""));
+const memoIx = { programAddress: "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr", accounts: [], data: memoData };
+
+const { value: latestBlockhash } = await rpc.getLatestBlockhash().send();
+
+const tx = pipe(
+  createTransactionMessage({ version: 0 }),
+  (t) => setTransactionMessageComputeUnitPrice(1n, t),
+  (t) => setTransactionMessageFeePayer(solanaReq.extra.feePayer, t),
+  (t) => prependTransactionMessageInstruction(getSetComputeUnitLimitInstruction({ units: 60_000 }), t),
+  (t) => appendTransactionMessageInstructions([transferIx, memoIx], t),
+  (t) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, t),
+);
+
+const signedTx = await partiallySignTransactionMessageWithSigners(tx);
+const base64Tx = getBase64EncodedWireTransaction(signedTx);
+const paymentPayload = { x402Version: 2, payload: { transaction: base64Tx } };
 console.log("Transaction signed.");
 
 const signaturePayload = {

@@ -26,10 +26,12 @@ type CapabilitiesPayload = {
   resources: ResourceCard[];
   paymentTransport?: {
     facilitatorUrl?: string;
+    facilitators?: string[];
     headers?: Record<string, string>;
   };
   discovery?: {
     network?: string;
+    networks?: string[];
     caip2Network?: string;
   };
 };
@@ -63,6 +65,10 @@ const FALLBACK_CAPABILITIES: CapabilitiesPayload = {
   },
   paymentTransport: {
     facilitatorUrl: "https://api.cdp.coinbase.com/platform/v2/x402",
+    facilitators: [
+      "https://api.cdp.coinbase.com/platform/v2/x402",
+      "https://facilitator.payai.network",
+    ],
     headers: {
       paymentRequired: "PAYMENT-REQUIRED",
       paymentSignature: "PAYMENT-SIGNATURE",
@@ -71,6 +77,7 @@ const FALLBACK_CAPABILITIES: CapabilitiesPayload = {
   },
   discovery: {
     network: "base-mainnet",
+    networks: ["base-mainnet", "solana-mainnet"],
     caip2Network: "eip155:8453",
   },
   resources: [
@@ -343,7 +350,9 @@ export default function X402Page() {
             </div>
             <div className={styles.metric}>
               <span>Network</span>
-              <strong>{capabilities.discovery?.network ?? "base-mainnet"}</strong>
+              {(capabilities.discovery?.networks ?? ["base-mainnet"]).map((n) => (
+                <strong key={n}>{n}</strong>
+              ))}
             </div>
             <div className={styles.metric}>
               <span>Catalog</span>
@@ -366,7 +375,9 @@ export default function X402Page() {
           </div>
           <div className={styles.discoveryPanel}>
             <p className={styles.discoveryLabel}>Facilitator</p>
-            <code>{capabilities.paymentTransport?.facilitatorUrl ?? "https://api.cdp.coinbase.com/platform/v2/x402"}</code>
+            {(capabilities.paymentTransport?.facilitators ?? [capabilities.paymentTransport?.facilitatorUrl ?? "https://api.cdp.coinbase.com/platform/v2/x402"]).map((f) => (
+              <code key={f} style={{ display: "block" }}>{f}</code>
+            ))}
           </div>
         </section>
 
