@@ -678,19 +678,28 @@ function getX402MainnetFacilitatorApiKeySecret() {
   return raw ? normalizeSecret(raw) : getConfig().coinbaseApiSecret;
 }
 
-function createX402FacilitatorClient() {
-  if (getConfig().networkId === "base-mainnet") {
-    return new HTTPFacilitatorClient(
-      createFacilitatorConfig(
-        getX402MainnetFacilitatorApiKeyId(),
-        getX402MainnetFacilitatorApiKeySecret(),
-      ),
-    );
-  }
+function createX402FacilitatorClients(): HTTPFacilitatorClient | HTTPFacilitatorClient[] {
+  const primaryClient =
+    getConfig().networkId === "base-mainnet"
+      ? new HTTPFacilitatorClient(
+          createFacilitatorConfig(
+            getX402MainnetFacilitatorApiKeyId(),
+            getX402MainnetFacilitatorApiKeySecret(),
+          ),
+        )
+      : new HTTPFacilitatorClient({ url: getX402FacilitatorUrl() });
 
-  return new HTTPFacilitatorClient({
-    url: getX402FacilitatorUrl(),
-  });
+  const payAiUrl = process.env.PAYAI_FACILITATOR_URL?.trim();
+  if (!payAiUrl) return primaryClient;
+
+  const payAiKeyId = process.env.PAYAI_API_KEY_ID?.trim();
+  const payAiKeySecret = process.env.PAYAI_API_KEY_SECRET?.trim();
+  const payAiClient =
+    payAiKeyId && payAiKeySecret
+      ? new HTTPFacilitatorClient(createFacilitatorConfig(payAiKeyId, payAiKeySecret, payAiUrl))
+      : new HTTPFacilitatorClient({ url: payAiUrl });
+
+  return [primaryClient, payAiClient];
 }
 
 function getX402MaxTimeoutSeconds() {
@@ -1439,7 +1448,7 @@ async function getX402SellerServer(): Promise<x402ResourceServer> {
   if (x402SellerServer) return x402SellerServer;
   if (!x402SellerServerInitPromise) {
     x402SellerServerInitPromise = (async () => {
-      const server = new x402ResourceServer(createX402FacilitatorClient());
+      const server = new x402ResourceServer(createX402FacilitatorClients());
       server.register(toCaip2Network(getConfig().networkId) as Network, new ExactEvmScheme());
       if (getConfig().treasurySolanaAddress) {
         server.register(SOLANA_MAINNET_CAIP2 as Network, new ExactSvmServerScheme());
