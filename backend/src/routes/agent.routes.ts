@@ -692,14 +692,7 @@ function createX402FacilitatorClients(): HTTPFacilitatorClient | HTTPFacilitator
   const payAiUrl = process.env.PAYAI_FACILITATOR_URL?.trim();
   if (!payAiUrl) return primaryClient;
 
-  const payAiKeyId = process.env.PAYAI_API_KEY_ID?.trim();
-  const payAiKeySecret = process.env.PAYAI_API_KEY_SECRET?.trim();
-  const payAiClient =
-    payAiKeyId && payAiKeySecret
-      ? new HTTPFacilitatorClient(createFacilitatorConfig(payAiKeyId, payAiKeySecret, payAiUrl))
-      : new HTTPFacilitatorClient({ url: payAiUrl });
-
-  return [primaryClient, payAiClient];
+  return [primaryClient, new HTTPFacilitatorClient({ url: payAiUrl })];
 }
 
 function getX402MaxTimeoutSeconds() {
