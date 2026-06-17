@@ -418,6 +418,7 @@ async function buildOpenApiDocument(req: express.Request) {
         operationId: "getHealth",
         summary: "Health check",
         description: "Returns backend liveness and execution model version.",
+        security: [],
         responses: {
           "200": {
             description: "Service is healthy.",
@@ -431,6 +432,7 @@ async function buildOpenApiDocument(req: express.Request) {
         operationId: "getWellKnownX402",
         summary: "x402 well-known discovery document",
         description: "Crawler-friendly x402 discovery document.",
+        security: [],
         responses: {
           "200": {
             description: "Discovery document.",
@@ -444,6 +446,7 @@ async function buildOpenApiDocument(req: express.Request) {
         operationId: "getWellKnownX402Json",
         summary: "x402 well-known discovery document alias",
         description: "JSON alias for the x402 discovery document.",
+        security: [],
         responses: {
           "200": {
             description: "Discovery document.",
@@ -457,6 +460,7 @@ async function buildOpenApiDocument(req: express.Request) {
         operationId: "getX402Capabilities",
         summary: "x402 capabilities",
         description: "Live x402 catalog, pricing, and transport metadata.",
+        security: [],
         responses: {
           "200": {
             description: "Capabilities response.",
@@ -470,6 +474,7 @@ async function buildOpenApiDocument(req: express.Request) {
         operationId: "getX402DiscoveryAlias",
         summary: "x402 discovery alias",
         description: "Alias endpoint for Bazaar-style crawlers.",
+        security: [],
         responses: {
           "200": {
             description: "Capabilities response.",
@@ -492,6 +497,11 @@ async function buildOpenApiDocument(req: express.Request) {
       title: capabilities.name,
       version: EXECUTION_MODEL_VERSION,
       description: capabilities.description,
+      contact: {
+        name: "Sagitta AAA",
+        url: "https://selun.sagitta.systems",
+        email: "admin@sagitta.systems",
+      },
     },
     servers: [{ url: serverUrl }],
     tags: [
