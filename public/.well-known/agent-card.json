@@ -2,7 +2,7 @@
   "protocolVersion": "1.0",
   "name": "Selun | Sagitta AAA Portfolio Infrastructure",
   "description": "Payment-gated x402 endpoints for Sagitta AAA portfolio intelligence and SCE execution preflight. Includes allocation, market regime, policy envelope, asset scoring, rebalance, continuity mode, case relevance, and doctrine-based risk evaluation for autonomous agents.",
-  "url": "https://selun.sagitta.systems",
+  "url": "https://selun.sagitta.systems/api/a2a",
   "version": "1.0.0",
   "documentationUrl": "https://selun.sagitta.systems/for-developers",
   "provider": {
@@ -16,6 +16,12 @@
   },
   "authentication": {
     "schemes": ["x402"]
+  },
+  "securitySchemes": {
+    "x402Payment": {
+      "type": "x402",
+      "description": "x402 payment protocol. Pay per call in USDC on Base mainnet or Solana mainnet. See /agent/x402/capabilities for current pricing and facilitator details."
+    }
   },
   "defaultInputModes": ["application/json"],
   "defaultOutputModes": ["application/json"],
