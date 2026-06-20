@@ -5,6 +5,7 @@
   "url": "https://selun.sagitta.systems/api/a2a",
   "version": "1.0.0",
   "documentationUrl": "https://selun.sagitta.systems/for-developers",
+  "skillGuideUrl": "https://selun.sagitta.systems/SKILL.md",
   "provider": {
     "name": "Sagitta AAA",
     "url": "https://selun.sagitta.systems"
