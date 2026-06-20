@@ -1,4 +1,5 @@
 {
+  "protocolVersion": "1.0",
   "name": "Selun | Sagitta AAA Portfolio Infrastructure",
   "description": "Payment-gated x402 endpoints for Sagitta AAA portfolio intelligence and SCE execution preflight. Includes allocation, market regime, policy envelope, asset scoring, rebalance, continuity mode, case relevance, and doctrine-based risk evaluation for autonomous agents.",
   "url": "https://selun.sagitta.systems",
