@@ -1,0 +1,13 @@
+{
+  "keys": [
+    {
+      "kty": "EC",
+      "x": "wEGlK-5SGFuWQgU1Hx3NjC03m63LeVWeQNjDCAsETM4",
+      "y": "PaUUtYdEi51B-SsFvRjykkqEcHXSaWHGqBRfwFIl8ZE",
+      "crv": "P-256",
+      "use": "sig",
+      "alg": "ES256",
+      "kid": "selun-catalog-2026-06-20"
+    }
+  ]
+}
