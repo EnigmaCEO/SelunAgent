@@ -522,6 +522,12 @@ export default function X402Page() {
                 Earn 50% per Allocation →
               </Link>
             </div>
+            <div className={styles.integrationCard}>
+              <span className={styles.integrationLabel}>Agent skill guide</span>
+              <a href="/SKILL.md" style={{ display: "block", marginTop: 8, color: "#17486f", fontWeight: 600, fontSize: 14 }}>
+                Use Selun with an AI Agent →
+              </a>
+            </div>
           </div>
         </section>
       </div>

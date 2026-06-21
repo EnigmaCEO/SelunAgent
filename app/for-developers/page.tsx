@@ -313,6 +313,7 @@ export default function ForDevelopersPage() {
             <Link href="/pricing" className={styles.linkPill}>Pricing</Link>
             <Link href="/faq#x402" className={styles.linkPill}>What is x402?</Link>
             <Link href="/security" className={styles.linkPill}>Security</Link>
+            <a href="/SKILL.md" className={styles.linkPill}>Agent Skill File</a>
           </div>
 
           <footer className={styles.footer}>
@@ -339,6 +340,8 @@ export default function ForDevelopersPage() {
               <Link href="/privacy">Privacy</Link>
               <span aria-hidden>|</span>
               <Link href="/support">Support</Link>
+              <span aria-hidden>|</span>
+              <a href="/SKILL.md">Agent Skill File</a>
             </nav>
           </footer>
         </div>
