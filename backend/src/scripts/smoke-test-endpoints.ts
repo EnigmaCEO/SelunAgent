@@ -98,8 +98,9 @@ async function checkAgentCard() {
   try {
     const res = await fetch(url);
     const body = await readJsonObject(res);
-    if (res.status === 200 && body.protocolVersion && body.skills?.length) {
-      pass("Agent card", endpoint, res.status, `protocolVersion=${body.protocolVersion}, skills=${body.skills.length}`);
+    const skills = Array.isArray(body.skills) ? body.skills : [];
+    if (res.status === 200 && body.protocolVersion && skills.length > 0) {
+      pass("Agent card", endpoint, res.status, `protocolVersion=${body.protocolVersion}, skills=${skills.length}`);
     } else {
       fail("Agent card", endpoint, res.status, JSON.stringify(body).slice(0, 200));
     }
