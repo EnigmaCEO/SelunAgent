@@ -33,6 +33,15 @@ type CheckResult = {
 
 const results: CheckResult[] = [];
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+async function readJsonObject(res: Response): Promise<Record<string, unknown>> {
+  const body = await res.json().catch(() => ({}));
+  return isRecord(body) ? body : {};
+}
+
 function pass(name: string, endpoint: string, httpStatus: number, note: string) {
   results.push({ name, endpoint, status: "pass", httpStatus, note });
   console.log(`  ✓ ${name} (${httpStatus}) — ${note}`);
@@ -54,7 +63,7 @@ async function checkHealth() {
   console.log(`\n[health] GET ${url}`);
   try {
     const res = await fetch(url);
-    const body = await res.json().catch(() => ({}));
+    const body = await readJsonObject(res);
     if (res.status === 200 && body.status === "ok") {
       pass("Health", endpoint, res.status, `executionModelVersion=${body.executionModelVersion}`);
     } else {
@@ -71,7 +80,7 @@ async function checkCapabilities() {
   console.log(`\n[capabilities] GET ${url}`);
   try {
     const res = await fetch(url);
-    const body = await res.json().catch(() => ({}));
+    const body = await readJsonObject(res);
     if (res.status === 200 && Array.isArray(body.resources)) {
       pass("Capabilities", endpoint, res.status, `${body.resources.length} resources, x402Version=${body.x402Version}`);
     } else {
@@ -88,7 +97,7 @@ async function checkAgentCard() {
   console.log(`\n[agent-card] GET ${url}`);
   try {
     const res = await fetch(url);
-    const body = await res.json().catch(() => ({}));
+    const body = await readJsonObject(res);
     if (res.status === 200 && body.protocolVersion && body.skills?.length) {
       pass("Agent card", endpoint, res.status, `protocolVersion=${body.protocolVersion}, skills=${body.skills.length}`);
     } else {
@@ -126,9 +135,10 @@ async function checkA2A() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "message/send", params: {} }),
     });
-    const body = await res.json().catch(() => ({}));
+    const body = await readJsonObject(res);
     if (res.status === 200 && body.jsonrpc === "2.0" && body.result) {
-      pass("A2A JSON-RPC", endpoint, res.status, `role=${body.result?.role}`);
+      const result = isRecord(body.result) ? body.result : {};
+      pass("A2A JSON-RPC", endpoint, res.status, `role=${result.role}`);
     } else {
       fail("A2A JSON-RPC", endpoint, res.status, JSON.stringify(body).slice(0, 200));
     }
@@ -148,7 +158,7 @@ async function check402(name: string, endpoint: string, body: unknown) {
     });
 
     const paymentRequiredHeader = res.headers.get("PAYMENT-REQUIRED");
-    const resBody = await res.json().catch(() => ({}));
+    const resBody = await readJsonObject(res);
 
     if (res.status !== 402) {
       fail(name, endpoint, res.status, `Expected 402, got ${res.status}: ${JSON.stringify(resBody).slice(0, 150)}`);
