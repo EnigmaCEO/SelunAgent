@@ -389,7 +389,7 @@ export async function sendAdminUsageEmail(input: AdminUsageEmailInput): Promise<
     subject: `Selun Usage: ${input.channel} (${input.decisionId})`,
     text: buildAdminUsageTextPayload(input),
     html: buildAdminUsageHtmlPayload(input),
-    idempotencyKey: `selun-usage-${input.channel}-${input.decisionId}`,
+    idempotencyKey: `selun-usage-${input.channel}-${input.productId ?? "unknown-product"}-${input.decisionId}`,
   });
 
   if (!result.ok) {

@@ -178,3 +178,46 @@ test("refund metadata persists for accepted tool records", () => {
     assert.equal(restored?.refund?.amountUsdc, "1");
   });
 });
+
+test("failed post-settlement tool records persist and keep payment receipt", () => {
+  withTempStateFile((stateFilePath) => {
+    const txHash = "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+    const timestamp = "2026-02-28T00:00:00.000Z";
+    const store = new X402StateStore(stateFilePath, 3);
+
+    store.setToolRecord("sce_risk_evaluate", "decision-tool-failed", {
+      decisionId: "decision-tool-failed",
+      productId: "sce_risk_evaluate",
+      inputFingerprint: "fp-tool-failed",
+      requestBody: {
+        protocol_name: "Uniswap",
+        chain_id: 1,
+      },
+      chargedAmountUsdc: "0.25",
+      quoteIssuedAt: timestamp,
+      quoteExpiresAt: "2026-02-28T00:10:00.000Z",
+      state: "failed_post_settlement",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      payment: {
+        fromAddress: "0x1234567890123456789012345678901234567890",
+        transactionHash: txHash,
+        network: "eip155:8453",
+        verifiedAt: timestamp,
+      },
+      failure: {
+        failedAt: timestamp,
+        reason: "execute_failed_post_settlement",
+        message: "sce_upstream_error",
+      },
+    });
+
+    const restarted = new X402StateStore(stateFilePath, 3);
+    const restored = restarted.getToolRecord("sce_risk_evaluate", "decision-tool-failed");
+    assert.equal(restored?.state, "failed_post_settlement");
+    assert.equal(restored?.payment?.transactionHash, txHash);
+    assert.equal(restored?.failure?.reason, "execute_failed_post_settlement");
+    assert.equal(restored?.failure?.message, "sce_upstream_error");
+    assert.equal(restarted.getTransactionOwner(txHash), "sce_risk_evaluate:decision-tool-failed");
+  });
+});

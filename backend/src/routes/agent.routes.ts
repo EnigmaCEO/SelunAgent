@@ -1711,6 +1711,20 @@ function applyStoredPaymentResponseHeader(res: Response, record: X402AllocateRec
   );
 }
 
+function applyStoredToolPaymentResponseHeader(res: Response, record: X402ToolRecord) {
+  if (!record.payment?.transactionHash) return;
+
+  res.setHeader(
+    "PAYMENT-RESPONSE",
+    encodePaymentResponseHeader({
+      success: true,
+      payer: record.payment.fromAddress,
+      transaction: record.payment.transactionHash,
+      network: (record.payment.network || toCaip2Network(getConfig().networkId)) as Network,
+    }),
+  );
+}
+
 function applySettlementResponseHeaders(res: Response, settlement: ProcessSettleSuccessResponse) {
   applyResponseHeaders(res, settlement.headers);
 }
@@ -2233,7 +2247,11 @@ function buildAllocatePurchaseRow(record: X402AllocateRecord): AdminPurchaseRow 
 }
 
 function buildToolPurchaseRow(record: X402ToolRecord): AdminPurchaseRow | null {
-  if (record.state !== "accepted" || !record.payment?.transactionHash || !record.payment.fromAddress) {
+  if (
+    (record.state !== "accepted" && record.state !== "failed_post_settlement") ||
+    !record.payment?.transactionHash ||
+    !record.payment.fromAddress
+  ) {
     return null;
   }
 
@@ -2347,6 +2365,220 @@ function sendToolConflict(
   });
 }
 
+function isRecoverableFailedToolRecord(record: X402ToolRecord | undefined): record is X402ToolRecord & {
+  state: "failed_post_settlement";
+  payment: NonNullable<X402ToolRecord["payment"]>;
+} {
+  return Boolean(
+    record &&
+    record.state === "failed_post_settlement" &&
+    record.payment?.transactionHash &&
+    record.payment?.fromAddress &&
+    !record.refund,
+  );
+}
+
+function buildStoredToolResponseData(
+  productId: X402ToolProductId,
+  decisionId: string,
+  payer: string,
+  transactionHash: string,
+  network: string | null,
+  result: Record<string, unknown>,
+): StoredToolResponseData {
+  return {
+    status: "completed",
+    endpoint: getX402ToolDefinition(productId).routePath,
+    decisionId,
+    productId,
+    payment: {
+      required: true,
+      chargedAmountUsdc: getX402ToolPriceUsdc(productId),
+      verified: true,
+      fromAddress: payer,
+      transactionHash,
+      network,
+    },
+    result,
+  };
+}
+
+async function executePaidToolRequest(params: {
+  req: Request;
+  res: Response;
+  productId: X402ToolProductId;
+  definition: X402ToolDefinition;
+  normalizedInput: Record<string, unknown>;
+  inputFingerprint: string;
+  decisionId: string;
+  execute: (jobId: string) => Promise<Record<string, unknown>>;
+  options?: X402ToolRequestOptions;
+  payer: string;
+  transactionHash: string;
+  network: string | null;
+  quoteIssuedAt: string;
+  quoteExpiresAt: string;
+  createdAt: string;
+  recoveredAfterChargeFailure?: boolean;
+  applyStoredPaymentHeader?: boolean;
+  discoveryExtension?: Record<string, unknown>;
+}) {
+  const stateStore = getX402StateStore();
+  const jobId = buildToolJobId(params.productId, params.decisionId);
+  if (!params.options?.skipPhase1) {
+    runPhase1({
+      jobId,
+      executionTimestamp: nowIso(),
+      riskMode: deriveRiskMode(params.normalizedInput.riskTolerance as AllocateRiskTolerance),
+      riskTolerance: params.normalizedInput.riskTolerance as string,
+      investmentTimeframe: params.normalizedInput.timeframe as string,
+      portfolioSegment: params.normalizedInput.portfolioSegment as string,
+      walletAddress: params.payer,
+    });
+  }
+
+  let result: Awaited<ReturnType<typeof params.execute>>;
+  try {
+    result = await params.execute(jobId);
+  } catch (executeErr) {
+    const failedAt = nowIso();
+    stateStore.setToolRecord(params.productId, params.decisionId, {
+      decisionId: params.decisionId,
+      productId: params.productId,
+      inputFingerprint: params.inputFingerprint,
+      requestBody: params.normalizedInput,
+      chargedAmountUsdc: getX402ToolPriceUsdc(params.productId),
+      quoteIssuedAt: params.quoteIssuedAt,
+      quoteExpiresAt: params.quoteExpiresAt,
+      state: "failed_post_settlement",
+      createdAt: params.createdAt,
+      updatedAt: failedAt,
+      payment: {
+        fromAddress: params.payer,
+        transactionHash: params.transactionHash,
+        network: params.network ?? undefined,
+        verifiedAt: failedAt,
+      },
+      failure: {
+        failedAt,
+        reason: "execute_failed_post_settlement",
+        message: executeErr instanceof Error ? executeErr.message : String(executeErr),
+      },
+    });
+    void sendAdminErrorEmail({
+      decisionId: params.decisionId,
+      endpoint: params.definition.routePath,
+      productId: params.productId,
+      errorReason: "execute_failed_post_settlement",
+      errorMessage: executeErr instanceof Error ? executeErr.message : String(executeErr),
+      walletAddress: params.payer,
+      transactionHash: params.transactionHash,
+      network: params.network,
+      chargedAmountUsdc: getX402ToolPriceUsdc(params.productId),
+      requestInput: params.normalizedInput as Record<string, unknown>,
+    });
+    throw executeErr;
+  }
+
+  const acceptedAt = nowIso();
+  const responseData = buildStoredToolResponseData(
+    params.productId,
+    params.decisionId,
+    params.payer,
+    params.transactionHash,
+    params.network,
+    result,
+  );
+
+  stateStore.setToolRecord(params.productId, params.decisionId, {
+    decisionId: params.decisionId,
+    productId: params.productId,
+    inputFingerprint: params.inputFingerprint,
+    requestBody: params.normalizedInput,
+    chargedAmountUsdc: getX402ToolPriceUsdc(params.productId),
+    quoteIssuedAt: params.quoteIssuedAt,
+    quoteExpiresAt: params.quoteExpiresAt,
+    state: "accepted",
+    createdAt: params.createdAt,
+    updatedAt: acceptedAt,
+    payment: {
+      fromAddress: params.payer,
+      transactionHash: params.transactionHash,
+      network: params.network ?? undefined,
+      verifiedAt: acceptedAt,
+    },
+    responseData: result,
+  });
+  incrementAddressUsage(params.payer);
+
+  void sendAdminUsageEmail({
+    channel: params.options?.usageChannel ?? "x402_allocate",
+    decisionId: params.decisionId,
+    endpoint: params.definition.routePath,
+    productId: params.productId,
+    walletAddress: params.payer,
+    resultEmail:
+      typeof params.req.body?.resultEmail === "string" && isValidEmail(params.req.body.resultEmail.trim().toLowerCase())
+        ? params.req.body.resultEmail.trim().toLowerCase()
+        : null,
+    promoCode: typeof params.req.body?.promoCode === "string" && params.req.body.promoCode.trim()
+      ? params.req.body.promoCode.trim()
+      : null,
+    chargedAmountUsdc: getX402ToolPriceUsdc(params.productId),
+    transactionHash: params.transactionHash,
+    paymentMethod: "x402",
+    paymentNetwork: params.network,
+    includeCertifiedDecisionRecord: false,
+    riskTolerance: params.normalizedInput.riskTolerance as string,
+    timeframe: params.normalizedInput.timeframe as string,
+    jobId,
+    requestInput: params.normalizedInput,
+    responseOutput: {
+      success: true,
+      executionModelVersion: EXECUTION_MODEL_VERSION,
+      data: responseData,
+      ...(params.recoveredAfterChargeFailure ? { recoveredAfterChargeFailure: true } : {}),
+    },
+  }).catch((error) => {
+    console.error(`Failed to send Selun admin usage email (${params.productId}):`, error);
+  });
+
+  if (params.discoveryExtension) {
+    attachBazaarDiscovery(params.res, params.discoveryExtension);
+  }
+  if (params.applyStoredPaymentHeader) {
+    applyStoredToolPaymentResponseHeader(params.res, {
+      decisionId: params.decisionId,
+      productId: params.productId,
+      inputFingerprint: params.inputFingerprint,
+      requestBody: params.normalizedInput,
+      chargedAmountUsdc: getX402ToolPriceUsdc(params.productId),
+      quoteIssuedAt: params.quoteIssuedAt,
+      quoteExpiresAt: params.quoteExpiresAt,
+      state: "accepted",
+      createdAt: params.createdAt,
+      updatedAt: acceptedAt,
+      payment: {
+        fromAddress: params.payer,
+        transactionHash: params.transactionHash,
+        network: params.network ?? undefined,
+        verifiedAt: acceptedAt,
+      },
+      responseData: result,
+    });
+  }
+
+  return params.res.status(200).json({
+    success: true,
+    executionModelVersion: EXECUTION_MODEL_VERSION,
+    data: {
+      ...responseData,
+      ...(params.recoveredAfterChargeFailure ? { recoveredAfterChargeFailure: true } : {}),
+    },
+    logs: getExecutionLogs(120),
+  });
+}
+
 async function executeToolProduct(productId: X402ToolProductId, jobId: string, input: X402ToolBaseInput | AssetScorecardInput | RebalanceInput): Promise<Record<string, unknown>> {
   if (productId === "market_regime") {
     return buildMarketRegimeResult(jobId);
@@ -2412,6 +2644,30 @@ async function handleX402ToolRequest(
   runningAllocateOrchestration.add(orchestrationKey);
 
   try {
+    const discoveryExtension = buildToolDiscoveryExtension(definition, definition.exampleOutput);
+    if (decisionId && isRecoverableFailedToolRecord(existingRecord)) {
+      return await executePaidToolRequest({
+        req,
+        res,
+        productId,
+        definition,
+        normalizedInput,
+        inputFingerprint,
+        decisionId,
+        execute,
+        options,
+        payer: existingRecord.payment.fromAddress,
+        transactionHash: existingRecord.payment.transactionHash,
+        network: existingRecord.payment.network ?? null,
+        quoteIssuedAt: existingRecord.quoteIssuedAt,
+        quoteExpiresAt: existingRecord.quoteExpiresAt,
+        createdAt: existingRecord.createdAt,
+        recoveredAfterChargeFailure: true,
+        applyStoredPaymentHeader: true,
+        discoveryExtension,
+      });
+    }
+
     const quoteDecisionId = decisionId ?? `quote-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     const activeQuoteWindow = existingRecord?.state === "quoted" && !isExpiredIsoTimestamp(existingRecord.quoteExpiresAt)
       ? {
@@ -2429,7 +2685,6 @@ async function handleX402ToolRequest(
       activeQuoteWindow.issuedAt,
       activeQuoteWindow.expiresAt,
     );
-    const discoveryExtension = buildToolDiscoveryExtension(definition, definition.exampleOutput);
     const challengeBody = buildToolChallengeBody({
       definition,
       decisionId: quoteDecisionId,
@@ -2553,116 +2808,28 @@ async function handleX402ToolRequest(
       );
     }
 
-    const jobId = buildToolJobId(productId, confirmedDecisionId);
-    if (!options?.skipPhase1) {
-      runPhase1({
-        jobId,
-        executionTimestamp: nowIso(),
-        riskMode: deriveRiskMode(normalizedInput.riskTolerance as AllocateRiskTolerance),
-        riskTolerance: normalizedInput.riskTolerance as string,
-        investmentTimeframe: normalizedInput.timeframe as string,
-        portfolioSegment: normalizedInput.portfolioSegment as string,
-        walletAddress: payer,
-      });
-    }
-
-    let result: Awaited<ReturnType<typeof execute>>;
-    try {
-      result = await execute(jobId);
-    } catch (executeErr) {
-      void sendAdminErrorEmail({
-        decisionId: confirmedDecisionId,
-        endpoint: definition.routePath,
-        productId,
-        errorReason: "execute_failed_post_settlement",
-        errorMessage: executeErr instanceof Error ? executeErr.message : String(executeErr),
-        walletAddress: payer,
-        transactionHash,
-        network: settlement.network ?? null,
-        chargedAmountUsdc: getX402ToolPriceUsdc(productId),
-        requestInput: normalizedInput as Record<string, unknown>,
-      });
-      throw executeErr;
-    }
-    const acceptedAt = nowIso();
-    const responseData: StoredToolResponseData = {
-      status: "completed",
-      endpoint: definition.routePath,
-      decisionId: confirmedDecisionId,
+    const response = await executePaidToolRequest({
+      req,
+      res,
       productId,
-      payment: {
-        required: true,
-        chargedAmountUsdc: getX402ToolPriceUsdc(productId),
-        verified: true,
-        fromAddress: payer,
-        transactionHash,
-        network: settlement.network ?? null,
-      },
-      result,
-    };
-
-    stateStore.setToolRecord(productId, confirmedDecisionId, {
-      decisionId: confirmedDecisionId,
-      productId,
+      definition,
+      normalizedInput,
       inputFingerprint,
-      requestBody: normalizedInput,
-      chargedAmountUsdc: getX402ToolPriceUsdc(productId),
+      decisionId: confirmedDecisionId,
+      execute,
+      options,
+      payer,
+      transactionHash,
+      network: settlement.network ?? null,
       quoteIssuedAt: activeQuoteWindow.issuedAt,
       quoteExpiresAt: activeQuoteWindow.expiresAt,
-      state: "accepted",
-      createdAt: existingRecord?.createdAt ?? acceptedAt,
-      updatedAt: acceptedAt,
-      payment: {
-        fromAddress: payer,
-        transactionHash,
-        network: settlement.network,
-        verifiedAt: acceptedAt,
-      },
-      responseData: result,
+      createdAt: existingRecord?.createdAt ?? nowIso(),
+      discoveryExtension,
     });
-    incrementAddressUsage(payer);
-
-    void sendAdminUsageEmail({
-      channel: options?.usageChannel ?? "x402_allocate",
-      decisionId: confirmedDecisionId,
-      endpoint: definition.routePath,
-      productId,
-      walletAddress: payer,
-      resultEmail:
-        typeof req.body?.resultEmail === "string" && isValidEmail(req.body.resultEmail.trim().toLowerCase())
-          ? req.body.resultEmail.trim().toLowerCase()
-          : null,
-      promoCode: typeof req.body?.promoCode === "string" && req.body.promoCode.trim()
-        ? req.body.promoCode.trim()
-        : null,
-      chargedAmountUsdc: getX402ToolPriceUsdc(productId),
-      transactionHash,
-      paymentMethod: "x402",
-      paymentNetwork: settlement.network ?? null,
-      includeCertifiedDecisionRecord: false,
-      riskTolerance: normalizedInput.riskTolerance as string,
-      timeframe: normalizedInput.timeframe as string,
-      jobId,
-      requestInput: normalizedInput,
-      responseOutput: {
-        success: true,
-        executionModelVersion: EXECUTION_MODEL_VERSION,
-        data: responseData,
-      },
-    }).catch((error) => {
-      console.error(`Failed to send Selun admin usage email (${productId}):`, error);
-    });
-
-    attachBazaarDiscovery(res, discoveryExtension);
     if (settlement.success) {
       applySettlementResponseHeaders(res, settlement);
     }
-    return res.status(200).json({
-      success: true,
-      executionModelVersion: EXECUTION_MODEL_VERSION,
-      data: responseData,
-      logs: getExecutionLogs(120),
-    });
+    return response;
   } catch (error) {
     return failure(res, error, 500);
   } finally {

@@ -5,6 +5,7 @@ import { normalizePortfolioSegment } from "./portfolio-segments";
 import type {
   AllocateInputShape,
   X402AllocateRecord,
+  X402PostSettlementFailureRecord,
   X402RefundRecord,
   X402ToolProductId,
   X402ToolRecord,
@@ -116,6 +117,24 @@ function normalizeRefundRecord(value: unknown): X402RefundRecord | undefined {
   };
 }
 
+function normalizePostSettlementFailureRecord(value: unknown): X402PostSettlementFailureRecord | undefined {
+  if (!isObject(value)) return undefined;
+
+  const failedAt = toIsoOrNow(value.failedAt);
+  const reason = typeof value.reason === "string" && value.reason.trim() ? value.reason.trim() : "";
+  const message = typeof value.message === "string" && value.message.trim() ? value.message.trim() : undefined;
+
+  if (!reason) {
+    return undefined;
+  }
+
+  return {
+    failedAt,
+    reason,
+    ...(message ? { message } : {}),
+  };
+}
+
 function normalizeAllocateRecord(decisionId: string, value: unknown): X402AllocateRecord | null {
   if (!isObject(value)) return null;
 
@@ -179,10 +198,18 @@ function normalizeToolRecord(key: string, value: unknown): X402ToolRecord | null
   const chargedAmountUsdc = typeof value.chargedAmountUsdc === "string" ? value.chargedAmountUsdc.trim() : "";
   const quoteIssuedAt = toIsoOrNow(value.quoteIssuedAt);
   const quoteExpiresAt = toIsoOrNow(value.quoteExpiresAt);
-  const state = value.state === "accepted" ? "accepted" : value.state === "quoted" ? "quoted" : null;
+  const state =
+    value.state === "accepted"
+      ? "accepted"
+      : value.state === "quoted"
+        ? "quoted"
+        : value.state === "failed_post_settlement"
+          ? "failed_post_settlement"
+          : null;
   const createdAt = toIsoOrNow(value.createdAt);
   const updatedAt = toIsoOrNow(value.updatedAt);
   const responseData = normalizeRecordPayload(value.responseData);
+  const failure = normalizePostSettlementFailureRecord(value.failure);
 
   if (!decisionId || !productId || !inputFingerprint || !requestBody || !chargedAmountUsdc || !state) {
     return null;
@@ -225,6 +252,7 @@ function normalizeToolRecord(key: string, value: unknown): X402ToolRecord | null
     updatedAt,
     ...(responseData ? { responseData } : {}),
     ...(payment ? { payment } : {}),
+    ...(failure ? { failure } : {}),
     ...(refund ? { refund } : {}),
   };
 }

@@ -22,6 +22,12 @@ export type X402RefundRecord = {
   note?: string;
 };
 
+export type X402PostSettlementFailureRecord = {
+  failedAt: string;
+  reason: string;
+  message?: string;
+};
+
 export type AllocateInputShape = {
   riskTolerance: AllocateRiskTolerance;
   timeframe: AllocateTimeframe;
@@ -51,7 +57,7 @@ export type X402AllocateRecord = {
   refund?: X402RefundRecord;
 };
 
-export type X402ToolRecordState = "quoted" | "accepted";
+export type X402ToolRecordState = "quoted" | "accepted" | "failed_post_settlement";
 
 export type X402ToolRecord = {
   decisionId: string;
@@ -71,5 +77,6 @@ export type X402ToolRecord = {
     network?: string;
     verifiedAt: string;
   };
+  failure?: X402PostSettlementFailureRecord;
   refund?: X402RefundRecord;
 };
