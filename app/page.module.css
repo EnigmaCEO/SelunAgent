@@ -528,6 +528,71 @@
   flex-wrap: wrap;
 }
 
+.researchCard {
+  margin-top: 18px;
+  border: 1px solid rgba(44, 95, 145, 0.18);
+  border-radius: 14px;
+  background: rgba(245, 251, 255, 0.78);
+  backdrop-filter: blur(8px);
+  overflow: hidden;
+}
+
+.researchCardLink {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 16px 20px;
+  color: inherit;
+  text-decoration: none;
+  transition: background-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.researchCardLink:hover {
+  background: rgba(230, 246, 255, 0.78);
+  box-shadow: inset 3px 0 0 rgba(77, 196, 255, 0.78);
+}
+
+.researchCardLink:focus-visible {
+  outline: 2px solid rgba(63, 169, 236, 0.72);
+  outline-offset: -2px;
+}
+
+.researchCardCopy {
+  min-width: 0;
+}
+
+.researchCardEyebrow {
+  margin: 0 0 5px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(27, 70, 105, 0.56);
+}
+
+.researchCardTitle {
+  margin: 0;
+  font-family: var(--font-display), "Space Grotesk", "Avenir Next", sans-serif;
+  font-size: clamp(16px, 2vw, 19px);
+  line-height: 1.25;
+  color: #08213d;
+}
+
+.researchCardSummary {
+  margin: 5px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #2f557a;
+}
+
+.researchCardAction {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: #1f6e9f;
+}
+
 .footerCopy {
   margin: 0;
   font-size: 12px;
@@ -998,6 +1063,13 @@
   .footerLinks {
     flex-wrap: wrap;
     justify-content: center;
+  }
+
+  .researchCardLink {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+    padding: 15px 16px;
   }
 }
 

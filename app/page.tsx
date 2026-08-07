@@ -16,6 +16,9 @@ import {
 
 const DECORATIVE_STEPS = ["1. Your Profile", "2. Market Check", "3. Your Portfolio Plan"] as const;
 
+const ALLOCATION_RESEARCH_URL =
+  "https://www.sagitta.systems/newsroom/what-aggressive-means-in-a-defensive-market";
+
 const SAMPLE_CONDITION = {
   label: "BALANCED",
   strategy: "Balanced Growth",
@@ -219,6 +222,31 @@ function HomeContent() {
             </div>
           </div>
         </section>
+
+        <aside
+          className={`${styles.researchCard} ${styles.reveal} ${styles.delay2}`}
+          aria-labelledby="allocation-research-title"
+        >
+          <a
+            className={styles.researchCardLink}
+            href={ALLOCATION_RESEARCH_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <div className={styles.researchCardCopy}>
+              <p className={styles.researchCardEyebrow}>Allocation Research · Sagitta Systems</p>
+              <h2 id="allocation-research-title" className={styles.researchCardTitle}>
+                What Aggressive Means in a Defensive Market
+              </h2>
+              <p className={styles.researchCardSummary}>
+                See how risk tolerance changes Selun&apos;s allocation while the market state stays the same.
+              </p>
+            </div>
+            <span className={styles.researchCardAction}>
+              Read the analysis <span aria-hidden>↗</span>
+            </span>
+          </a>
+        </aside>
 
         <footer className={styles.siteFooter}>
           <p className={styles.footerCopy}>(c) {currentYear} Sagitta Labs</p>
