@@ -1489,9 +1489,9 @@ async function queryExecutionStatus(jobId: string): Promise<ExecutionStatusRespo
     cache: "no-store",
   });
 
-  const payload = (await response.json()) as ExecutionStatusResponse;
+  const payload = (await response.json()) as ExecutionStatusResponse & { detail?: string };
   if (!response.ok) {
-    throw new Error(payload.error || "Unable to poll execution status.");
+    throw new Error(payload.error || payload.detail || `Unable to poll execution status (${response.status}).`);
   }
   return payload;
 }
@@ -4469,11 +4469,15 @@ function SelunAllocationWizard() {
           );
         } else {
           setPhase1Status("in_progress");
+          setPhase1Error(null);
         }
 
       } catch (error) {
         if (cancelled) return;
-        setPhase1Status("failed");
+        // A polling/network failure is not an execution failure. Keep the phase
+        // running so a subsequent poll can recover and only paint it as failed
+        // when the backend explicitly reports a failed phase.
+        setPhase1Status((current) => current === "failed" ? current : "in_progress");
         setPhase1Error(error instanceof Error ? error.message : "Unable to poll Phase 1 execution.");
       }
     };
@@ -5604,4 +5608,3 @@ export default function WizardPage() {
     </main>
   );
 }
-

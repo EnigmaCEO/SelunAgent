@@ -334,7 +334,7 @@ No price prediction.
 No recommendations.
 Only deterministic rule-based transformations.
 `.trim();
-const PHASE2_AGENT_REASONING_PROVIDER = "coinbase-agentkit";
+const PHASE2_AGENT_REASONING_PROVIDER = "selun-doctrine-cdp";
 
 const POSITIVE_NEWS_TOKENS = [
   "surge",
@@ -9547,7 +9547,7 @@ async function executePhase3(jobId: string): Promise<void> {
         ],
         skipped_reason: null,
       };
-      selectionRules.add("phase3_agent_engaged:coinbase-agentkit");
+      selectionRules.add("phase3_agent_engaged:coinbase-cdp-wallet");
     } catch (error) {
       missingDomains.add("phase3_agent_identity_unavailable");
       agentProfileMatch = {
@@ -9826,7 +9826,7 @@ async function executePhase4(jobId: string): Promise<void> {
         `policy_mode:${phase2Output.allocation_policy.mode}`,
         `stablecoin_minimum:${round(phase2Output.policy_envelope.stablecoin_minimum, 4)}`,
       ];
-      selectionRules.add("phase4_agent_engaged:coinbase-agentkit");
+      selectionRules.add("phase4_agent_engaged:coinbase-cdp-wallet");
     } catch (error) {
       const skippedReason =
         error instanceof Error ? `phase4_agent_engagement_error:${error.message}` : "phase4_agent_engagement_error:unknown";
@@ -10136,7 +10136,7 @@ async function executePhase5(jobId: string): Promise<void> {
         `investment_timeframe:${phase2Output.inputs.user_profile.investment_timeframe}`,
         `risk_budget:${round(phase2Output.policy_envelope.risk_budget, 4)}`,
       ];
-      selectionRules.add("phase5_agent_engaged:coinbase-agentkit");
+      selectionRules.add("phase5_agent_engaged:coinbase-cdp-wallet");
     } catch (error) {
       const skippedReason =
         error instanceof Error ? `phase5_agent_engagement_error:${error.message}` : "phase5_agent_engagement_error:unknown";
@@ -10444,7 +10444,7 @@ async function executePhase6(jobId: string): Promise<void> {
         `investment_timeframe:${phase2Output.inputs.user_profile.investment_timeframe}`,
         `risk_budget:${round(phase5Output.inputs.portfolio_constraints.risk_budget, 4)}`,
       ];
-      selectionRules.add("phase6_agent_engaged:coinbase-agentkit");
+      selectionRules.add("phase6_agent_engaged:coinbase-cdp-wallet");
     } catch (error) {
       const skippedReason =
         error instanceof Error ? `phase6_agent_engagement_error:${error.message}` : "phase6_agent_engagement_error:unknown";

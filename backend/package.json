@@ -17,7 +17,7 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@coinbase/agentkit": "0.10.4",
+    "@coinbase/cdp-sdk": "1.44.1",
     "@coinbase/x402": "^2.1.0",
     "@x402/core": "2.5.0",
     "@x402/evm": "2.5.0",

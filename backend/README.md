@@ -1,6 +1,6 @@
 # Selun Express Backend
 
-This backend adds Coinbase AgentKit operational identity and on-chain operations for Selun on Base.
+This backend adds Coinbase CDP operational identity and on-chain operations for Selun on Base.
 
 Copy `backend/env.example` to `backend/.env` and set values there.
 Frontend should only keep `SELUN_BACKEND_URL` plus UI-safe vars in `.env.local`.

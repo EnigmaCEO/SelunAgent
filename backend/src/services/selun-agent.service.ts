@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { AgentKit, CdpEvmWalletProvider, walletActionProvider } from "@coinbase/agentkit";
 import { CdpClient, type EvmServerAccount } from "@coinbase/cdp-sdk";
 import {
   createPublicClient,
@@ -63,8 +62,7 @@ type AgentIdentity = {
 };
 
 type AgentRuntimeContext = {
-  agentKit: AgentKit;
-  walletProvider: CdpEvmWalletProvider;
+  walletProvider: CdpWalletRuntime;
   identity: AgentIdentity;
 };
 
@@ -750,6 +748,62 @@ function createConfiguredPublicClient(config = getConfig()) {
   });
 }
 
+type CdpWalletTransaction = {
+  to?: Address;
+  value?: bigint;
+  data?: Hex;
+};
+
+class CdpWalletRuntime {
+  readonly account: EvmServerAccount;
+  private readonly network: "base" | "base-sepolia";
+  private readonly publicClient: ReturnType<typeof createConfiguredPublicClient>;
+
+  constructor(account: EvmServerAccount, config = getConfig()) {
+    this.account = account;
+    this.network = getCdpTransferNetwork(config);
+    this.publicClient = createConfiguredPublicClient(config);
+  }
+
+  getPublicClient() {
+    return this.publicClient;
+  }
+
+  getBalance() {
+    return this.publicClient.getBalance({ address: this.account.address });
+  }
+
+  async sendTransaction(transaction: CdpWalletTransaction): Promise<Hex> {
+    const result = await this.account.sendTransaction({
+      network: this.network,
+      transaction: {
+        to: transaction.to,
+        value: transaction.value ?? 0n,
+        data: transaction.data ?? "0x",
+      },
+    });
+    return result.transactionHash;
+  }
+
+  waitForTransactionReceipt(transactionHash: Hex) {
+    return this.publicClient.waitForTransactionReceipt({ hash: transactionHash });
+  }
+}
+
+async function createCdpWalletRuntime(
+  input: { address?: Address; idempotencyKey?: string },
+  config = getConfig(),
+): Promise<CdpWalletRuntime> {
+  const cdp = createConfiguredCdpClient(config);
+  const account = input.address
+    ? await cdp.evm.getAccount({ address: input.address })
+    : await cdp.evm.createAccount({
+      ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
+    });
+
+  return new CdpWalletRuntime(account, config);
+}
+
 function getConfiguredChain(config = getConfig()) {
   return config.networkId === "base-mainnet" ? base : baseSepolia;
 }
@@ -936,7 +990,7 @@ function normalizeSwapSlippageBps(value: unknown, fallback = 100): number {
 
 async function getSellerWalletContext(sellerAddress?: Address): Promise<{
   identity: AgentIdentity;
-  walletProvider: CdpEvmWalletProvider;
+  walletProvider: CdpWalletRuntime;
 }> {
   const runtime = await getRuntimeContext();
   if (!sellerAddress || runtime.identity.walletAddress.toLowerCase() === sellerAddress.toLowerCase()) {
@@ -947,21 +1001,15 @@ async function getSellerWalletContext(sellerAddress?: Address): Promise<{
   }
 
   const config = getConfig();
-  const walletProvider = await CdpEvmWalletProvider.configureWithWallet({
-    apiKeyId: config.coinbaseApiKey,
-    apiKeySecret: config.coinbaseApiSecret,
-    walletSecret: config.coinbaseWalletSecret,
-    networkId: config.networkId,
-    rpcUrl: config.baseRpc,
+  const walletProvider = await createCdpWalletRuntime({
     address: sellerAddress,
-  });
-  const exportedWallet = await walletProvider.exportWallet();
+  }, config);
 
   return {
     identity: {
-      agentId: exportedWallet.name || sellerAddress!,
-      walletAddress: exportedWallet.address,
-      network: walletProvider.getNetwork().networkId || config.networkId,
+      agentId: walletProvider.account.name || sellerAddress!,
+      walletAddress: walletProvider.account.address,
+      network: config.networkId,
     },
     walletProvider,
   };
@@ -1005,43 +1053,20 @@ export async function initializeAgent(): Promise<AgentIdentity> {
   });
 
   const walletAddressToLoad = resolveConfiguredWalletAddress(config.agentWalletId, persistedIdentity, config.networkId);
-  const walletProvider = await CdpEvmWalletProvider.configureWithWallet({
-    apiKeyId: config.coinbaseApiKey,
-    apiKeySecret: config.coinbaseApiSecret,
-    walletSecret: config.coinbaseWalletSecret,
-    networkId: config.networkId,
-    rpcUrl: config.baseRpc,
+  const walletProvider = await createCdpWalletRuntime({
     address: walletAddressToLoad,
     idempotencyKey: walletAddressToLoad ? undefined : idempotencyKey,
-  });
+  }, config);
 
-  const walletNetwork = walletProvider.getNetwork().networkId;
-  if (walletNetwork !== config.networkId) {
-    emitExecutionLog({
-      phase: "AGENT_INIT",
-      action: "validate_network",
-      status: "error",
-      transactionHash: null,
-    });
-    throw new Error(`Agent wallet network must be ${config.networkId}. Received ${walletNetwork}.`);
-  }
-
-  const exportedWallet = await walletProvider.exportWallet();
   const identity: AgentIdentity = {
-    agentId: exportedWallet.name || config.agentWalletId,
-    walletAddress: exportedWallet.address,
-    network: walletNetwork,
+    agentId: walletProvider.account.name || config.agentWalletId,
+    walletAddress: walletProvider.account.address,
+    network: config.networkId,
   };
 
   writePersistedIdentity(identity);
 
-  const agentKit = await AgentKit.from({
-    walletProvider,
-    actionProviders: [walletActionProvider()],
-  });
-
   cachedRuntime = {
-    agentKit,
     walletProvider,
     identity,
   };
@@ -1113,7 +1138,7 @@ export async function getAgentUSDCBalance(): Promise<{
     transactionHash: null,
   });
 
-  const balance = await runtime.walletProvider.readContract({
+  const balance = await runtime.walletProvider.getPublicClient().readContract({
     address: config.usdcContractAddress,
     abi: ERC20_BALANCE_OF_ABI,
     functionName: "balanceOf",
@@ -1536,7 +1561,7 @@ export async function verifyIncomingPayment(input: PaymentVerificationInput): Pr
     transactionHash: null,
   });
 
-  let runtimeClient: ReturnType<CdpEvmWalletProvider["getPublicClient"]> | null = null;
+  let runtimeClient: ReturnType<CdpWalletRuntime["getPublicClient"]> | null = null;
   try {
     const runtime = await getRuntimeContext();
     runtimeClient = runtime.walletProvider.getPublicClient();
@@ -1551,7 +1576,7 @@ export async function verifyIncomingPayment(input: PaymentVerificationInput): Pr
   const client = runtimeClient ??
     (createPublicClient({
       transport: http(config.baseRpc),
-    }) as ReturnType<CdpEvmWalletProvider["getPublicClient"]>);
+    }) as ReturnType<CdpWalletRuntime["getPublicClient"]>);
 
   if (providedTransactionHash) {
     if (!/^0x[a-fA-F0-9]{64}$/.test(providedTransactionHash)) {
@@ -1759,7 +1784,7 @@ export async function transferSellerUsdc(input: SellerUsdcTransferInput): Promis
 
   const [nativeBalanceBefore, usdcBalanceBefore] = await Promise.all([
     runtime.walletProvider.getBalance(),
-    runtime.walletProvider.readContract({
+    runtime.walletProvider.getPublicClient().readContract({
       address: config.usdcContractAddress,
       abi: ERC20_BALANCE_OF_ABI,
       functionName: "balanceOf",
@@ -1787,7 +1812,7 @@ export async function transferSellerUsdc(input: SellerUsdcTransferInput): Promis
 
   const [nativeBalanceAfter, usdcBalanceAfter] = await Promise.all([
     runtime.walletProvider.getBalance(),
-    runtime.walletProvider.readContract({
+    runtime.walletProvider.getPublicClient().readContract({
       address: config.usdcContractAddress,
       abi: ERC20_BALANCE_OF_ABI,
       functionName: "balanceOf",
@@ -1843,7 +1868,7 @@ export async function swapSellerUsdcToEth(input: SellerUsdcToEthSwapInput): Prom
 
   const [nativeBalanceBefore, usdcBalanceBefore] = await Promise.all([
     runtime.walletProvider.getBalance(),
-    runtime.walletProvider.readContract({
+    runtime.walletProvider.getPublicClient().readContract({
       address: config.usdcContractAddress,
       abi: ERC20_BALANCE_OF_ABI,
       functionName: "balanceOf",
@@ -1902,7 +1927,7 @@ export async function swapSellerUsdcToEth(input: SellerUsdcToEthSwapInput): Prom
 
   const [nativeBalanceAfter, usdcBalanceAfter] = await Promise.all([
     runtime.walletProvider.getBalance(),
-    runtime.walletProvider.readContract({
+    runtime.walletProvider.getPublicClient().readContract({
       address: config.usdcContractAddress,
       abi: ERC20_BALANCE_OF_ABI,
       functionName: "balanceOf",

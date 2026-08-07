@@ -14,8 +14,6 @@ function getPublicBackendOrigin() {
 
 const nextConfig: NextConfig = {
   serverExternalPackages: [
-    "@coinbase/agentkit",
-    "@coinbase/cdp-sdk",
     "@coinbase/coinbase-sdk",
     "@solana/web3.js",
     "@solana/spl-token",
