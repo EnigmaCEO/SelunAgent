@@ -1221,12 +1221,15 @@ function buildRequestScopedPaymentRequirement(params: {
   };
 }
 
+export const X402_ALLOCATE_EXAMPLE_DECISION_ID = "agent-run-001";
+export const X402_ALLOCATE_WITH_REPORT_EXAMPLE_DECISION_ID = "agent-report-run-001";
+
 function buildAllocateDiscoveryExtension() {
   return declareDiscoveryExtension({
     description: X402_PUBLIC_DESCRIPTIONS.allocate,
     bodyType: "json",
     input: {
-      decisionId: "agent-run-001",
+      decisionId: X402_ALLOCATE_EXAMPLE_DECISION_ID,
       riskTolerance: "Balanced",
       timeframe: "1-3_years",
       portfolioSegment: "Bluechips",
@@ -1250,7 +1253,7 @@ function buildAllocateDiscoveryExtension() {
         data: {
           status: "accepted",
           jobId: "selun-allocate-agent-run-001-1700000000000",
-          decisionId: "agent-run-001",
+          decisionId: X402_ALLOCATE_EXAMPLE_DECISION_ID,
           statusPath: "/execution-status/selun-allocate-agent-run-001-1700000000000",
         },
       },
@@ -1263,7 +1266,7 @@ function buildAllocateWithReportDiscoveryExtension() {
     description: X402_PUBLIC_DESCRIPTIONS.allocateWithReport,
     bodyType: "json",
     input: {
-      decisionId: "agent-run-001",
+      decisionId: X402_ALLOCATE_WITH_REPORT_EXAMPLE_DECISION_ID,
       riskTolerance: "Balanced",
       timeframe: "1-3_years",
       portfolioSegment: "Bluechips",
@@ -1286,9 +1289,9 @@ function buildAllocateWithReportDiscoveryExtension() {
         executionModelVersion: EXECUTION_MODEL_VERSION,
         data: {
           status: "accepted",
-          jobId: "selun-allocate-agent-run-001-1700000000000",
-          decisionId: "agent-run-001",
-          statusPath: "/execution-status/selun-allocate-agent-run-001-1700000000000",
+          jobId: "selun-allocate-agent-report-run-001-1700000000000",
+          decisionId: X402_ALLOCATE_WITH_REPORT_EXAMPLE_DECISION_ID,
+          statusPath: "/execution-status/selun-allocate-agent-report-run-001-1700000000000",
         },
       },
     },
@@ -1652,6 +1655,10 @@ function idempotentToolResponse(res: Response, productId: X402ToolProductId, dec
   const stored = getStoredToolResponse(productId, decisionId);
   if (!stored) {
     return failure(res, new Error("Stored x402 result is unavailable."), 500);
+  }
+  const record = getX402StateStore().getToolRecord(productId, decisionId);
+  if (record) {
+    applyStoredToolPaymentResponseHeader(res, record);
   }
 
   return res.status(200).json({
@@ -2365,6 +2372,52 @@ function sendToolConflict(
   });
 }
 
+export function paymentPayersMatch(storedPayer: string, verifiedPayer: string): boolean {
+  if (isAddress(storedPayer) && isAddress(verifiedPayer)) {
+    return storedPayer.toLowerCase() === verifiedPayer.toLowerCase();
+  }
+  return storedPayer === verifiedPayer;
+}
+
+export function isStoredToolReplayFresh(record: X402ToolRecord, nowMs = Date.now()): boolean {
+  if (!record.productId.startsWith("sce_")) return true;
+  const validUntil = record.responseData?.validUntil;
+  if (validUntil === null || validUntil === undefined) return true;
+  if (typeof validUntil !== "string") return false;
+  const validUntilMs = Date.parse(validUntil);
+  return Number.isFinite(validUntilMs) && validUntilMs > nowMs;
+}
+
+export type StoredToolReplayAuthorization = "authorized" | "payer_mismatch" | "stale";
+
+export function authorizeStoredToolReplay(
+  record: X402ToolRecord,
+  verifiedPayer: string,
+  nowMs = Date.now(),
+): StoredToolReplayAuthorization {
+  const storedPayer = record.payment?.fromAddress;
+  if (!storedPayer || !paymentPayersMatch(storedPayer, verifiedPayer)) {
+    return "payer_mismatch";
+  }
+  return isStoredToolReplayFresh(record, nowMs) ? "authorized" : "stale";
+}
+
+function sendIdempotencyPayerMismatch(
+  res: Response,
+  endpoint: string,
+  decisionId: string,
+) {
+  return res.status(403).json({
+    success: false,
+    executionModelVersion: EXECUTION_MODEL_VERSION,
+    error: "idempotency_payer_mismatch",
+    endpoint,
+    decisionId,
+    message: "This decisionId belongs to a different payer.",
+    logs: getExecutionLogs(120),
+  });
+}
+
 function isRecoverableFailedToolRecord(record: X402ToolRecord | undefined): record is X402ToolRecord & {
   state: "failed_post_settlement";
   payment: NonNullable<X402ToolRecord["payment"]>;
@@ -2626,9 +2679,6 @@ async function handleX402ToolRequest(
   const inputFingerprint = computeToolInputFingerprint(normalizedInput);
   const stateStore = getX402StateStore();
   const existingRecord = decisionId ? stateStore.getToolRecord(productId, decisionId) : undefined;
-  if (existingRecord?.state === "accepted" && existingRecord.responseData) {
-    return idempotentToolResponse(res, productId, decisionId as string);
-  }
   if (existingRecord && existingRecord.inputFingerprint !== inputFingerprint) {
     return sendToolConflict(res, definition, decisionId as string);
   }
@@ -2645,29 +2695,6 @@ async function handleX402ToolRequest(
 
   try {
     const discoveryExtension = buildToolDiscoveryExtension(definition, definition.exampleOutput);
-    if (decisionId && isRecoverableFailedToolRecord(existingRecord)) {
-      return await executePaidToolRequest({
-        req,
-        res,
-        productId,
-        definition,
-        normalizedInput,
-        inputFingerprint,
-        decisionId,
-        execute,
-        options,
-        payer: existingRecord.payment.fromAddress,
-        transactionHash: existingRecord.payment.transactionHash,
-        network: existingRecord.payment.network ?? null,
-        quoteIssuedAt: existingRecord.quoteIssuedAt,
-        quoteExpiresAt: existingRecord.quoteExpiresAt,
-        createdAt: existingRecord.createdAt,
-        recoveredAfterChargeFailure: true,
-        applyStoredPaymentHeader: true,
-        discoveryExtension,
-      });
-    }
-
     const quoteDecisionId = decisionId ?? `quote-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     const activeQuoteWindow = existingRecord?.state === "quoted" && !isExpiredIsoTimestamp(existingRecord.quoteExpiresAt)
       ? {
@@ -2693,7 +2720,7 @@ async function handleX402ToolRequest(
       quoteExpiresAt: activeQuoteWindow.expiresAt,
     });
 
-    if (decisionId) {
+    if (decisionId && (!existingRecord || existingRecord.state === "quoted")) {
       stateStore.setToolRecord(productId, decisionId, {
         decisionId,
         productId,
@@ -2736,6 +2763,45 @@ async function handleX402ToolRequest(
     const payer = verifyResult.payer?.trim();
     if (!payer || (!isAddress(payer) && !validateSvmAddress(payer))) {
       return failure(res, new Error("x402 facilitator did not return a valid payer address."), 502);
+    }
+
+    if (decisionId && existingRecord?.state === "accepted" && existingRecord.responseData) {
+      const replayAuthorization = authorizeStoredToolReplay(existingRecord, payer);
+      if (replayAuthorization === "payer_mismatch") {
+        return sendIdempotencyPayerMismatch(res, definition.routePath, decisionId);
+      }
+      if (replayAuthorization === "authorized") {
+        attachBazaarDiscovery(res, discoveryExtension);
+        return idempotentToolResponse(res, productId, decisionId);
+      }
+      // A time-bound SCE result has expired. The original payer may settle a
+      // fresh payment below to refresh the stored result for this decisionId.
+    }
+
+    if (decisionId && isRecoverableFailedToolRecord(existingRecord)) {
+      if (!paymentPayersMatch(existingRecord.payment.fromAddress, payer)) {
+        return sendIdempotencyPayerMismatch(res, definition.routePath, decisionId);
+      }
+      return await executePaidToolRequest({
+        req,
+        res,
+        productId,
+        definition,
+        normalizedInput,
+        inputFingerprint,
+        decisionId,
+        execute,
+        options,
+        payer: existingRecord.payment.fromAddress,
+        transactionHash: existingRecord.payment.transactionHash,
+        network: existingRecord.payment.network ?? null,
+        quoteIssuedAt: existingRecord.quoteIssuedAt,
+        quoteExpiresAt: existingRecord.quoteExpiresAt,
+        createdAt: existingRecord.createdAt,
+        recoveredAfterChargeFailure: true,
+        applyStoredPaymentHeader: true,
+        discoveryExtension,
+      });
     }
 
     if (getAddressUsageCount(payer) >= getX402FromAddressDailyCap()) {
@@ -4009,11 +4075,6 @@ async function handleX402AllocateRequest(
   }
 
   const stateStore = getX402StateStore();
-  const existingRecord = decisionId ? stateStore.getAllocateRecord(decisionId) : undefined;
-
-  if (existingRecord?.state === "accepted" && existingRecord.jobId) {
-    return idempotentResponse(res, existingRecord);
-  }
 
   if (decisionId && !riskTolerance) {
     return failure(
@@ -4044,7 +4105,7 @@ async function handleX402AllocateRequest(
     return sendAllocateConflict(res, decisionId, decisionScopedRecord.inputs, inputShape);
   }
 
-  if (decisionScopedRecord?.state === "accepted" && decisionScopedRecord.jobId) {
+  if (!requiresPayment && decisionScopedRecord?.state === "accepted" && decisionScopedRecord.jobId) {
     return idempotentResponse(res, decisionScopedRecord);
   }
 
@@ -4083,7 +4144,7 @@ async function handleX402AllocateRequest(
       quoteExpiresAt: activeQuoteWindow.expiresAt,
     });
 
-    if (decisionId) {
+    if (decisionId && (!decisionScopedRecord || decisionScopedRecord.state === "quoted")) {
       stateStore.setAllocateRecord(decisionId, {
         decisionId,
         inputFingerprint,
@@ -4192,6 +4253,15 @@ async function handleX402AllocateRequest(
     const payer = verifyResult.payer?.trim();
     if (!payer || (!isAddress(payer) && !validateSvmAddress(payer))) {
       return failure(res, new Error("x402 facilitator did not return a valid payer address."), 502);
+    }
+
+    if (decisionId && decisionScopedRecord?.state === "accepted" && decisionScopedRecord.jobId) {
+      const storedPayer = decisionScopedRecord.payment?.fromAddress;
+      if (!storedPayer || !paymentPayersMatch(storedPayer, payer)) {
+        return sendIdempotencyPayerMismatch(res, options.routePath, decisionId);
+      }
+      attachBazaarDiscovery(res, options.discoveryExtension);
+      return idempotentResponse(res, decisionScopedRecord);
     }
 
     if (getAddressUsageCount(payer) >= getX402FromAddressDailyCap()) {
