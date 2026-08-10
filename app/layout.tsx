@@ -17,6 +17,8 @@ const bodyFont = Manrope({
 
 const siteUrl = process.env.NEXT_PUBLIC_SITE_URL?.trim() || "https://selun.sagitta.systems";
 const siteTitle = "Selun | Crypto Portfolio Plan";
+// base.dev domain verification for Builder Codes.
+const baseAppId = "6a7a00df85896ee843331859";
 const siteDescription =
   "Payment-gated x402 endpoints for Sagitta AAA portfolio intelligence and SCE execution preflight. Includes allocation, market regime, policy envelope, asset scoring, rebalance, continuity mode, case relevance, and doctrine-based risk evaluation for autonomous agents.";
 
@@ -49,6 +51,9 @@ export const metadata: Metadata = {
     icon: [{ url: "/selun-mark.svg?v=2", type: "image/svg+xml" }],
     shortcut: [{ url: "/selun-mark.svg?v=2", type: "image/svg+xml" }],
     apple: [{ url: "/selun-mark.svg?v=2", type: "image/svg+xml" }],
+  },
+  other: {
+    "base:app_id": baseAppId,
   },
 };
 
