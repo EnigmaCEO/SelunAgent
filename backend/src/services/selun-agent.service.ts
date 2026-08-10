@@ -17,6 +17,7 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { base, baseSepolia } from "viem/chains";
+import { appendBuilderCode } from "../builder-code";
 import { getConfig } from "../config";
 import { emitExecutionLog } from "../logging/execution-logs";
 import { resolveBackendDataFilePath } from "../runtime-paths";
@@ -779,7 +780,7 @@ class CdpWalletRuntime {
       transaction: {
         to: transaction.to,
         value: transaction.value ?? 0n,
-        data: transaction.data ?? "0x",
+        data: appendBuilderCode(transaction.data),
       },
     });
     return result.transactionHash;

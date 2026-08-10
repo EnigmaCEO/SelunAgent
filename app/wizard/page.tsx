@@ -4,6 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Fragment, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { appendBuilderCode } from "@/app/lib/builder-code";
 import {
   ACTIVE_REFERRAL_CODE_STORAGE_KEY,
   isAgentProgramReferrerId,
@@ -5204,7 +5205,9 @@ function SelunAllocationWizard() {
       }
 
       setPaymentStage("wallet_tx_prompt");
-      const transferData = encodeUsdcTransferCall(agentWallet.walletAddress, parseUsdcToBaseUnits(chargedAmountUsdcString));
+      const transferData = appendBuilderCode(
+        encodeUsdcTransferCall(agentWallet.walletAddress, parseUsdcToBaseUnits(chargedAmountUsdcString)),
+      );
 
       const transferHashRaw = await withTimeout(
         provider.request({
