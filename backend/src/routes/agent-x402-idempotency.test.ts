@@ -1,13 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { BUILDER_CODE } from "@x402/extensions/builder-code";
+import { BASE_BUILDER_CODE } from "../builder-code";
 import type { X402ToolRecord, X402ToolProductId } from "../services/x402-state.types";
 import {
   X402_ALLOCATE_EXAMPLE_DECISION_ID,
   X402_ALLOCATE_WITH_REPORT_EXAMPLE_DECISION_ID,
   authorizeStoredToolReplay,
+  buildX402RouteExtensions,
   isStoredToolReplayFresh,
   paymentPayersMatch,
 } from "./agent.routes";
+import fs from "node:fs";
+import path from "node:path";
 
 const EVM_PAYER = "0xfe2d5E9c5aE6E48B7F8b0b82AC4dE8B423bA0557";
 const OTHER_EVM_PAYER = "0x4A0Bff202c7Bdb3B49002fBD21ea8c821350f665";
@@ -43,6 +48,19 @@ test("allocation discovery examples use distinct decision IDs", () => {
     X402_ALLOCATE_EXAMPLE_DECISION_ID,
     X402_ALLOCATE_WITH_REPORT_EXAMPLE_DECISION_ID,
   );
+});
+
+test("x402 routes advertise Selun's Builder Code without dropping discovery metadata", () => {
+  const discovery = { bazaar: { info: { input: { type: "http" } } } };
+  const extensions = buildX402RouteExtensions(discovery);
+  const builderCode = extensions[BUILDER_CODE] as {
+    info?: { a?: string };
+    schema?: { properties?: { a?: { pattern?: string } } };
+  };
+
+  assert.equal(extensions.bazaar, discovery.bazaar);
+  assert.equal(builderCode.info?.a, BASE_BUILDER_CODE);
+  assert.equal(builderCode.schema?.properties?.a?.pattern, "^[a-z0-9_]{1,32}$");
 });
 
 test("paymentPayersMatch compares EVM addresses case-insensitively", () => {
@@ -88,4 +106,15 @@ test("malformed SCE validity timestamps are not replayed", () => {
 test("non-SCE tool replays are not freshness-limited", () => {
   const record = acceptedToolRecord("market_regime", "2026-08-09T11:00:00Z");
   assert.equal(authorizeStoredToolReplay(record, EVM_PAYER, NOW_MS), "authorized");
+});
+
+test("fresh tool settlement headers are applied before the paid response is sent", () => {
+  const source = fs.readFileSync(path.join(__dirname, "agent.routes.ts"), "utf8");
+  const transactionGuard = source.indexOf('if (!transactionHash)');
+  const applyHeaders = source.indexOf("applySettlementResponseHeaders(res, settlement);", transactionGuard);
+  const executePaid = source.indexOf("const response = await executePaidToolRequest({", transactionGuard);
+
+  assert.ok(transactionGuard >= 0, "settlement transaction guard is present");
+  assert.ok(applyHeaders > transactionGuard, "settlement headers are applied after settlement validation");
+  assert.ok(applyHeaders < executePaid, "settlement headers are applied before executePaidToolRequest sends JSON");
 });

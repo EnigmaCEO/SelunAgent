@@ -10,7 +10,13 @@ import { ExactSvmScheme as ExactSvmServerScheme } from "@x402/svm/exact/server";
 import { SOLANA_MAINNET_CAIP2, USDC_MAINNET_ADDRESS as USDC_SOLANA_MAINNET_ADDRESS, validateSvmAddress } from "@x402/svm";
 import { ExpressAdapter, x402HTTPResourceServer } from "@x402/express";
 import { bazaarResourceServerExtension, declareDiscoveryExtension } from "@x402/extensions/bazaar";
+import {
+  BUILDER_CODE,
+  builderCodeResourceServerExtension,
+  declareBuilderCodeExtension,
+} from "@x402/extensions/builder-code";
 import { formatUnits, isAddress, parseUnits } from "viem";
+import { BASE_BUILDER_CODE } from "../builder-code";
 import { EXECUTION_MODEL_VERSION, getConfig } from "../config";
 import { getExecutionLogs } from "../logging/execution-logs";
 import { getX402StateStore } from "../services/x402-state.service";
@@ -1398,9 +1404,7 @@ function buildAllocateRouteConfig(
     resource: buildAbsoluteResourceUrl(req, routePath),
     description,
     mimeType: "application/json",
-    extensions: {
-      ...discoveryExtension,
-    },
+    extensions: buildX402RouteExtensions(discoveryExtension),
     unpaidResponseBody: async () => ({
       contentType: "application/json",
       body: challengeBody,
@@ -1453,6 +1457,7 @@ async function getX402SellerServer(): Promise<x402ResourceServer> {
         server.register(SOLANA_MAINNET_CAIP2 as Network, new ExactSvmServerScheme());
       }
       server.registerExtension(bazaarResourceServerExtension);
+      server.registerExtension(builderCodeResourceServerExtension);
       await server.initialize();
       x402SellerServer = server;
       return server;
@@ -1591,9 +1596,7 @@ function buildToolRouteConfig(
     resource: buildAbsoluteResourceUrl(req, definition.routePath),
     description: definition.description,
     mimeType: "application/json",
-    extensions: {
-      ...discoveryExtension,
-    },
+    extensions: buildX402RouteExtensions(discoveryExtension),
     unpaidResponseBody: async () => ({
       contentType: "application/json",
       body: challengeBody,
@@ -1716,6 +1719,15 @@ function applyStoredPaymentResponseHeader(res: Response, record: X402AllocateRec
       network: (record.payment.network || toCaip2Network(getConfig().networkId)) as Network,
     }),
   );
+}
+
+export function buildX402RouteExtensions(
+  discoveryExtension: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    ...discoveryExtension,
+    [BUILDER_CODE]: declareBuilderCodeExtension(BASE_BUILDER_CODE),
+  };
 }
 
 function applyStoredToolPaymentResponseHeader(res: Response, record: X402ToolRecord) {
@@ -2860,6 +2872,13 @@ async function handleX402ToolRequest(
       return failure(res, new Error("x402 settlement completed without a transaction hash."), 502);
     }
 
+    // Settlement headers must be attached before executePaidToolRequest sends
+    // the JSON response. Applying them afterwards silently drops
+    // PAYMENT-RESPONSE on a fresh successful purchase.
+    if (settlement.success) {
+      applySettlementResponseHeaders(res, settlement);
+    }
+
     const confirmedDecisionId = decisionId;
     if (!confirmedDecisionId) {
       return failure(res, new Error("decisionId is required."), 400);
@@ -2892,9 +2911,6 @@ async function handleX402ToolRequest(
       createdAt: existingRecord?.createdAt ?? nowIso(),
       discoveryExtension,
     });
-    if (settlement.success) {
-      applySettlementResponseHeaders(res, settlement);
-    }
     return response;
   } catch (error) {
     return failure(res, error, 500);

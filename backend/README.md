@@ -405,6 +405,27 @@ The script:
 - decodes `PAYMENT-RESPONSE`
 - optionally polls `statusPath` until Phase 6 completes
 
+To inspect the continuity-mode `402` challenge without configuring a wallet or
+submitting a payment, run:
+
+```powershell
+$env:SELUN_BACKEND_URL="https://selun.sagitta.systems"
+# From the SelunAgent directory:
+npm run x402:smoke:sce:continuity-mode:402
+
+# Or from the AAA workspace root:
+npm --prefix .\SelunAgent run x402:smoke:sce:continuity-mode:402
+```
+
+This smoke prints a compact `402` error containing only the status, message,
+endpoint, price, quote, and payment requirements. It omits raw headers,
+Bazaar metadata, and server logs. It passes only when the endpoint returns
+`402` with a `PAYMENT-REQUIRED` header.
+
+The real wallet-backed smoke remains
+`npm run x402:smoke:sce:continuity-mode`. If payment fails, it prints only the
+HTTP status and decoded x402 error instead of dumping the full response logs.
+
 When `SELUN_X402_SMOKE_WITH_REPORT=true`, the smoke script automatically targets `/agent/x402/allocate-with-report`.
 When `SELUN_X402_SMOKE_URL` targets `/agent/x402/rebalance`, the script sends a default holdings set unless `SELUN_X402_SMOKE_HOLDINGS_JSON` is provided.
 When `SELUN_X402_SMOKE_URL` targets `/agent/x402/asset-scorecard`, the script sends `["BTC","ETH","SOL"]` unless `SELUN_X402_SMOKE_ASSETS_JSON` is provided.

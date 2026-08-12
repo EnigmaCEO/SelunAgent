@@ -48,7 +48,10 @@ const fetchWithPayment = wrapFetchWithPaymentFromConfig(fetch, {
   ],
 });
 
-await main();
+await main().catch((error) => {
+  console.error(`[smoke] failed: ${error instanceof Error ? error.message : String(error)}`);
+  process.exitCode = 1;
+});
 
 async function main() {
   console.log(`[smoke] buyer wallet: ${account.address}`);
@@ -87,16 +90,22 @@ async function main() {
   const paidBody = await readJsonBody(paidResponse);
   if (paidResponse.status !== 202 && paidResponse.status !== 200) {
     const failureDetails = decodePaymentRequiredFailure(paidResponse);
-    const reasonSuffix = failureDetails ? ` x402 error: ${failureDetails.error}.` : "";
-    throw new Error(`Paid request failed with ${paidResponse.status}.${reasonSuffix} Body: ${stringify(paidBody)}`);
+    const paymentError = failureDetails?.error ?? paidBody?.error ?? paidBody?.message ?? "unknown payment error";
+    throw new Error(`Paid request failed with HTTP ${paidResponse.status}: ${paymentError}`);
   }
 
   const paymentResponseHeader = paidResponse.headers.get("payment-response");
-  if (!paymentResponseHeader) {
-    throw new Error("Paid response did not include PAYMENT-RESPONSE.");
+  const decodedPaymentResponse = paymentResponseHeader
+    ? decodePaymentResponseHeader(paymentResponseHeader)
+    : paidBody?.data?.payment?.transactionHash
+      ? {
+        network: paidBody.data.payment.network ?? "unknown",
+        transaction: paidBody.data.payment.transactionHash,
+      }
+      : null;
+  if (!decodedPaymentResponse) {
+    throw new Error("Paid response did not include a PAYMENT-RESPONSE header or payment receipt in the response body.");
   }
-
-  const decodedPaymentResponse = decodePaymentResponseHeader(paymentResponseHeader);
   const statusPath = paidBody?.data?.statusPath;
 
   console.log(`[smoke] payment accepted: HTTP ${paidResponse.status}`);
