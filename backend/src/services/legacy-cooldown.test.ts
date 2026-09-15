@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type { Request, Response } from "express";
 import { CooldownStore, createLegacyCooldown, legacyClientIp } from "./legacy-cooldown";
 
@@ -26,6 +29,86 @@ test("old attempts expire and full stores reject new clients without evicting lo
   assert.equal(store.check(["ip:a", "wallet:a"], policy, 100_000), 0);
   assert.equal(store.check(["ip:b"], policy, 100_001), 60);
   assert.equal(store.check(["ip:b"], policy, 1_000_000), 0);
+});
+
+function fixture(t: TestContext): string {
+  const root = fs.realpathSync(os.tmpdir());
+  const directory = fs.mkdtempSync(path.join(root, "selun-cooldown-test-"));
+  t.after(() => {
+    assert.equal(path.dirname(fs.realpathSync(directory)), root);
+    assert.ok(path.basename(directory).startsWith("selun-cooldown-test-"));
+    fs.rmSync(directory, { recursive: true });
+  });
+  return path.join(directory, "state.json");
+}
+
+test("locks escalate to 30 minutes, 2 hours, and 24 hours across restarts", t => {
+  const file = fixture(t);
+  let now = 1_000_000;
+  for (const [index, seconds] of [1800, 7200, 86400, 86400].entries()) {
+    let store = new CooldownStore(100, file);
+    for (let i = 0; i < 3; i++) assert.equal(store.check(["ip:a", `wallet:${index}`], policy, now + i), 0);
+    assert.equal(store.check(["ip:a", `wallet:${index}`], policy, now + 3), seconds);
+    store = new CooldownStore(100, file);
+    assert.equal(store.strikeLevel(["ip:a"]), Math.min(index + 1, 3));
+    assert.equal(store.check(["ip:a"], policy, now + 1003), seconds - 1);
+    now += seconds * 1000 + 3;
+  }
+});
+
+test("a persisted lock applies across route groups without escalating on blocked requests", t => {
+  const file = fixture(t);
+  let store = new CooldownStore(100, file);
+  for (let i = 0; i < 3; i++) assert.equal(store.check(["ip:a"], policy, 100_000 + i, "checkout"), 0);
+  assert.equal(store.check(["ip:a"], policy, 100_003, "checkout"), 1800);
+  store = new CooldownStore(100, file);
+  assert.equal(store.check(["ip:a"], policy, 101_003, "email"), 1799);
+  assert.equal(store.strikeLevel(["ip:a"]), 1);
+  assert.equal(store.check(["ip:b"], policy, 101_003, "email"), 0);
+});
+
+test("strike history resets after seven quiet days, not when the short counter expires", t => {
+  const file = fixture(t);
+  let store = new CooldownStore(100, file);
+  for (let i = 0; i < 4; i++) store.check(["ip:a"], policy, 100_000 + i);
+  store = new CooldownStore(100, file);
+  assert.equal(store.check(["ip:a"], policy, 2_000_000), 0);
+  assert.equal(store.strikeLevel(["ip:a"]), 1);
+  const afterQuietPeriod = 100_003 + 7 * 24 * 60 * 60_000;
+  store = new CooldownStore(100, file);
+  for (let i = 0; i < 3; i++) assert.equal(store.check(["ip:a"], policy, afterQuietPeriod + i), 0);
+  assert.equal(store.check(["ip:a"], policy, afterQuietPeriod + 3), 1800);
+});
+
+test("attempt counters survive a restart before a lock is triggered", t => {
+  const file = fixture(t);
+  for (let i = 0; i < 3; i++) assert.equal(new CooldownStore(100, file).check(["ip:a"], policy, 100_000 + i), 0);
+  assert.equal(new CooldownStore(100, file).check(["ip:a"], policy, 100_003), 1800);
+});
+
+test("corrupt state fails closed rather than granting protected work", t => {
+  const file = fixture(t);
+  fs.writeFileSync(file, "not valid json");
+  const middleware = createLegacyCooldown({ stateFile: file });
+  let downstreamCalls = 0;
+  let status = 0;
+  const res = { set: () => {}, status: (code: number) => { status = code; return res; }, json: () => {} } as unknown as Response;
+  middleware(request("/pay"), res, () => { downstreamCalls++; });
+  assert.equal(status, 503);
+  assert.equal(downstreamCalls, 0);
+});
+
+test("failed snapshot writes cannot authorize protected work", t => {
+  const directory = path.dirname(fixture(t));
+  const parentFile = path.join(directory, "not-a-directory");
+  fs.writeFileSync(parentFile, "test");
+  const middleware = createLegacyCooldown({ stateFile: path.join(parentFile, "state.json") });
+  let downstreamCalls = 0;
+  let status = 0;
+  const res = { set: () => {}, status: (code: number) => { status = code; return res; }, json: () => {} } as unknown as Response;
+  middleware(request("/pay"), res, () => { downstreamCalls++; });
+  assert.equal(status, 503);
+  assert.equal(downstreamCalls, 0);
 });
 
 function request(path: string, headers: Record<string, string> = {}, body = {}): Request {
@@ -59,7 +142,7 @@ test("client IP assertions require a valid signature, fresh timestamp, and match
 });
 
 test("middleware rejects before downstream work with HTTP 429 and Retry-After", () => {
-  const middleware = createLegacyCooldown();
+  const middleware = createLegacyCooldown({ stateFile: false });
   let downstreamCalls = 0;
   let status = 0;
   const headers: Record<string, string> = {};
@@ -76,7 +159,7 @@ test("middleware rejects before downstream work with HTTP 429 and Retry-After", 
 });
 
 test("summary, report, and escalation probes share the email cooldown", () => {
-  const middleware = createLegacyCooldown();
+  const middleware = createLegacyCooldown({ stateFile: false });
   let downstreamCalls = 0;
   let status = 0;
   const res = { set: () => {}, status: (code: number) => { status = code; return res; }, json: () => {} } as unknown as Response;
