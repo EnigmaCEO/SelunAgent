@@ -19,6 +19,7 @@ import { formatUnits, isAddress, parseUnits } from "viem";
 import { BASE_BUILDER_CODE } from "../builder-code";
 import { EXECUTION_MODEL_VERSION, getConfig } from "../config";
 import { getExecutionLogs } from "../logging/execution-logs";
+import { createLegacyCooldown } from "../services/legacy-cooldown";
 import { getX402StateStore } from "../services/x402-state.service";
 import { isExpiredIsoTimestamp, normalizeOptionalBoolean } from "../services/x402-utils";
 import {
@@ -75,6 +76,7 @@ import type {
 } from "../services/x402-state.types";
 
 const router = Router();
+router.use(createLegacyCooldown());
 
 type X402AllocateOptionId = "allocation_only" | "allocation_with_report";
 

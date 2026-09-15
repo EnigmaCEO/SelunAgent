@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { legacyClientHeaders } from "@/app/lib/legacy-client-headers";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,7 +20,7 @@ export async function POST(req: Request): Promise<Response> {
   try {
     const response = await fetch(`${getBackendBaseUrl()}/agent/result-email`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: legacyClientHeaders(req, "/agent/result-email"),
       body: JSON.stringify(payload),
       cache: "no-store",
     });
@@ -39,7 +40,7 @@ export async function POST(req: Request): Promise<Response> {
         status: result.data?.status,
         error: result.data?.error ?? result.error,
       },
-      { status: response.status },
+      { status: response.status, headers: response.headers.has("Retry-After") ? { "Retry-After": response.headers.get("Retry-After")! } : {} },
     );
   } catch (error) {
     return NextResponse.json(

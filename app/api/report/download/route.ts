@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { PDFDocument, StandardFonts, degrees, rgb } from "pdf-lib";
 import { NextResponse } from "next/server";
+import { legacyClientHeaders } from "@/app/lib/legacy-client-headers";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -379,6 +380,7 @@ function isValidEmail(value: string): boolean {
 }
 
 async function sendResultEmail(params: {
+  clientHeaders: Record<string, string>;
   toEmail: string;
   filename: string;
   pdfBuffer: Buffer;
@@ -394,7 +396,7 @@ async function sendResultEmail(params: {
   try {
     const response = await fetch(`${getBackendBaseUrl()}/agent/report-email`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: params.clientHeaders,
       body: JSON.stringify({
         resultEmail: params.toEmail,
         filename: params.filename,
@@ -1880,6 +1882,7 @@ export async function POST(req: Request): Promise<Response> {
   const filename = `${fileStem}-${safeDecision}.pdf`;
   const resultEmailStatus = requestedResultEmail
     ? await sendResultEmail({
+      clientHeaders: legacyClientHeaders(req, "/agent/report-email"),
       toEmail: requestedResultEmail,
       filename,
       pdfBuffer,

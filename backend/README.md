@@ -3,7 +3,15 @@
 This backend adds Coinbase CDP operational identity and on-chain operations for Selun on Base.
 
 Copy `backend/env.example` to `backend/.env` and set values there.
-Frontend should only keep `SELUN_BACKEND_URL` plus UI-safe vars in `.env.local`.
+Keep server credentials in server-only environment variables. The Next.js server and backend must share `SELUN_REFERRAL_INTERNAL_TOKEN` for signed client-IP forwarding (the existing `SELUN_ADMIN_API_TOKEN` is a fallback); never prefix that token with `NEXT_PUBLIC_`.
+
+## Legacy request cooldown
+
+Legacy POST routes enforce limits before starting work: `/agent/pay` permits 3 attempts, `/agent/result-email` and `/agent/report-email` share 6 attempts, and `/agent/phase1/run` permits 10 attempts within 15 minutes. The next attempt triggers a 30-minute cooldown, returning HTTP 429 with `Retry-After`. Rejected requests do not extend the cooldown. Limits use client IP plus normalized wallet/email where supplied, so rotating wallets alone cannot bypass the IP limit. `/agent/verify-payment` remains available to confirm a submitted transfer.
+
+The Vercel server signs its platform-provided client IP for the backend. Direct Fly requests use `Fly-Client-IP`; arbitrary forwarded-IP headers are ignored. Deploy both the Next.js forwarding changes and backend middleware with the shared token configured. Without authenticated forwarding, frontend requests share the proxy's IP limit. Cooldown state is bounded and in memory per process; restarting clears it, and multiple machines do not share locks. Keep the existing single-machine deployment or move locks into a shared store before scaling.
+
+This cooldown reduces repeated requests. It does not correct the existing preauthorization email or replace Stripe purchase validation in card email/report routes.
 
 ## Required Environment Variables
 

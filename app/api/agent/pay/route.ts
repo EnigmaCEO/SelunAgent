@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { legacyClientHeaders } from "@/app/lib/legacy-client-headers";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -63,7 +64,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   try {
     const response = await fetch(`${getBackendBaseUrl()}/agent/pay`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: legacyClientHeaders(req, "/agent/pay"),
       body: JSON.stringify({
         walletAddress: payload.walletAddress,
         includeCertifiedDecisionRecord: payload.includeCertifiedDecisionRecord,
@@ -84,7 +85,7 @@ export async function POST(req: Request): Promise<NextResponse> {
           success: false,
           error: backendResult.error || "Agent payment failed.",
         },
-        { status: response.status || 500 },
+        { status: response.status || 500, headers: response.headers.has("Retry-After") ? { "Retry-After": response.headers.get("Retry-After")! } : {} },
       );
     }
 
