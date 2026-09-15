@@ -65,6 +65,7 @@ export function legacyClientIp(req: Request): string {
 
 const groups: Record<string, string> = {
   "/pay": "checkout", "/result-email": "email", "/report-email": "email",
+  "/x402/sce/escalation-brief": "email",
   "/phase1/run": "execution",
 };
 

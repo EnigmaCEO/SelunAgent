@@ -75,12 +75,13 @@ test("middleware rejects before downstream work with HTTP 429 and Retry-After", 
   assert.equal(downstreamCalls, 4); // a customer can still confirm an already submitted transfer
 });
 
-test("summary and report requests share the email cooldown", () => {
+test("summary, report, and escalation probes share the email cooldown", () => {
   const middleware = createLegacyCooldown();
   let downstreamCalls = 0;
   let status = 0;
   const res = { set: () => {}, status: (code: number) => { status = code; return res; }, json: () => {} } as unknown as Response;
-  for (let i = 0; i < 7; i++) middleware(request(i % 2 ? "/report-email" : "/result-email", {}, { resultEmail: `test${i}@example.com` }), res, () => { downstreamCalls++; });
+  const routes = ["/result-email", "/report-email", "/x402/sce/escalation-brief"];
+  for (let i = 0; i < 7; i++) middleware(request(routes[i % routes.length], {}, { resultEmail: `test${i}@example.com` }), res, () => { downstreamCalls++; });
   assert.equal(downstreamCalls, 6);
   assert.equal(status, 429);
 });
