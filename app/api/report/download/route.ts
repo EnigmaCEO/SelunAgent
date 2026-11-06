@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { PDFDocument, StandardFonts, degrees, rgb } from "pdf-lib";
 import { NextResponse } from "next/server";
+import { internalServiceHeaders, readRunGrant } from "@/app/lib/job-access";
 import { legacyClientHeaders } from "@/app/lib/legacy-client-headers";
 
 export const runtime = "nodejs";
@@ -17,6 +18,7 @@ type AllocationRow = {
 };
 
 type DownloadRequestPayload = {
+  runGrant?: string;
   resultEmail?: string | null;
   riskMode?: string;
   investmentHorizon?: string;
@@ -52,26 +54,6 @@ type StoreHashResponse = {
   data?: {
     hashStored?: boolean;
     transactionHash?: string;
-  };
-};
-
-type VerifyPaymentResponse = {
-  success?: boolean;
-  error?: string;
-  data?: {
-    transactionHash?: string;
-    amount?: string;
-    confirmed?: boolean;
-    blockNumber?: number;
-  };
-};
-
-type PricingResponse = {
-  success?: boolean;
-  error?: string;
-  data?: {
-    structuredAllocationPriceUsdc?: number;
-    certifiedDecisionRecordFeeUsdc?: number;
   };
 };
 
@@ -392,12 +374,14 @@ async function sendResultEmail(params: {
   walletAddress: string;
   amountUsdc: number | null;
   transactionHash: string;
+  runGrant: string;
 }): Promise<{ status: ResultEmailStatus; error?: string }> {
   try {
     const response = await fetch(`${getBackendBaseUrl()}/agent/report-email`, {
       method: "POST",
-      headers: params.clientHeaders,
+      headers: { ...params.clientHeaders, ...internalServiceHeaders("/agent/report-email") },
       body: JSON.stringify({
+        runGrant: params.runGrant,
         resultEmail: params.toEmail,
         filename: params.filename,
         pdfBase64: params.pdfBuffer.toString("base64"),
@@ -444,14 +428,14 @@ async function sendResultEmail(params: {
   }
 }
 
-async function storeHashOnBackend(decisionId: string, pdfHash: string): Promise<ChainAttestationResult> {
+async function storeHashOnBackend(decisionId: string, pdfHash: string, runGrant: string): Promise<ChainAttestationResult> {
   const backendBase = process.env.SELUN_BACKEND_URL?.trim() || "http://localhost:8787";
 
   try {
     const response = await fetch(`${backendBase}/agent/store-hash`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ decisionId, pdfHash }),
+      headers: { "Content-Type": "application/json", ...internalServiceHeaders("/agent/store-hash") },
+      body: JSON.stringify({ decisionId, pdfHash, runGrant }),
       cache: "no-store",
     });
 
@@ -471,75 +455,6 @@ async function storeHashOnBackend(decisionId: string, pdfHash: string): Promise<
     return {
       stored: false,
       error: error instanceof Error ? error.message : "store-hash request failed",
-    };
-  }
-}
-
-async function fetchBackendPricing(): Promise<{ ok: true; requiredCertifiedPriceUsdc: number } | { ok: false; error: string }> {
-  const backendBase = process.env.SELUN_BACKEND_URL?.trim() || "http://localhost:8787";
-
-  try {
-    const response = await fetch(`${backendBase}/agent/pricing`, {
-      method: "GET",
-      cache: "no-store",
-    });
-    const body = (await response.json().catch(() => ({}))) as PricingResponse;
-    const base = toFiniteNumber(body?.data?.structuredAllocationPriceUsdc);
-    const addOn = toFiniteNumber(body?.data?.certifiedDecisionRecordFeeUsdc);
-
-    if (!response.ok || !body.success || base === null || addOn === null || base < 0 || addOn < 0) {
-      return {
-        ok: false,
-        error: body.error || `pricing request failed (HTTP ${response.status})`,
-      };
-    }
-
-    return {
-      ok: true,
-      requiredCertifiedPriceUsdc: base + addOn,
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      error: error instanceof Error ? error.message : "pricing request failed",
-    };
-  }
-}
-
-async function verifyPurchaseOnBackend(
-  walletAddress: string,
-  expectedAmountUsdc: number,
-  transactionHash: string,
-  decisionId: string,
-): Promise<{ ok: true } | { ok: false; error: string }> {
-  const backendBase = process.env.SELUN_BACKEND_URL?.trim() || "http://localhost:8787";
-
-  try {
-    const response = await fetch(`${backendBase}/agent/verify-payment`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        fromAddress: walletAddress,
-        expectedAmountUSDC: expectedAmountUsdc,
-        transactionHash,
-        decisionId,
-      }),
-      cache: "no-store",
-    });
-
-    const body = (await response.json().catch(() => ({}))) as VerifyPaymentResponse;
-    if (!response.ok || !body.success || !body.data?.confirmed) {
-      return {
-        ok: false,
-        error: body.error || `payment verification failed (HTTP ${response.status})`,
-      };
-    }
-
-    return { ok: true };
-  } catch (error) {
-    return {
-      ok: false,
-      error: error instanceof Error ? error.message : "payment verification request failed",
     };
   }
 }
@@ -1496,14 +1411,14 @@ async function buildPdf(payload: DownloadRequestPayload, integrityHash: string, 
     { maxChars: 92, color: colors.muted },
   );
   if (phase5ScoreRows.length > 0) {
-    drawWrapped("Phase 5 scoring snapshot (selected assets):", {
+    drawWrapped("Phase 5 scoring snapshot (selected assets; VolEst is estimated from rank and liquidity, not price history):", {
       font: fontBold,
       size: 10,
       maxChars: 90,
       lineGap: 3,
       color: colors.ink,
     });
-    drawWrapped("Asset  Quality  Risk    Comp    Liq     Struct  Vol", {
+    drawWrapped("Asset  Quality  Risk    Comp    Liq     Struct  VolEst", {
       font: fontMono,
       size: 8.8,
       maxChars: 92,
@@ -1788,80 +1703,57 @@ export async function POST(req: Request): Promise<Response> {
     return NextResponse.json({ error: "resultEmail must be a valid email address." }, { status: 400 });
   }
 
-  const paymentStatus = toText(payment?.status, "").toLowerCase();
-  const decisionId = toText(payment?.decisionId, "");
-  const transactionId = toText(payment?.transactionId, "");
-  const paymentMethod = toText(payment?.paymentMethod, "onchain").toLowerCase();
-  const chargedAmountUsdc = toFiniteNumber(payment?.chargedAmountUsdc ?? payment?.amountUsdc);
-
-  if (paymentStatus !== "paid" || !decisionId || !transactionId) {
+  // What was bought comes from the signed receipt, never from the request's payment details.
+  const runGrant = toText(payload.runGrant, "");
+  const purchase = readRunGrant(runGrant);
+  if (!purchase || purchase.decisionId !== toText(payment?.decisionId, "")) {
     return NextResponse.json(
       { error: "Paid purchase record is required before report download." },
       { status: 402 },
     );
   }
-
-  const includeCertified = Boolean(payload.includeCertifiedDecisionRecord);
-  const certifiedPurchased = Boolean(payment?.certifiedDecisionRecordPurchased);
-  if (!includeCertified || !certifiedPurchased) {
+  if (!purchase.includesReport) {
     return NextResponse.json(
       { error: "Phase 7 is disabled because certified report was not purchased." },
       { status: 402 },
     );
   }
 
-  const walletAddressRaw = toText(payload.walletAddress, "");
-  const hasValidWalletAddress = /^0x[a-fA-F0-9]{40}$/.test(walletAddressRaw);
-  const requiresOnchainVerification = paymentMethod !== "card";
-  if (requiresOnchainVerification && !hasValidWalletAddress) {
-    return NextResponse.json({ error: "Valid paid wallet address is required before report download." }, { status: 400 });
-  }
-  const walletAddress = hasValidWalletAddress
-    ? walletAddressRaw
+  const { decisionId, transactionId, source: paymentMethod } = purchase;
+  const chargedAmountUsdc = Number(purchase.chargedAmountUsdc);
+  const includeCertified = true;
+  const walletAddress = /^0x[a-fA-F0-9]{40}$/.test(purchase.walletAddress)
+    ? purchase.walletAddress
     : paymentMethod === "card"
       ? "Stripe card checkout"
       : "n/a";
 
-  const isFreeCodePayment =
-    paymentMethod === "free_code" ||
-    transactionId.startsWith("FREE-") ||
-    (chargedAmountUsdc !== null && chargedAmountUsdc <= 0);
-
-  if (requiresOnchainVerification) {
-    let expectedVerificationAmount = 0;
-    if (!isFreeCodePayment) {
-      const pricing = await fetchBackendPricing();
-      if (!pricing.ok) {
-        return NextResponse.json(
-          { error: `Pricing lookup required for certified report: ${pricing.error}` },
-          { status: 502 },
-        );
-      }
-      expectedVerificationAmount = pricing.requiredCertifiedPriceUsdc;
-    }
-
-    const verifiedPayment = await verifyPurchaseOnBackend(
-      walletAddressRaw,
-      expectedVerificationAmount,
-      transactionId,
+  // The grant is a credential, so it stays out of the attested content.
+  const pdfPayload: DownloadRequestPayload = {
+    ...payload,
+    runGrant: undefined,
+    walletAddress,
+    includeCertifiedDecisionRecord: true,
+    payment: {
+      ...payment,
+      status: "paid",
       decisionId,
-    );
-    if (!verifiedPayment.ok) {
-      return NextResponse.json(
-        { error: `Payment verification required: ${verifiedPayment.error}` },
-        { status: 402 },
-      );
-    }
-  }
+      transactionId,
+      paymentMethod: paymentMethod as NonNullable<DownloadRequestPayload["payment"]>["paymentMethod"],
+      chargedAmountUsdc,
+      amountUsdc: chargedAmountUsdc,
+      certifiedDecisionRecordPurchased: true,
+    },
+  };
 
   const integrityHash = createHash("sha256")
-    .update(stableStringify(payload))
+    .update(stableStringify(pdfPayload))
     .digest("hex");
 
   let chainAttestation: ChainAttestationResult = { stored: false };
   const autoAttestEnabled = String(process.env.SELUN_REPORT_AUTO_ATTEST || "").trim().toLowerCase() === "true";
   if (includeCertified && autoAttestEnabled) {
-    chainAttestation = await storeHashOnBackend(decisionId, integrityHash);
+    chainAttestation = await storeHashOnBackend(decisionId, integrityHash, runGrant);
   } else if (includeCertified && !autoAttestEnabled) {
     chainAttestation = {
       stored: false,
@@ -1869,12 +1761,6 @@ export async function POST(req: Request): Promise<Response> {
     };
   }
 
-  const pdfPayload = walletAddressRaw === walletAddress
-    ? payload
-    : {
-      ...payload,
-      walletAddress,
-    };
   const pdfBytes = await buildPdf(pdfPayload, integrityHash, chainAttestation);
   const pdfBuffer = Buffer.from(pdfBytes);
   const fileStem = includeCertified ? "selun-certified-decision-record" : "selun-structured-allocation-report";
@@ -1894,6 +1780,7 @@ export async function POST(req: Request): Promise<Response> {
       walletAddress,
       amountUsdc: chargedAmountUsdc,
       transactionHash: transactionId,
+      runGrant,
     })
     : { status: "skipped" as const };
 

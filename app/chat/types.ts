@@ -1,0 +1,141 @@
+export type Tone = "positive" | "neutral" | "caution" | "negative";
+
+export type ResultSection =
+  | { kind: "highlight"; label: string; value: string; tone: Tone; detail?: string }
+  | { kind: "metrics"; title?: string; items: { label: string; value: string; tone?: Tone; meter?: number }[] }
+  | { kind: "table"; title?: string; columns: { key: string; label: string; numeric?: boolean }[]; rows: Record<string, string>[] }
+  | { kind: "list"; title?: string; items: string[] }
+  | { kind: "note"; text: string }
+  | { kind: "heading"; text: string };
+
+export type CoverageItem = { label: string; included: boolean; note: string };
+
+export type ResultDocument = {
+  schemaVersion: "selun.result.v1";
+  capabilityId: string;
+  title: string;
+  snapshotAt: string | null;
+  sections: ResultSection[];
+  coverage?: CoverageItem[];
+  notice?: string;
+  provenance: {
+    source: string;
+    endpoint: string;
+    decisionId: string;
+    amountUsdc: string | null;
+    transactionHash: string | null;
+    network: string | null;
+    explorerUrl: string | null;
+    paypal?: { amount: string; currency: string; captureId: string | null; saleId: string | null; environment: "sandbox" | "live" };
+  };
+};
+
+export type PayPalPhase = "awaiting_payment" | "payment_pending" | "running" | "completed" | "refunded" | "restricted" | "revoked" | "failed";
+
+/** Kept with the action in this browser. The token is the only way to read the purchase. */
+export type PayPalState = {
+  token: string;
+  kind: "one_time" | "subscription";
+  phase: PayPalPhase;
+  message: string | null;
+  subscriptionStatus?: "created" | "active" | "suspended" | "cancelled" | "expired";
+  nextBillingTime?: string | null;
+  reports?: number;
+};
+
+export type PayPalStatusView = {
+  kind: "one_time" | "subscription";
+  phase: PayPalPhase;
+  message: string | null;
+  decisionId: string | null;
+  document: ResultDocument | null;
+  reportToken: string | null;
+  explanation: string | null;
+  explanationStatus: "none" | "pending" | "ready" | "unavailable";
+  status?: PayPalState["subscriptionStatus"];
+  nextBillingTime?: string | null;
+  reports?: number;
+};
+
+export type PaymentRail = {
+  id: "x402_wallet" | "paypal_once" | "paypal_subscription";
+  label: string;
+  description: string;
+  status: "available" | "coming_soon";
+};
+
+export type ActionState = "awaiting_approval" | "executing" | "completed" | "failed" | "declined";
+
+export type ActionView = {
+  id: string;
+  capabilityId: string;
+  title: string;
+  summary: string;
+  priceUsdc: string;
+  currency: "USDC" | "USD";
+  execution?: PublicCapability["execution"];
+  paypal?: PayPalState;
+  duration: string;
+  limitations: string | null;
+  coverage?: CoverageItem[];
+  details: { label: string; value: string }[];
+  assumptions: string[];
+  state: ActionState;
+  decisionId: string;
+  rails: PaymentRail[];
+  document: ResultDocument | null;
+  reportToken?: string | null;
+  explanation: string | null;
+  explanationStatus: "none" | "pending" | "ready" | "unavailable";
+  failure: { message: string; retryable: boolean; mayHaveCharged: boolean } | null;
+};
+
+export type PublicCapability = {
+  id: string;
+  title: string;
+  summary: string;
+  outputType: string;
+  duration: string;
+  limitations: string | null;
+  execution: "x402_tool" | "wizard_handoff" | "paypal_checkout" | "paypal_subscription";
+  priceUsdc: string;
+  currency?: "USDC" | "USD";
+};
+
+export type SystemSummary = { slug: string; name: string; status: string; summary: string; url: string | null };
+export type SystemDetail = SystemSummary & { parent: string | null; availableToday: string[]; lastVerifiedAt: string | null };
+
+export type Block =
+  | { type: "sagitta_directory"; systems: SystemSummary[] }
+  | { type: "sagitta_system"; system: SystemDetail }
+  | { type: "action"; action: ActionView }
+  | { type: "capabilities"; items: PublicCapability[] }
+  | { type: "asset_choice"; query: string; reason: string; options: { symbol: string; label: string }[] }
+  | { type: "handoff"; title: string; summary: string; href: string; prices: { label: string; priceUsdc: string }[]; note: string }
+  | { type: "notice"; tone: "info" | "warning"; text: string };
+
+export type ChatItem =
+  | { id: string; role: "user"; text: string }
+  | { id: string; role: "assistant"; text: string; blocks: Block[] }
+  | { id: string; role: "error"; text: string; retryText: string | null };
+
+export type Conversation = {
+  id: string;
+  serverId: string | null;
+  title: string;
+  items: ChatItem[];
+  updatedAt: number;
+};
+
+export type AssistantStatus = {
+  available: boolean;
+  limits: { maxMessageChars: number; sessionLimitUsdc: string };
+  rails: PaymentRail[];
+};
+
+/** The decoded 402 challenge, passed unchanged to the x402 client for signing. */
+export type PaymentChallenge = {
+  x402Version: number;
+  accepts: { network: string; amount: string; scheme: string; payTo: string; asset: string }[];
+  [key: string]: unknown;
+};

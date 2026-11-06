@@ -10,7 +10,11 @@ This repo combines:
 
 ## What Lives Here
 
-Selun currently supports three primary product surfaces:
+Selun currently supports four primary product surfaces:
+
+0. Selun AI chat (the home page)
+   - conversational gateway at `/`, backed by `/assistant/*` on the Express backend
+   - see "Selun AI" below
 
 1. Wizard checkout flow
    - human-facing allocation wizard at `/wizard`
@@ -42,7 +46,9 @@ SelunAgent/
 
 Key areas:
 
-- `app/page.tsx`: public landing page and referral capture
+- `app/page.tsx` and `app/chat/*`: Selun AI chat, the customer home page
+- `app/plan/page.tsx`: the portfolio-plan landing page (formerly the home page)
+- `backend/src/assistant/*`: assistant service, capability registry, asset resolver, OpenAI client
 - `app/wizard/page.tsx`: allocation wizard and retail payment UX
 - `app/api/stripe/*`: Stripe checkout, confirmation, and webhook handling
 - `app/api/agent/*`: frontend-to-backend proxy routes for wallet payment and phase execution
@@ -189,6 +195,49 @@ Selun currently has two referral modes:
    - fixed payout accounting and withdrawals
 
 Frontend and Stripe routes pass referral metadata into backend tracking so conversions can be recorded after payment confirmation.
+
+### Selun AI
+
+Customers ask in plain language. The model chooses a service, the customer approves the exact price in their wallet, and the existing x402 route does the work.
+
+```text
+Browser  ->  /api/assistant/* (Next proxy, path allowlist)  ->  /assistant/* (Express)
+                                                                    |-- OpenAI Chat Completions (function calling)
+                                                                    |-- live x402 catalog (prices)
+                                                                    '-- /agent/x402/* over loopback (payment + execution)
+```
+
+Rules the code enforces:
+
+- The model can only list services, resolve assets, and show quotes. It has no tool that runs a paid service and never sees a payment signature.
+- Prices come from the live x402 catalog. If the catalog is unavailable, no price is shown. A price change forces re-approval.
+- A paid action needs `approved: true`, the current price, and a wallet signature for that amount.
+- A result appears only when the route returns a verified payment receipt. Cards are built by `result-presenter.ts`, not the model.
+- Limits: per purchase, per conversation, per wallet per day, per client request rate, and a daily model-turn budget. See `backend/env.example`.
+
+Configuration, set as Fly secrets on the backend:
+
+```bash
+fly secrets set OPENAI_API_KEY=... OPENAI_MODEL=...
+```
+
+Without both values the chat shows an offline state, and every other route keeps working. No frontend environment changes are needed.
+
+Adding a service: add a spec to `backend/src/assistant/capability-registry.ts` and a presenter to `result-presenter.ts`. Anything not in the registry stays invisible to the assistant. Then add its typical requests to `backend/scripts/assistant-routing-eval.ts`.
+
+PayPal sells the Comprehensive Intelligence Report and the monthly subscription through the chat, using the same pipeline and report path as x402. See `backend/docs/paypal-boundary.md`.
+
+Selun AI also answers questions about Sagitta's other systems, for free and with no commerce. It reads a snapshot of the public record in `Systems/src/content/systems.ts`. After that content changes, run `npx tsx backend/scripts/sync-sagitta-directory.ts` and commit the result.
+
+Routing check: `npm run assistant:routing-eval -- --runs=3` sends those requests to the configured model and reports any that reach the wrong service. It uses model tokens, but nothing is paid for or run. If a customer names a token and the model quotes only Market Regime, the server adds that token's Asset Scorecard quote.
+
+Integration points, defined but not implemented, are in `backend/src/assistant/commerce.ts`:
+
+- `CheckoutProvider` and `EntitlementVerifier` for PayPal purchases and subscriptions. The x402 routes need an entitlement-based entry point before these can authorize execution.
+
+Paid chat results have a PDF download and an email option on their card, served by `backend/src/assistant/report.service.ts`. A report is built only from the paid route's stored result and frozen on first use in `backend/data/report-fulfillment.json`, so it needs that volume to persist. The browser sends only a signed report token. The next payment rail's records and entry point are described in [backend/docs/paypal-boundary.md](backend/docs/paypal-boundary.md).
+
+Conversations and spend counters live in backend memory, so they reset when the backend restarts. Customers' visible history is stored only in their browser.
 
 ## Useful Scripts
 

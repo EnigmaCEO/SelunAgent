@@ -62,6 +62,8 @@ type AgentPaymentResponse = {
   certifiedDecisionRecordPurchased?: boolean;
   paymentMethod?: "onchain" | "free_code" | "card";
   freeCodeApplied?: boolean;
+  decisionTicket?: string;
+  runGrant?: string;
   error?: string;
 };
 
@@ -113,6 +115,7 @@ type StripeWizardConfirmResponse = {
   investmentHorizon?: InvestmentHorizon;
   portfolioSegment?: PortfolioSegment;
   resultEmail?: string;
+  runGrant?: string;
   error?: string;
 };
 
@@ -168,6 +171,7 @@ type VerifyPaymentResponse = {
     amount?: string;
     confirmed?: boolean;
     blockNumber?: number;
+    runGrant?: string;
   };
 };
 
@@ -183,7 +187,19 @@ function isPortfolioSegmentValue(value: string | null | undefined): value is Por
   return value === "Bluechips" || value === "Memecoins" || value === "Gaming" || value === "Yield Farm";
 }
 
+// Proof of payment for this checkout, and the access token for each job it starts.
+const wizardJobAccess: { runGrant: string | null; tokens: Map<string, string> } = {
+  runGrant: null,
+  tokens: new Map(),
+};
+
+function jobTokenHeaders(jobId: string): Record<string, string> {
+  const token = wizardJobAccess.tokens.get(jobId);
+  return token ? { "x-selun-job-token": token } : {};
+}
+
 type Phase1RunStartResponse = {
+  jobToken?: string;
   status?: string;
   phase?: string;
   success?: boolean;
@@ -1354,6 +1370,7 @@ async function verifyPaymentOnBackend(params: {
   expectedAmountUSDC: number | string;
   transactionHash?: string;
   decisionId?: string;
+  decisionTicket?: string;
 }, options?: {
   timeoutMs?: number;
 }): Promise<{
@@ -1382,6 +1399,7 @@ async function verifyPaymentOnBackend(params: {
       throw new Error(payload.error || "Payment verification failed.");
     }
 
+    if (payload.data.runGrant) wizardJobAccess.runGrant = payload.data.runGrant;
     const transactionHash = payload.data.transactionHash ?? "";
     const amount = payload.data.amount ?? "";
     const confirmed = Boolean(payload.data.confirmed);
@@ -1423,19 +1441,20 @@ async function startPhase1Execution(params: {
   const response = await fetch("/api/agent/phase1/run", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(params),
+    body: JSON.stringify({ ...params, runGrant: wizardJobAccess.runGrant ?? undefined }),
   });
 
   const payload = (await response.json()) as Phase1RunStartResponse;
   if (!response.ok || payload.status !== "started") {
     throw new Error(payload.error || "Unable to start Phase 1.");
   }
+  if (payload.jobToken) wizardJobAccess.tokens.set(params.jobId, payload.jobToken);
 }
 
 async function startPhase3Execution(params: { jobId: string }): Promise<void> {
   const response = await fetch("/api/agent/phase3/run", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...jobTokenHeaders(params.jobId) },
     body: JSON.stringify(params),
   });
 
@@ -1448,7 +1467,7 @@ async function startPhase3Execution(params: { jobId: string }): Promise<void> {
 async function startPhase4Execution(params: { jobId: string }): Promise<void> {
   const response = await fetch("/api/agent/phase4/run", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...jobTokenHeaders(params.jobId) },
     body: JSON.stringify(params),
   });
 
@@ -1461,7 +1480,7 @@ async function startPhase4Execution(params: { jobId: string }): Promise<void> {
 async function startPhase5Execution(params: { jobId: string }): Promise<void> {
   const response = await fetch("/api/agent/phase5/run", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...jobTokenHeaders(params.jobId) },
     body: JSON.stringify(params),
   });
 
@@ -1474,7 +1493,7 @@ async function startPhase5Execution(params: { jobId: string }): Promise<void> {
 async function startPhase6Execution(params: { jobId: string }): Promise<void> {
   const response = await fetch("/api/agent/phase6/run", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...jobTokenHeaders(params.jobId) },
     body: JSON.stringify(params),
   });
 
@@ -1487,6 +1506,7 @@ async function startPhase6Execution(params: { jobId: string }): Promise<void> {
 async function queryExecutionStatus(jobId: string): Promise<ExecutionStatusResponse> {
   const response = await fetch(`/api/agent/execution-status/${encodeURIComponent(jobId)}`, {
     method: "GET",
+    headers: jobTokenHeaders(jobId),
     cache: "no-store",
   });
 
@@ -1730,12 +1750,14 @@ async function tryRecoverExistingPayment(params: {
   fromAddress: string;
   expectedAmountUSDC: string;
   decisionId?: string;
+  decisionTicket?: string;
 }, timeoutMs: number): Promise<Awaited<ReturnType<typeof verifyPaymentOnBackend>> | null> {
   try {
     return await verifyPaymentOnBackend(
       {
         fromAddress: params.fromAddress,
         expectedAmountUSDC: params.expectedAmountUSDC,
+        decisionTicket: params.decisionTicket,
       },
       { timeoutMs },
     );
@@ -4170,6 +4192,7 @@ function SelunAllocationWizard() {
 
         if (cancelled) return;
 
+        wizardJobAccess.runGrant = confirmBody.runGrant ?? null;
         const confirmedRiskMode = confirmBody.riskMode;
         const confirmedInvestmentHorizon = confirmBody.investmentHorizon;
         const confirmedPortfolioSegment = confirmBody.portfolioSegment;
@@ -4943,6 +4966,7 @@ function SelunAllocationWizard() {
     if (!agentPaymentReceipt) return null;
 
     return {
+      runGrant: wizardJobAccess.runGrant ?? undefined,
       riskMode,
       investmentHorizon,
       includeCertifiedDecisionRecord: agentPaymentReceipt.certifiedDecisionRecordPurchased,
@@ -5158,6 +5182,7 @@ function SelunAllocationWizard() {
       }
 
       const paymentMethod = paymentResult.paymentMethod ?? "onchain";
+      wizardJobAccess.runGrant = paymentResult.runGrant ?? null;
       const freeCodeApplied = Boolean(paymentResult.freeCodeApplied);
       const isFreeCodeCheckout = paymentMethod === "free_code" || freeCodeApplied || chargedAmountUsdc === 0;
 
@@ -5184,7 +5209,7 @@ function SelunAllocationWizard() {
       const pendingRpc = await hasPendingTransactionsOnRpc(agentWallet.networkId, walletAddress);
       if (pendingLocal || pendingRpc) {
         const recovered = await tryRecoverExistingPayment(
-          { fromAddress: walletAddress, expectedAmountUSDC: chargedAmountUsdcString, decisionId: paymentResult.decisionId },
+          { fromAddress: walletAddress, expectedAmountUSDC: chargedAmountUsdcString, decisionId: paymentResult.decisionId, decisionTicket: paymentResult.decisionTicket },
           30_000,
         );
         if (recovered) {
@@ -5236,6 +5261,7 @@ function SelunAllocationWizard() {
           expectedAmountUSDC: chargedAmountUsdcString,
           transactionHash: transferHashRaw,
           decisionId: paymentResult.decisionId,
+          decisionTicket: paymentResult.decisionTicket,
         }),
         120_000,
         "Payment verification",

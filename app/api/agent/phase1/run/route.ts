@@ -13,6 +13,7 @@ type Phase1RunRequest = {
   portfolioSegment?: string;
   timeWindow?: string;
   walletAddress?: string;
+  runGrant?: string;
 };
 
 function getBackendBaseUrl() {
@@ -57,6 +58,7 @@ export async function POST(req: Request) {
         portfolioSegment: payload.portfolioSegment,
         timeWindow: payload.timeWindow,
         walletAddress: payload.walletAddress,
+        runGrant: payload.runGrant,
       }),
       cache: "no-store",
     });

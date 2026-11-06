@@ -1,0 +1,49 @@
+# Selun staging: PayPal sandbox and Base Sepolia only. Never set live credentials on this app.
+#
+#   flyctl deploy --config fly.staging.toml --app selunagent-staging --ignorefile .dockerignore.staging
+#
+# Secrets and setup are in backend/docs/paypal-boundary.md. Payment records are a JSON file on
+# this one volume, so don't scale this app past one Machine.
+app = "selunagent-staging"
+primary_region = "sin"
+
+[build]
+  dockerfile = "backend/Dockerfile"
+
+[deploy]
+  strategy = "immediate"
+
+[env]
+  PORT = "8787"
+  # Allows the mock email provider, which is refused under NODE_ENV=production.
+  NODE_ENV = "staging"
+  NETWORK_ID = "base-sepolia"
+  PAYPAL_ENV = "sandbox"
+  SELUN_EMAIL_PROVIDER = "mock"
+  SELUN_MOCK_EMAIL_DIR = "/app/backend/data/outbox"
+  SELUN_ADMIN_USAGE_EMAILS_ENABLED = "0"
+  SELUN_RESULT_EMAILS_ENABLED = "1"
+
+[mounts]
+  source = "selun_staging_data"
+  destination = "/app/backend/data"
+
+[http_service]
+  internal_port = 8787
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [[http_service.checks]]
+    grace_period = "15s"
+    interval = "30s"
+    method = "GET"
+    path = "/health"
+    timeout = "5s"
+
+[[vm]]
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1

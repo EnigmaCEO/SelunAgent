@@ -1,3 +1,5 @@
+import { issueCardRunGrant, JOB_TOKEN_HEADER, jobAccessToken } from "@/app/lib/job-access";
+
 export type StripeWizardRiskMode = "Conservative" | "Balanced" | "Growth" | "Aggressive";
 export type StripeWizardInvestmentHorizon = "< 1 Year" | "1-3 Years" | "3+ Years";
 export type StripeWizardPortfolioSegment = "Bluechips" | "Memecoins" | "Gaming" | "Yield Farm";
@@ -84,6 +86,7 @@ export function buildStripeWizardJobId(decisionId: string): string {
 async function fetchExecutionStatus(jobId: string): Promise<ExecutionStatusPayload | null> {
   const response = await fetch(`${getBackendBaseUrl()}/execution-status/${encodeURIComponent(jobId)}`, {
     method: "GET",
+    headers: { [JOB_TOKEN_HEADER]: jobAccessToken(jobId) },
     cache: "no-store",
   });
 
@@ -101,6 +104,7 @@ async function fetchExecutionStatus(jobId: string): Promise<ExecutionStatusPaylo
 
 async function startPhase1Job(params: {
   jobId: string;
+  decisionId: string;
   riskMode: StripeWizardRiskMode;
   investmentHorizon: StripeWizardInvestmentHorizon;
   portfolioSegment: StripeWizardPortfolioSegment;
@@ -110,6 +114,7 @@ async function startPhase1Job(params: {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       jobId: params.jobId,
+      runGrant: issueCardRunGrant(params.decisionId),
       executionTimestamp: new Date().toISOString(),
       riskMode: toBackendRiskMode(params.riskMode),
       riskTolerance: toBackendRiskTolerance(params.riskMode),
@@ -155,6 +160,7 @@ export async function ensureStripeWizardPhase1Started(
 
   await startPhase1Job({
     jobId,
+    decisionId,
     riskMode: input.riskMode,
     investmentHorizon: input.investmentHorizon,
     portfolioSegment: input.portfolioSegment,

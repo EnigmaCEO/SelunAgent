@@ -52,7 +52,7 @@ Call this after market regime and before asset scoring or allocation.
 
 Use this **before asset selection or allocation** to score candidate assets.
 
-Returns: liquidity score, structural stability score, role classification (core/satellite/stablecoin), and composite quality score for each candidate — shaped by the requested portfolio segment.
+Returns: measured volatility and drawdown from up to 365 daily closes, a price risk score, an overall score, liquidity, market structure, and role classification (core/satellite/stablecoin) for each candidate — shaped by the requested portfolio segment. Each result names its `scoringMethodology.version`. `compositeScore` and `riskScore` are the portfolio model's inputs and do not use price history.
 
 Call this after policy envelope and before constructing the allocation.
 

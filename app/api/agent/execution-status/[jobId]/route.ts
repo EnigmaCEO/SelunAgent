@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { forwardJobToken } from "@/app/lib/job-access";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -234,7 +235,7 @@ function sanitizePhase1OutputShape(result: unknown): unknown {
 }
 
 export async function GET(
-  _req: Request,
+  req: Request,
   context: { params: Promise<{ jobId: string }> },
 ) {
   const { jobId } = await context.params;
@@ -252,6 +253,7 @@ export async function GET(
   try {
     const response = await fetch(`${getBackendBaseUrl()}/execution-status/${encodeURIComponent(jobId.trim())}`, {
       method: "GET",
+      headers: forwardJobToken(req),
       cache: "no-store",
     });
 

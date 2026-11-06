@@ -27,6 +27,8 @@ type BackendAgentResponse = {
     certifiedDecisionRecordPurchased?: boolean;
     paymentMethod?: "onchain" | "free_code";
     freeCodeApplied?: boolean;
+    decisionTicket?: string;
+    runGrant?: string;
   };
 };
 
@@ -99,6 +101,8 @@ export async function POST(req: Request): Promise<NextResponse> {
       certifiedDecisionRecordPurchased: Boolean(backendResult.data.certifiedDecisionRecordPurchased),
       paymentMethod: backendResult.data.paymentMethod || "onchain",
       freeCodeApplied: Boolean(backendResult.data.freeCodeApplied),
+      decisionTicket: backendResult.data.decisionTicket,
+      runGrant: backendResult.data.runGrant,
     });
   } catch (error) {
     return NextResponse.json(

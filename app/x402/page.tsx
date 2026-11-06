@@ -46,7 +46,7 @@ const PUBLIC_RESOURCE_DESCRIPTIONS: Record<string, string> = {
   "/agent/x402/policy-envelope":
     "Risk policy engine. Call this when portfolio constraints must be computed for a supplied risk tolerance and timeframe. Returns exposure caps, stablecoin floor, risk budget, and authorization constraints.",
   "/agent/x402/asset-scorecard":
-    "Asset scoring engine. Call this before asset selection or allocation. Returns liquidity, structural stability, role classification, and composite quality scores for candidate assets.",
+    "Asset scoring engine. Call this before asset selection or allocation. Returns measured volatility and drawdown from daily price history, a price risk score, an overall score, liquidity, market structure, and role classification for candidate assets.",
   "/agent/x402/rebalance":
     "Portfolio rebalance engine. Call this after allocation or on a monitoring schedule with current holdings. Returns target-vs-current drift and the adjustments required to rebalance within policy constraints.",
 };

@@ -26,7 +26,8 @@
     "backend:dev": "tsx backend/src/server.ts",
     "backend:build": "tsc -p backend/tsconfig.json",
     "backend:start": "node backend/dist/server.js",
-    "backend:test": "npm --prefix backend run test"
+    "backend:test": "npm --prefix backend run test",
+    "assistant:routing-eval": "tsx backend/scripts/assistant-routing-eval.ts"
   },
   "dependencies": {
     "@types/qrcode": "1.5.5",

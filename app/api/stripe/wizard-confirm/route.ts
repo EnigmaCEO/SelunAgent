@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import Stripe from "stripe";
 import { ensureStripeWizardPhase1Started } from "@/app/api/stripe/_lib/fulfillment";
+import { issueCardRunGrant } from "@/app/lib/job-access";
 import { trackReferralConversionOnBackend } from "@/app/lib/referral-backend";
 
 export const runtime = "nodejs";
@@ -180,6 +181,11 @@ export async function POST(req: Request): Promise<NextResponse> {
       jobId: fulfillment.jobId,
       statusPath: fulfillment.statusPath,
       phase1Status: fulfillment.executionStatus,
+      runGrant: issueCardRunGrant(session.metadata?.decisionId || session.id, {
+        includesReport: includeReport,
+        chargedAmountUsdc: chargedAmountUsd.toFixed(2),
+        transactionId: paymentIntent.id || session.id,
+      }),
     });
   } catch (error) {
     return NextResponse.json(

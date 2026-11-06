@@ -178,7 +178,7 @@ Example payload:
 - `POST /agent/x402/policy-envelope`
   - synchronous Phase 2 policy-envelope output
 - `POST /agent/x402/asset-scorecard`
-  - synchronous Phase 5 shortlist/scorecard output
+  - synchronous scorecard: measured price history on top of the Phase 5 shortlist (see `docs/asset-scorecard-methodology.md`)
 - `POST /agent/x402/rebalance`
   - synchronous rebalance recommendations from supplied holdings
 
@@ -220,7 +220,8 @@ Behavior:
 - Returns `409` if the same `decisionId` is reused with different inputs.
 - Returns `429` for burst, per-address daily cap, or global concurrency limits.
 - Returns `202` after successful settlement and starts full allocation orchestration (Phase 1 -> 6) automatically.
-- Poll `GET /execution-status/:jobId` from returned `statusPath`.
+- Poll `GET /execution-status/:jobId` from returned `statusPath`. The path includes the job's `accessToken`, so use it as returned; requests without a valid token get `401`.
+- `GET /execution-status/wallet/:walletAddress` reports progress only, never results.
 
 When available, `GET /execution-status/:jobId` includes a machine-first `agentContract` object:
 

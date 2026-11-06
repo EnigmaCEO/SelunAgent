@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { forwardJobToken } from "@/app/lib/job-access";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -39,7 +40,7 @@ export async function POST(req: Request) {
   try {
     const response = await fetch(`${getBackendBaseUrl()}/agent/phase5/run`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...forwardJobToken(req) },
       body: JSON.stringify({
         jobId: payload.jobId,
       }),

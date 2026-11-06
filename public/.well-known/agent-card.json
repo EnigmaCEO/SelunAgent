@@ -58,9 +58,9 @@
     {
       "id": "asset_scorecard",
       "name": "Asset Scorecard",
-      "description": "Asset scoring engine. Call this before asset selection or allocation. Returns liquidity, structural stability, role classification, and composite quality scores for candidate assets, shaped by the requested portfolio segment.",
+      "description": "Asset scoring engine. Call this before asset selection or allocation. Returns measured volatility and drawdown from daily price history, a price risk score, an overall score, liquidity, market structure, and role classification for candidate assets, shaped by the requested portfolio segment.",
       "tags": ["portfolio", "asset-scoring", "liquidity", "defi-safety", "x402"],
-      "examples": ["Score candidate assets for liquidity and structural stability in the Bluechips segment"]
+      "examples": ["Score candidate assets for measured price risk and liquidity in the Bluechips segment"]
     },
     {
       "id": "rebalance",

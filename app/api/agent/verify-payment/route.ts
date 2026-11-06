@@ -4,6 +4,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 type VerifyPaymentRequest = {
+  decisionTicket?: string;
   fromAddress?: string;
   expectedAmountUSDC?: number | string;
   transactionHash?: string;
@@ -86,6 +87,7 @@ export async function POST(req: Request) {
         expectedAmountUSDC: expectedAmount,
         transactionHash: payload.transactionHash,
         decisionId: payload.decisionId,
+        decisionTicket: payload.decisionTicket,
       }),
       cache: "no-store",
     });

@@ -66,6 +66,30 @@ const PRICING = [
     whenToUse: "When you want explicit policy constraints before running an allocation, or for governance workflows that validate policy parameters independently.",
   },
   {
+    id: "comprehensive-report",
+    title: "Comprehensive Intelligence Report",
+    price: "$4.99",
+    amount: "4.99",
+    kind: "PayPal",
+    isAsync: false,
+    endpoint: "Selun AI chat",
+    description:
+      "One report covering market conditions, risk limits for your profile, and measured price risk and scores for the assets you choose. Includes a PDF. Paid with PayPal in the chat.",
+    whenToUse: "When you want one complete report and don't use a crypto wallet.",
+  },
+  {
+    id: "monthly-intelligence",
+    title: "Monthly Intelligence Subscription",
+    price: "$9.99/month",
+    amount: "9.99",
+    kind: "PayPal",
+    isAsync: false,
+    endpoint: "Selun AI chat",
+    description:
+      "One Comprehensive Intelligence Report for the assets you choose, for each paid month. Billed through PayPal. Cancel anytime.",
+    whenToUse: "When you want the same assets reviewed every month.",
+  },
+  {
     id: "asset-scorecard",
     title: "Asset Scorecard",
     price: "$0.50",
@@ -74,7 +98,7 @@ const PRICING = [
     isAsync: false,
     endpoint: "/agent/x402/asset-scorecard",
     description:
-      "Scores candidate assets on liquidity, structural stability, role classification, and composite quality. Helps filter and rank assets before allocation.",
+      "Scores candidate assets on measured volatility and drawdown from daily price history, price risk, market standing, liquidity, and role classification.",
     whenToUse: "Before building a target allocation or when screening a set of assets for quality.",
   },
   {
