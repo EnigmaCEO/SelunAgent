@@ -1,0 +1,150 @@
+import { formatUnits, parseUnits } from "viem";
+import type { ResultDocument } from "./result-presenter";
+
+/**
+ * Commerce boundaries for the assistant.
+ *
+ * x402 pays for individual services with a wallet. PayPal pays for the comprehensive
+ * report and the monthly subscription (paypal-commerce.service.ts). Each keeps its own
+ * payment evidence: a PayPal purchase has no wallet address or transaction hash.
+ */
+
+export const COMPREHENSIVE_REPORT_ID = "comprehensive_report";
+export const MONTHLY_INTELLIGENCE_ID = "monthly_intelligence";
+
+export type PayPalPaymentEvidence = {
+  provider: "paypal";
+  amount: string;
+  currency: "USD";
+  orderId: string | null;
+  captureId: string | null;
+  saleId: string | null;
+  subscriptionId: string | null;
+  payerId: string | null;
+  environment: "sandbox" | "live";
+};
+
+export type PaymentRailId = "x402_wallet" | "paypal_once" | "paypal_subscription";
+
+export type PaymentRail = {
+  id: PaymentRailId;
+  label: string;
+  description: string;
+  status: "available" | "coming_soon";
+};
+
+export function getPaymentRails(paypalAvailable = false): PaymentRail[] {
+  const paypalStatus = paypalAvailable ? "available" : "coming_soon";
+  return [
+    {
+      id: "x402_wallet",
+      label: "Crypto wallet",
+      description: "Pay in USDC with your own wallet. You approve the exact amount, and network fees are covered.",
+      status: "available",
+    },
+    { id: "paypal_once", label: "PayPal", description: "One-time purchase of the comprehensive report.", status: paypalStatus },
+    { id: "paypal_subscription", label: "Subscription", description: "One comprehensive report each month through PayPal.", status: paypalStatus },
+  ];
+}
+
+export type SpendLimits = {
+  maxActionUsdc: string;
+  sessionLimitUsdc: string;
+  walletDailyLimitUsdc: string;
+};
+
+export type SpendDenial = "action_limit" | "session_limit" | "wallet_daily_limit";
+
+const USDC_DECIMALS = 6;
+
+export function toMicroUsdc(amount: string): bigint {
+  return parseUnits(amount as `${number}`, USDC_DECIMALS);
+}
+
+export function fromMicroUsdc(amount: bigint): string {
+  return formatUnits(amount, USDC_DECIMALS);
+}
+
+/**
+ * Assistant-side spending guardrail, on top of the x402 routes' own per-wallet
+ * request cap. Amounts are integer micro-USDC, so no float rounding. State is
+ * in memory and resets on restart. The wallet signature still binds each charge.
+ */
+export class SpendLedger {
+  private readonly session = new Map<string, Map<string, bigint>>();
+  private readonly wallet = new Map<string, Map<string, bigint>>();
+
+  constructor(
+    private readonly limits: SpendLimits,
+    private readonly now: () => Date = () => new Date(),
+  ) {}
+
+  private dayKey(payer: string): string {
+    return `${this.now().toISOString().slice(0, 10)}:${payer.toLowerCase()}`;
+  }
+
+  private static sum(entries: Map<string, bigint> | undefined, exceptActionId: string): bigint {
+    let total = 0n;
+    for (const [actionId, amount] of entries ?? []) {
+      if (actionId !== exceptActionId) total += amount;
+    }
+    return total;
+  }
+
+  /** Checks against limits without reserving anything. */
+  check(sessionId: string, actionId: string, priceUsdc: string, payer?: string): SpendDenial | null {
+    const price = toMicroUsdc(priceUsdc);
+    if (price > toMicroUsdc(this.limits.maxActionUsdc)) return "action_limit";
+    if (SpendLedger.sum(this.session.get(sessionId), actionId) + price > toMicroUsdc(this.limits.sessionLimitUsdc)) {
+      return "session_limit";
+    }
+    if (payer && SpendLedger.sum(this.wallet.get(this.dayKey(payer)), actionId) + price > toMicroUsdc(this.limits.walletDailyLimitUsdc)) {
+      return "wallet_daily_limit";
+    }
+    return null;
+  }
+
+  reserve(sessionId: string, actionId: string, priceUsdc: string, payer: string): SpendDenial | null {
+    const denial = this.check(sessionId, actionId, priceUsdc, payer);
+    if (denial) return denial;
+    const price = toMicroUsdc(priceUsdc);
+    const sessionEntries = this.session.get(sessionId) ?? new Map<string, bigint>();
+    sessionEntries.set(actionId, price);
+    this.session.set(sessionId, sessionEntries);
+    const key = this.dayKey(payer);
+    const walletEntries = this.wallet.get(key) ?? new Map<string, bigint>();
+    walletEntries.set(actionId, price);
+    this.wallet.set(key, walletEntries);
+    return null;
+  }
+
+  /** Call only when the x402 route confirmed that no funds moved. */
+  release(sessionId: string, actionId: string, payer: string): void {
+    this.session.get(sessionId)?.delete(actionId);
+    this.wallet.get(this.dayKey(payer))?.delete(actionId);
+  }
+
+  forgetSession(sessionId: string): void {
+    this.session.delete(sessionId);
+  }
+
+  sessionSpent(sessionId: string): string {
+    return fromMicroUsdc(SpendLedger.sum(this.session.get(sessionId), ""));
+  }
+}
+
+/**
+ * Delivery of one paid result. Live today and stored by report.service.ts. Whichever rail
+ * paid, PDF and email come from this frozen document, so PayPal needs no report code of its own.
+ */
+export type FulfillmentRecord = {
+  decisionId: string;
+  capabilityId: string;
+  frozenAt: string;
+  /** The PDF layout it was issued with. Absent on the earliest reports, which use layout 1. */
+  reportLayout?: number;
+  recordHash: string;
+  document: ResultDocument;
+  downloads: number;
+  emails: { recipientHash: string; status: "sending" | "sent" | "test_recorded"; updatedAt: string }[];
+};

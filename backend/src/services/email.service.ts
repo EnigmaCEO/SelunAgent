@@ -1,3 +1,7 @@
+import { createHash } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+
 export type AdminUsageChannel = "legacy_pay" | "x402_allocate" | "x402_sce" | "x402_error";
 
 type AdminUsageEmailInput = {
@@ -56,6 +60,7 @@ type UserReportEmailInput = {
 };
 
 type ResendResponse = {
+  message?: string;
   id?: string;
   error?: {
     message?: string;
@@ -140,6 +145,28 @@ function toTitleCase(value: string): string {
     .join(" ");
 }
 
+/**
+ * Test-only provider: records the email in a local folder and sends nothing. It refuses to run
+ * in production, where a customer would otherwise be told a report was delivered when it wasn't.
+ */
+function recordMockEmail(params: {
+  to: string[];
+  subject: string;
+  text: string;
+  idempotencyKey: string;
+  attachments?: ResendAttachment[];
+}): { ok: true; mock: true } | { ok: false; error: string } {
+  if (process.env.NODE_ENV === "production") {
+    return { ok: false, error: "The mock email provider can't be used in production." };
+  }
+  const folder = path.resolve(process.env.SELUN_MOCK_EMAIL_DIR?.trim() || path.join("backend", "data", "mock-email-outbox"));
+  fs.mkdirSync(folder, { recursive: true });
+  // Named by idempotency key, so a repeat replaces the entry, as Resend would deduplicate it.
+  const name = createHash("sha256").update(params.idempotencyKey).digest("hex").slice(0, 32);
+  fs.writeFileSync(path.join(folder, `${name}.json`), JSON.stringify({ ...params, recordedAt: new Date().toISOString() }, null, 2), "utf8");
+  return { ok: true, mock: true };
+}
+
 async function sendViaResend(params: {
   to: string[];
   subject: string;
@@ -147,7 +174,9 @@ async function sendViaResend(params: {
   html: string;
   idempotencyKey: string;
   attachments?: ResendAttachment[];
-}): Promise<{ ok: true } | { ok: false; error: string }> {
+}): Promise<{ ok: true; mock?: boolean } | { ok: false; error: string }> {
+  if (process.env.SELUN_EMAIL_PROVIDER?.trim().toLowerCase() === "mock") return recordMockEmail(params);
+
   const apiKey = process.env.RESEND_API_KEY?.trim();
   const from = process.env.SELUN_EMAIL_FROM?.trim();
 
@@ -184,8 +213,9 @@ async function sendViaResend(params: {
           : `Resend email failed with HTTP ${response.status}.`;
       try {
         const body = JSON.parse(responseText) as ResendResponse;
-        if (body?.error?.message) {
-          errorMessage = body.error.message;
+        const detail = body?.message ?? body?.error?.message;
+        if (detail) {
+          errorMessage = `Resend email failed with HTTP ${response.status}: ${detail}`;
         }
       } catch {
         if (responseText.trim()) {
@@ -558,4 +588,52 @@ export async function sendUserReportEmail(input: UserReportEmailInput): Promise<
   });
 
   return result.ok ? { status: "sent" } : { status: "failed", error: result.error };
+}
+
+export type DocumentEmailOutcome =
+  | { status: "sent" | "test_recorded" }
+  | { status: "skipped" | "failed"; error: string };
+
+/** Sends a chat result's PDF. test_recorded means the mock provider kept it and nothing was sent. */
+export async function sendResultDocumentEmail(input: {
+  toEmail: string;
+  decisionId: string;
+  title: string;
+  filename: string;
+  pdfBase64: string;
+  amountPaid: string;
+  paymentReference: { label: string; value: string };
+  recordHash: string;
+}): Promise<DocumentEmailOutcome> {
+  if (!isUserResultEmailEnabled()) return { status: "skipped", error: "Result email delivery is disabled." };
+  if (!isValidEmail(input.toEmail)) return { status: "failed", error: "Recipient email address is invalid." };
+
+  const facts: [string, string][] = [
+    ["Decision ID", input.decisionId],
+    ["Amount paid", input.amountPaid],
+    [input.paymentReference.label, input.paymentReference.value],
+    ["Record fingerprint", input.recordHash],
+  ];
+  const result = await sendViaResend({
+    to: [input.toEmail],
+    subject: `Your Selun ${input.title} report`,
+    text: [
+      `Your Selun ${input.title} report is attached.`,
+      "",
+      ...facts.map(([label, value]) => `${label}: ${value}`),
+      "",
+      "This is Selun's analysis, not a recommendation to buy, sell, or hold anything.",
+      "You received this because this address was entered for this report in Selun.",
+    ].join("\n"),
+    html: `
+      <h2>Your Selun ${escapeHtml(input.title)} report</h2>
+      ${facts.map(([label, value]) => `<p><strong>${escapeHtml(label)}:</strong> ${escapeHtml(value)}</p>`).join("")}
+      <p>The report PDF is attached. This is Selun's analysis, not a recommendation to buy, sell, or hold anything.</p>
+      <p>You received this because this address was entered for this report in Selun.</p>
+    `.trim(),
+    idempotencyKey: `selun-chat-report-${input.decisionId}-${input.toEmail.toLowerCase()}`,
+    attachments: [{ filename: input.filename, content: input.pdfBase64 }],
+  });
+  if (!result.ok) return { status: "failed", error: result.error };
+  return { status: result.mock ? "test_recorded" : "sent" };
 }

@@ -2,6 +2,18 @@ import { isAddress, type Address } from "viem";
 
 export const EXECUTION_MODEL_VERSION = "Selun-1.0.0" as const;
 export const SUPPORTED_BASE_NETWORKS = ["base-mainnet", "base-sepolia"] as const;
+/**
+ * Solana payments are mainnet only and settle through PayAI, so they're only on
+ * when running on Base mainnet with both a treasury address and that facilitator.
+ */
+export function isSolanaPaymentEnabled(input: {
+  networkId: string;
+  treasurySolanaAddress: string | null;
+  payAiFacilitatorUrl: string | undefined;
+}): boolean {
+  return input.networkId === "base-mainnet" && Boolean(input.treasurySolanaAddress) && Boolean(input.payAiFacilitatorUrl?.trim());
+}
+
 export type SupportedBaseNetwork = (typeof SUPPORTED_BASE_NETWORKS)[number];
 
 export type SelunBackendConfig = {

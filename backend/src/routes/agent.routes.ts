@@ -15,11 +15,29 @@ import {
   builderCodeResourceServerExtension,
   declareBuilderCodeExtension,
 } from "@x402/extensions/builder-code";
-import { formatUnits, isAddress, parseUnits } from "viem";
+import { createPublicClient, formatUnits, http, isAddress, parseUnits } from "viem";
 import { BASE_BUILDER_CODE } from "../builder-code";
-import { EXECUTION_MODEL_VERSION, getConfig } from "../config";
+import { EXECUTION_MODEL_VERSION, getConfig, isSolanaPaymentEnabled } from "../config";
 import { getExecutionLogs } from "../logging/execution-logs";
+import {
+  authorizeJobStart,
+  buildStatusPath,
+  INTERNAL_SIGNATURE_HEADER,
+  INTERNAL_TIMESTAMP_HEADER,
+  isJobAccessConfigured,
+  issueDecisionTicket,
+  issueRunGrant,
+  JOB_TOKEN_HEADER,
+  readDecisionTicket,
+  readRunGrant,
+  reserveDelivery,
+  verifyInternalRequest,
+  verifyJobAccessToken,
+} from "../services/job-access.service";
+import { resolveAsset } from "../assistant/asset-resolver";
+import { PriceHistoryService, SCORECARD_METHODOLOGY, applyScorecardMethodology, findUnscreenedAssets } from "../services/asset-scorecard-v2";
 import { createLegacyCooldown } from "../services/legacy-cooldown";
+import { settleWithRetry } from "../services/x402-settlement-retry";
 import { getX402StateStore } from "../services/x402-state.service";
 import { isExpiredIsoTimestamp, normalizeOptionalBoolean } from "../services/x402-utils";
 import {
@@ -76,6 +94,7 @@ import type {
 } from "../services/x402-state.types";
 
 const router = Router();
+const WIZARD_PAYMENT_CLOCK_SKEW_MS = 2 * 60_000;
 router.use(createLegacyCooldown());
 
 type X402AllocateOptionId = "allocation_only" | "allocation_with_report";
@@ -213,6 +232,7 @@ type AdminRefundReference = {
 
 const ALLOCATE_PHASE_POLL_INTERVAL_MS = 2_000;
 const ALLOCATE_PHASE_TIMEOUT_MS = 20 * 60 * 1_000;
+const scorecardPriceHistory = new PriceHistoryService();
 const runningAllocateOrchestration = new Set<string>();
 const x402IpBurstState = new Map<string, number[]>();
 let x402SellerServer: x402ResourceServer | null = null;
@@ -767,7 +787,7 @@ const X402_PUBLIC_DESCRIPTIONS = {
   policyEnvelope:
     "Risk policy engine. Call this when portfolio constraints and segment filters must be computed for a supplied risk tolerance, timeframe, and optional portfolio segment. Returns exposure caps, stablecoin floor, risk budget, authorization constraints, and segment-aware universe guidance.",
   assetScorecard:
-    "Asset scoring engine. Call this before asset selection or allocation. Returns liquidity, structural stability, role classification, and composite quality scores for candidate assets, shaped by the requested portfolio segment.",
+    "Asset scoring engine. Call this before asset selection or allocation. Returns measured volatility and drawdown from daily price history, a price risk score, an overall score, liquidity, market structure, and role classification for candidate assets, shaped by the requested portfolio segment.",
   rebalance:
     "Portfolio rebalance engine. Call this after allocation or on a monitoring schedule with current holdings. Returns target-vs-current drift and the adjustments required to rebalance within policy constraints for the requested portfolio segment.",
 } as const;
@@ -920,7 +940,9 @@ function getX402ToolDefinitions(): X402ToolDefinition[] {
               asset: "BTC",
               role: "core",
               riskClass: "large_cap_crypto",
-              compositeScore: 0.91,
+              overallScore: 0.66,
+              priceRiskScore: 0.37,
+              priceHistory: { status: "measured", annualizedVolatilityPct: 43.8, maxDrawdownPct: 44.7 },
             },
           ],
         },
@@ -1449,14 +1471,25 @@ function sendX402HttpResponse(
   return res.status(response.status).json(body);
 }
 
+function isSolanaEnabled(): boolean {
+  const config = getConfig();
+  return isSolanaPaymentEnabled({
+    networkId: config.networkId,
+    treasurySolanaAddress: config.treasurySolanaAddress,
+    payAiFacilitatorUrl: process.env.PAYAI_FACILITATOR_URL,
+  });
+}
+
 async function getX402SellerServer(): Promise<x402ResourceServer> {
   if (x402SellerServer) return x402SellerServer;
   if (!x402SellerServerInitPromise) {
     x402SellerServerInitPromise = (async () => {
       const server = new x402ResourceServer(createX402FacilitatorClients());
       server.register(toCaip2Network(getConfig().networkId) as Network, new ExactEvmScheme());
-      if (getConfig().treasurySolanaAddress) {
+      if (isSolanaEnabled()) {
         server.register(SOLANA_MAINNET_CAIP2 as Network, new ExactSvmServerScheme());
+      } else if (getConfig().treasurySolanaAddress) {
+        console.warn("Solana payments are off: they need NETWORK_ID=base-mainnet and PAYAI_FACILITATOR_URL.");
       }
       server.registerExtension(bazaarResourceServerExtension);
       server.registerExtension(builderCodeResourceServerExtension);
@@ -1561,7 +1594,7 @@ function buildToolChallengeBody(params: {
 
 function buildSolanaToolRequirement(productId: X402ToolProductId): { scheme: string; payTo: string; price: { amount: string; asset: string }; network: Network; maxTimeoutSeconds: number } | null {
   const solanaAddress = getConfig().treasurySolanaAddress;
-  if (!solanaAddress || !validateSvmAddress(solanaAddress)) return null;
+  if (!isSolanaEnabled() || !solanaAddress || !validateSvmAddress(solanaAddress)) return null;
   return {
     scheme: "exact",
     payTo: solanaAddress,
@@ -1654,6 +1687,12 @@ function getStoredToolResponse(productId: X402ToolProductId, decisionId: string)
     },
     result: record.responseData,
   };
+}
+
+/** The stored response for a paid tool request, or null. Reads only: it can't run anything. */
+export function getPaidToolResponse(capabilityId: string, decisionId: string): Record<string, unknown> | null {
+  const known = getX402ToolDefinitions().some((definition) => definition.productId === capabilityId);
+  return known ? getStoredToolResponse(capabilityId as X402ToolProductId, decisionId) : null;
 }
 
 function idempotentToolResponse(res: Response, productId: X402ToolProductId, decisionId: string) {
@@ -1785,7 +1824,7 @@ function sendAllocateConflict(
 }
 
 function idempotentResponse(res: Response, record: X402AllocateRecord) {
-  const statusPath = record.jobId ? `/execution-status/${encodeURIComponent(record.jobId)}` : null;
+  const statusPath = record.jobId ? buildStatusPath(record.jobId) : null;
   const jobStatus = record.jobId ? getExecutionStatus(record.jobId) : null;
   const phase6Status = jobStatus?.jobContext?.phase6.status;
   const complete = phase6Status === "complete";
@@ -1953,6 +1992,8 @@ async function buildAssetScorecardResult(jobId: string, input: AssetScorecardInp
       asset: token.symbol,
       name: token.name,
       coingeckoId: token.coingecko_id,
+      marketCapRank: token.market_cap_rank,
+      tokenCategory: token.token_category,
       role: token.role,
       riskClass: token.risk_class,
       selectionBucket: token.selection_bucket,
@@ -1965,6 +2006,8 @@ async function buildAssetScorecardResult(jobId: string, input: AssetScorecardInp
       selectionReasons: token.selection_reasons,
     }));
 
+  const unscreened = findUnscreenedAssets(input.assets, scored, resolveAsset);
+
   return {
     snapshotAt: phase5.timestamp,
     portfolioSegment: phase5.inputs.user_profile.portfolio_segment,
@@ -1972,8 +2015,30 @@ async function buildAssetScorecardResult(jobId: string, input: AssetScorecardInp
     qualifiedCandidatesCount: phase5.evaluation.qualified_candidates_count,
     selectedCandidatesCount: phase5.evaluation.selected_candidates_count,
     assetsRequested: input.assets,
-    scorecards: scored,
+    scoringMethodology: SCORECARD_METHODOLOGY,
+    ...(await applyScorecardMethodology(scored, unscreened, scorecardPriceHistory)),
   };
+}
+
+/**
+ * The PayPal comprehensive report. It runs the same pipeline and result builders as the
+ * x402 services, so nothing here produces analysis of its own. The caller must already
+ * hold a verified payment.
+ */
+export async function runComprehensiveReport(decisionId: string, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const riskTolerance = input.riskTolerance as AllocateRiskTolerance;
+  const jobId = `selun-comprehensive-${decisionId}-${Date.now()}`.replace(/[^a-zA-Z0-9-_]/g, "-");
+  runPhase1({
+    jobId,
+    executionTimestamp: nowIso(),
+    riskMode: deriveRiskMode(riskTolerance),
+    riskTolerance,
+    investmentTimeframe: input.timeframe as string,
+    portfolioSegment: input.portfolioSegment as string,
+  });
+  const assetScorecard = await buildAssetScorecardResult(jobId, input as AssetScorecardInput);
+  const [marketRegime, policyEnvelope] = await Promise.all([buildMarketRegimeResult(jobId), buildPolicyEnvelopeResult(jobId)]);
+  return { snapshotAt: assetScorecard.snapshotAt, marketRegime, policyEnvelope, assetScorecard };
 }
 
 async function buildRebalanceResult(jobId: string, input: RebalanceInput): Promise<Record<string, unknown>> {
@@ -2166,7 +2231,7 @@ async function buildX402CapabilitiesData() {
       caip2Network: toCaip2Network(config.networkId),
       networks: [
         config.networkId,
-        ...(config.treasurySolanaAddress && validateSvmAddress(config.treasurySolanaAddress) ? ["solana-mainnet"] : []),
+        ...(isSolanaEnabled() && config.treasurySolanaAddress && validateSvmAddress(config.treasurySolanaAddress) ? ["solana-mainnet"] : []),
       ],
       metadataRefreshCadenceHours: 6,
       category: "agent-safety:defi-preflight",
@@ -2354,20 +2419,6 @@ function sumPurchaseAmountBaseUnits(purchases: AdminPurchaseRow[]): bigint {
   return purchases.reduce((sum, purchase) => sum + parseUnits(purchase.chargedAmountUsdc, 6), 0n);
 }
 
-async function verifyResultEmailPayment(params: {
-  fromAddress: string;
-  expectedAmountUSDC: number;
-  transactionHash: string;
-  decisionId: string;
-}) {
-  return verifyIncomingPayment({
-    fromAddress: params.fromAddress,
-    expectedAmountUSDC: params.expectedAmountUSDC,
-    transactionHash: params.transactionHash,
-    decisionId: params.decisionId,
-  });
-}
-
 function sendToolConflict(
   res: Response,
   definition: X402ToolDefinition,
@@ -2445,6 +2496,56 @@ function isRecoverableFailedToolRecord(record: X402ToolRecord | undefined): reco
   );
 }
 
+/**
+ * The quote window is part of what the wallet signs, so it must not change between
+ * the 402 challenge and the signed request. Once a decision has been paid for, its
+ * window stays fixed. Otherwise a replay or a free retry after a failed run could
+ * never match, and a charged buyer would be stuck.
+ */
+export function selectToolQuoteWindow(record: X402ToolRecord | undefined): { issuedAt: string; expiresAt: string } | null {
+  if (!record) return null;
+  const paid = record.state === "accepted" || isRecoverableFailedToolRecord(record);
+  const openQuote = record.state === "quoted" && !isExpiredIsoTimestamp(record.quoteExpiresAt);
+  return paid || openQuote ? { issuedAt: record.quoteIssuedAt, expiresAt: record.quoteExpiresAt } : null;
+}
+
+/** The same rule for allocations. Their records have no failed state: a failed job stays accepted. */
+export function selectAllocateQuoteWindow(record: X402AllocateRecord | undefined): { issuedAt: string; expiresAt: string } | null {
+  if (!record) return null;
+  const paid = record.state === "accepted" && Boolean(record.jobId);
+  const openQuote = record.state === "quoted" && !isExpiredIsoTimestamp(record.quoteExpiresAt);
+  return paid || openQuote ? { issuedAt: record.quoteIssuedAt, expiresAt: record.quoteExpiresAt } : null;
+}
+
+export type AllocateJobHealth = { found: boolean; failed: boolean; running: boolean };
+
+/**
+ * What a paid allocation's verified payer gets on a repeat request. It never settles
+ * again: the original payment already covers this decision. A job that failed, or was
+ * lost in a restart, runs again under that same payment.
+ */
+export function decideAllocateReplay(
+  record: X402AllocateRecord,
+  payer: string,
+  job: AllocateJobHealth,
+): "payer_mismatch" | "replay" | "restart" {
+  const storedPayer = record.payment?.fromAddress;
+  if (!storedPayer || !paymentPayersMatch(storedPayer, payer)) return "payer_mismatch";
+  if (job.running) return "replay";
+  return !job.found || job.failed ? "restart" : "replay";
+}
+
+function allocateJobHealth(jobId: string): AllocateJobHealth {
+  const status = getExecutionStatus(jobId);
+  const context = status.jobContext;
+  const phases = context ? [context.phase1, context.phase2, context.phase3, context.phase4, context.phase5, context.phase6] : [];
+  return {
+    found: status.found,
+    failed: phases.some((phase) => phase.status === "failed"),
+    running: runningAllocateOrchestration.has(jobId),
+  };
+}
+
 function buildStoredToolResponseData(
   productId: X402ToolProductId,
   decisionId: string,
@@ -2470,29 +2571,32 @@ function buildStoredToolResponseData(
   };
 }
 
-async function executePaidToolRequest(params: {
-  req: Request;
-  res: Response;
+export type PaidToolExecution = {
   productId: X402ToolProductId;
-  definition: X402ToolDefinition;
   normalizedInput: Record<string, unknown>;
   inputFingerprint: string;
   decisionId: string;
   execute: (jobId: string) => Promise<Record<string, unknown>>;
-  options?: X402ToolRequestOptions;
+  skipPhase1?: boolean;
   payer: string;
   transactionHash: string;
   network: string | null;
   quoteIssuedAt: string;
   quoteExpiresAt: string;
   createdAt: string;
-  recoveredAfterChargeFailure?: boolean;
-  applyStoredPaymentHeader?: boolean;
-  discoveryExtension?: Record<string, unknown>;
-}) {
+};
+
+/**
+ * Runs a service whose payment is already confirmed and records the outcome.
+ * This is the only code that writes a paid result, and it knows nothing about
+ * HTTP or how the payment was taken. The caller must have confirmed the payment:
+ * calling this is what grants the service.
+ */
+export async function runAndRecordPaidTool(params: PaidToolExecution) {
   const stateStore = getX402StateStore();
+  const definition = getX402ToolDefinition(params.productId);
   const jobId = buildToolJobId(params.productId, params.decisionId);
-  if (!params.options?.skipPhase1) {
+  if (!params.skipPhase1) {
     runPhase1({
       jobId,
       executionTimestamp: nowIso(),
@@ -2534,7 +2638,7 @@ async function executePaidToolRequest(params: {
     });
     void sendAdminErrorEmail({
       decisionId: params.decisionId,
-      endpoint: params.definition.routePath,
+      endpoint: definition.routePath,
       productId: params.productId,
       errorReason: "execute_failed_post_settlement",
       errorMessage: executeErr instanceof Error ? executeErr.message : String(executeErr),
@@ -2556,8 +2660,7 @@ async function executePaidToolRequest(params: {
     params.network,
     result,
   );
-
-  stateStore.setToolRecord(params.productId, params.decisionId, {
+  const record: X402ToolRecord = {
     decisionId: params.decisionId,
     productId: params.productId,
     inputFingerprint: params.inputFingerprint,
@@ -2575,6 +2678,44 @@ async function executePaidToolRequest(params: {
       verifiedAt: acceptedAt,
     },
     responseData: result,
+  };
+  stateStore.setToolRecord(params.productId, params.decisionId, record);
+  return { jobId, record, responseData };
+}
+
+async function executePaidToolRequest(params: {
+  req: Request;
+  res: Response;
+  productId: X402ToolProductId;
+  definition: X402ToolDefinition;
+  normalizedInput: Record<string, unknown>;
+  inputFingerprint: string;
+  decisionId: string;
+  execute: (jobId: string) => Promise<Record<string, unknown>>;
+  options?: X402ToolRequestOptions;
+  payer: string;
+  transactionHash: string;
+  network: string | null;
+  quoteIssuedAt: string;
+  quoteExpiresAt: string;
+  createdAt: string;
+  recoveredAfterChargeFailure?: boolean;
+  applyStoredPaymentHeader?: boolean;
+  discoveryExtension?: Record<string, unknown>;
+}) {
+  const { jobId, record, responseData } = await runAndRecordPaidTool({
+    productId: params.productId,
+    normalizedInput: params.normalizedInput,
+    inputFingerprint: params.inputFingerprint,
+    decisionId: params.decisionId,
+    execute: params.execute,
+    skipPhase1: params.options?.skipPhase1,
+    payer: params.payer,
+    transactionHash: params.transactionHash,
+    network: params.network,
+    quoteIssuedAt: params.quoteIssuedAt,
+    quoteExpiresAt: params.quoteExpiresAt,
+    createdAt: params.createdAt,
   });
   incrementAddressUsage(params.payer);
 
@@ -2614,25 +2755,7 @@ async function executePaidToolRequest(params: {
     attachBazaarDiscovery(params.res, params.discoveryExtension);
   }
   if (params.applyStoredPaymentHeader) {
-    applyStoredToolPaymentResponseHeader(params.res, {
-      decisionId: params.decisionId,
-      productId: params.productId,
-      inputFingerprint: params.inputFingerprint,
-      requestBody: params.normalizedInput,
-      chargedAmountUsdc: getX402ToolPriceUsdc(params.productId),
-      quoteIssuedAt: params.quoteIssuedAt,
-      quoteExpiresAt: params.quoteExpiresAt,
-      state: "accepted",
-      createdAt: params.createdAt,
-      updatedAt: acceptedAt,
-      payment: {
-        fromAddress: params.payer,
-        transactionHash: params.transactionHash,
-        network: params.network ?? undefined,
-        verifiedAt: acceptedAt,
-      },
-      responseData: result,
-    });
+    applyStoredToolPaymentResponseHeader(params.res, record);
   }
 
   return params.res.status(200).json({
@@ -2710,12 +2833,7 @@ async function handleX402ToolRequest(
   try {
     const discoveryExtension = buildToolDiscoveryExtension(definition, definition.exampleOutput);
     const quoteDecisionId = decisionId ?? `quote-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    const activeQuoteWindow = existingRecord?.state === "quoted" && !isExpiredIsoTimestamp(existingRecord.quoteExpiresAt)
-      ? {
-        issuedAt: existingRecord.quoteIssuedAt,
-        expiresAt: existingRecord.quoteExpiresAt,
-      }
-      : createAllocateQuoteWindow();
+    const activeQuoteWindow = selectToolQuoteWindow(existingRecord) ?? createAllocateQuoteWindow();
 
     const identity = await getAgentAddress();
     const requirement = buildToolRequirement(
@@ -2822,12 +2940,12 @@ async function handleX402ToolRequest(
       return sendRateLimited(res, "from_address_daily_cap", secondsUntilNextUtcDay());
     }
 
-    const settlement = await httpServer.processSettlement(
+    const settlement = await settleWithRetry(() => httpServer.processSettlement(
       processResult.paymentPayload,
       processResult.paymentRequirements,
       processResult.declaredExtensions,
       { request: httpContext },
-    );
+    ));
 
     if (!settlement.success) {
       if (settlement.transaction?.trim()) {
@@ -3714,6 +3832,59 @@ router.post("/usdc-balance", async (req: Request, res: Response) => {
   }
 });
 
+function isInternalRequest(req: Request): boolean {
+  return verifyInternalRequest({
+    method: req.method,
+    path: req.originalUrl.split("?")[0],
+    timestamp: req.get(INTERNAL_TIMESTAMP_HEADER),
+    signature: req.get(INTERNAL_SIGNATURE_HEADER),
+  });
+}
+
+/**
+ * Verifies a wizard payment against the server's signed price and issues the grant
+ * that starts the job. Each transaction can only ever pay for one decision.
+ */
+async function verifyTicketedWizardPayment(
+  res: Response,
+  input: { fromAddress: string; transactionHash?: string; ticket: unknown },
+) {
+  const ticket = readDecisionTicket(input.ticket);
+  if (!ticket) return failure(res, new Error("This checkout has expired. Please start again."), 400);
+  if (ticket.walletAddress !== input.fromAddress.toLowerCase()) {
+    return failure(res, new Error("This payment came from a different wallet than the checkout."), 403);
+  }
+
+  const receipt = await verifyIncomingPayment({
+    fromAddress: input.fromAddress,
+    expectedAmountUSDC: ticket.chargedAmountUsdc,
+    transactionHash: input.transactionHash,
+    decisionId: ticket.decisionId,
+  });
+
+  // A payment made before this checkout began can't pay for it.
+  const paidAtMs = await getPaymentBlockTimestampMs(receipt.blockNumber);
+  if (paidAtMs < ticket.issuedAt - WIZARD_PAYMENT_CLOCK_SKEW_MS) {
+    return failure(res, new Error("That transaction was made before this checkout began."), 409);
+  }
+
+  const reservation = getX402StateStore().reserveTransactionHash(receipt.transactionHash, `wizard:${ticket.decisionId}`);
+  if (!reservation.accepted) {
+    return failure(res, new Error("That transaction has already been used for another purchase."), 409);
+  }
+  return success(res, {
+    ...receipt,
+    runGrant: issueRunGrant({
+      decisionId: ticket.decisionId,
+      source: "onchain",
+      includesReport: ticket.includesReport,
+      chargedAmountUsdc: ticket.chargedAmountUsdc,
+      transactionId: receipt.transactionHash,
+      walletAddress: input.fromAddress,
+    }),
+  });
+}
+
 router.post("/verify-payment", async (req: Request, res: Response) => {
   const fromAddress = req.body?.fromAddress;
   const expectedAmountUSDC = req.body?.expectedAmountUSDC;
@@ -3734,6 +3905,9 @@ router.post("/verify-payment", async (req: Request, res: Response) => {
   }
 
   try {
+    if (req.body?.decisionTicket !== undefined) {
+      return await verifyTicketedWizardPayment(res, { fromAddress, transactionHash, ticket: req.body.decisionTicket });
+    }
     const receipt = await verifyIncomingPayment({
       fromAddress,
       expectedAmountUSDC,
@@ -3752,38 +3926,18 @@ router.post("/result-email", async (req: Request, res: Response) => {
     return failure(res, new Error("resultEmail must be a valid email address."), 400);
   }
 
-  const payment = isRecord(req.body?.payment) ? req.body.payment : null;
-  const paymentStatus = toText(payment?.status, "").toLowerCase();
-  const paymentMethod = toText(payment?.paymentMethod, "onchain").toLowerCase();
-  const decisionId = toText(payment?.decisionId, "");
-  const transactionId = toText(payment?.transactionId, "");
-  const chargedAmountUsdc = toFiniteNumber(payment?.chargedAmountUsdc ?? payment?.amountUsdc);
-  const walletAddressRaw = toText(req.body?.walletAddress, "");
-  const hasValidWalletAddress = Boolean(walletAddressRaw && isAddress(walletAddressRaw));
-  const requiresOnchainVerification = paymentMethod !== "card";
-  if (paymentStatus !== "paid" || !decisionId || !transactionId) {
+  const purchase = readRunGrant(req.body?.runGrant);
+  if (!purchase) {
     return failure(res, new Error("Paid purchase record is required before result email delivery."), 402);
   }
-  if (chargedAmountUsdc === null || chargedAmountUsdc < 0) {
-    return failure(res, new Error("Charged amount is required before result email delivery."), 400);
+  if (!reserveDelivery("result-email", purchase.decisionId)) {
+    return failure(res, new Error("This purchase has reached its email limit."), 429);
   }
-  if (requiresOnchainVerification && !hasValidWalletAddress) {
-    return failure(res, new Error("Valid wallet address is required before result email delivery."), 400);
-  }
-
-  if (requiresOnchainVerification) {
-    try {
-      await verifyResultEmailPayment({
-        fromAddress: walletAddressRaw,
-        expectedAmountUSDC: chargedAmountUsdc,
-        transactionHash: transactionId,
-        decisionId,
-      });
-    } catch (error) {
-      return failure(res, new Error(`Payment verification required: ${error instanceof Error ? error.message : "verification failed."}`), 402);
-    }
-  }
-
+  const { decisionId, transactionId } = purchase;
+  const paymentMethod = purchase.source;
+  const chargedAmountUsdc = Number(purchase.chargedAmountUsdc);
+  const hasValidWalletAddress = isAddress(purchase.walletAddress);
+  const walletAddressRaw = purchase.walletAddress;
   const walletAddress = hasValidWalletAddress
     ? walletAddressRaw
     : paymentMethod === "card"
@@ -3807,7 +3961,7 @@ router.post("/result-email", async (req: Request, res: Response) => {
       chargedAmountUsdc,
       transactionHash: transactionId,
       paymentMethod: "card",
-      includeCertifiedDecisionRecord: Boolean(payment?.certifiedDecisionRecordPurchased),
+      includeCertifiedDecisionRecord: purchase.includesReport,
       riskTolerance: toText(req.body?.riskMode, "") || null,
       timeframe: toText(req.body?.investmentHorizon, "") || null,
       jobId: null,
@@ -3826,7 +3980,7 @@ router.post("/result-email", async (req: Request, res: Response) => {
     walletAddress,
     chargedAmountUsdc,
     transactionHash: transactionId,
-    certifiedDecisionRecordPurchased: Boolean(payment?.certifiedDecisionRecordPurchased),
+    certifiedDecisionRecordPurchased: purchase.includesReport,
     allocations: collectAllocationRows(req.body?.allocations).slice(0, 12),
   });
 
@@ -3841,6 +3995,10 @@ router.post("/result-email", async (req: Request, res: Response) => {
 });
 
 router.post("/report-email", async (req: Request, res: Response) => {
+  if (!isInternalRequest(req)) {
+    return failure(res, new Error("This route is only available to Selun's own services."), 401);
+  }
+
   const resultEmail = toText(req.body?.resultEmail, "").toLowerCase();
   if (!resultEmail || !isValidEmail(resultEmail)) {
     return failure(res, new Error("resultEmail must be a valid email address."), 400);
@@ -3855,38 +4013,18 @@ router.post("/report-email", async (req: Request, res: Response) => {
     return failure(res, new Error("pdfBase64 is required for report email delivery."), 400);
   }
 
-  const payment = isRecord(req.body?.payment) ? req.body.payment : null;
-  const paymentStatus = toText(payment?.status, "").toLowerCase();
-  const paymentMethod = toText(payment?.paymentMethod, "onchain").toLowerCase();
-  const decisionId = toText(payment?.decisionId, "");
-  const transactionId = toText(payment?.transactionId, "");
-  const chargedAmountUsdc = toFiniteNumber(payment?.chargedAmountUsdc ?? payment?.amountUsdc);
-  const walletAddressRaw = toText(req.body?.walletAddress, "");
-  const hasValidWalletAddress = Boolean(walletAddressRaw && isAddress(walletAddressRaw));
-  const requiresOnchainVerification = paymentMethod !== "card";
-  if (paymentStatus !== "paid" || !decisionId || !transactionId) {
+  const purchase = readRunGrant(req.body?.runGrant);
+  if (!purchase || !purchase.includesReport) {
     return failure(res, new Error("Paid purchase record is required before report email delivery."), 402);
   }
-  if (chargedAmountUsdc === null || chargedAmountUsdc < 0) {
-    return failure(res, new Error("Charged amount is required before report email delivery."), 400);
+  if (!reserveDelivery("report-email", purchase.decisionId)) {
+    return failure(res, new Error("This purchase has reached its email limit."), 429);
   }
-  if (requiresOnchainVerification && !hasValidWalletAddress) {
-    return failure(res, new Error("Valid wallet address is required before report email delivery."), 400);
-  }
-
-  if (requiresOnchainVerification) {
-    try {
-      await verifyResultEmailPayment({
-        fromAddress: walletAddressRaw,
-        expectedAmountUSDC: chargedAmountUsdc,
-        transactionHash: transactionId,
-        decisionId,
-      });
-    } catch (error) {
-      return failure(res, new Error(`Payment verification required: ${error instanceof Error ? error.message : "verification failed."}`), 402);
-    }
-  }
-
+  const { decisionId, transactionId } = purchase;
+  const paymentMethod = purchase.source;
+  const chargedAmountUsdc = Number(purchase.chargedAmountUsdc);
+  const walletAddressRaw = purchase.walletAddress;
+  const hasValidWalletAddress = isAddress(walletAddressRaw);
   const walletAddress = hasValidWalletAddress
     ? walletAddressRaw
     : paymentMethod === "card"
@@ -3905,7 +4043,7 @@ router.post("/report-email", async (req: Request, res: Response) => {
       chargedAmountUsdc,
       transactionHash: transactionId,
       paymentMethod: "card",
-      includeCertifiedDecisionRecord: Boolean(req.body?.includeCertifiedDecisionRecord),
+      includeCertifiedDecisionRecord: true,
       riskTolerance: toText(req.body?.riskMode, "") || null,
       timeframe: toText(req.body?.investmentHorizon, "") || null,
       jobId: null,
@@ -3921,7 +4059,7 @@ router.post("/report-email", async (req: Request, res: Response) => {
     pdfBase64,
     riskMode: toText(req.body?.riskMode, "n/a"),
     investmentHorizon: toText(req.body?.investmentHorizon, "n/a"),
-    includeCertified: Boolean(req.body?.includeCertifiedDecisionRecord),
+    includeCertified: true,
     walletAddress,
     amountUsdc: chargedAmountUsdc,
     transactionHash: transactionId,
@@ -3975,7 +4113,32 @@ router.post("/pay", async (req: Request, res: Response) => {
       console.error("Failed to send Selun admin usage email (legacy_pay):", error);
     });
 
-    return success(res, receipt);
+    // Nothing is due on a fully discounted checkout, so it's ready to run now.
+    // Everything else must first prove payment at /verify-payment.
+    return success(
+      res,
+      Number.parseFloat(receipt.chargedAmountUsdc) === 0
+        ? {
+            ...receipt,
+            runGrant: issueRunGrant({
+              decisionId: receipt.decisionId,
+              source: "free_code",
+              includesReport: receipt.certifiedDecisionRecordPurchased,
+              chargedAmountUsdc: receipt.chargedAmountUsdc,
+              transactionId: receipt.transactionId,
+              walletAddress,
+            }),
+          }
+        : {
+            ...receipt,
+            decisionTicket: issueDecisionTicket({
+              decisionId: receipt.decisionId,
+              walletAddress,
+              chargedAmountUsdc: receipt.chargedAmountUsdc,
+              includesReport: receipt.certifiedDecisionRecordPurchased,
+            }),
+          },
+    );
   } catch (error) {
     return failure(res, error, 400);
   }
@@ -4001,6 +4164,11 @@ router.post("/pay-quote", async (req: Request, res: Response) => {
 });
 
 router.post("/store-hash", async (req: Request, res: Response) => {
+  // Each call spends gas from Selun's wallet.
+  if (!isInternalRequest(req)) {
+    return failure(res, new Error("This route is only available to Selun's own services."), 401);
+  }
+
   const decisionId = req.body?.decisionId;
   const pdfHash = req.body?.pdfHash;
 
@@ -4011,6 +4179,14 @@ router.post("/store-hash", async (req: Request, res: Response) => {
     return failure(res, new Error("pdfHash is required."), 400);
   }
 
+  const purchase = readRunGrant(req.body?.runGrant);
+  if (!purchase || !purchase.includesReport || purchase.decisionId !== decisionId) {
+    return failure(res, new Error("A certified report purchase is required for this decision."), 402);
+  }
+  if (!reserveDelivery("store-hash", decisionId)) {
+    return failure(res, new Error("This purchase has reached its attestation limit."), 429);
+  }
+
   try {
     const receipt = await storeDecisionHashOnChain({ decisionId, pdfHash });
     return success(res, receipt);
@@ -4018,6 +4194,12 @@ router.post("/store-hash", async (req: Request, res: Response) => {
     return failure(res, error, 400);
   }
 });
+
+async function getPaymentBlockTimestampMs(blockNumber: number): Promise<number> {
+  const client = createPublicClient({ transport: http(getConfig().baseRpc) });
+  const block = await client.getBlock({ blockNumber: BigInt(blockNumber) });
+  return Number(block.timestamp) * 1000;
+}
 
 async function handleX402AllocateRequest(
   req: Request,
@@ -4029,6 +4211,11 @@ async function handleX402AllocateRequest(
     discoveryExtension: Record<string, unknown>;
   },
 ) {
+  // The buyer polls with a signed path, so refuse before any charge if it can't be signed.
+  if (!isJobAccessConfigured()) {
+    return failure(res, new Error("Job access is not configured."), 503);
+  }
+
   const burst = enforceIpBurstLimit(req);
   if (burst.limited) {
     return sendRateLimited(res, "ip_burst_limit", burst.retryAfterSeconds);
@@ -4133,12 +4320,7 @@ async function handleX402AllocateRequest(
 
   try {
     const quoteDecisionId = decisionId ?? `quote-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    const activeQuoteWindow = decisionScopedRecord?.state === "quoted" && !isExpiredIsoTimestamp(decisionScopedRecord.quoteExpiresAt)
-      ? {
-        issuedAt: decisionScopedRecord.quoteIssuedAt,
-        expiresAt: decisionScopedRecord.quoteExpiresAt,
-      }
-      : createAllocateQuoteWindow();
+    const activeQuoteWindow = selectAllocateQuoteWindow(decisionScopedRecord) ?? createAllocateQuoteWindow();
 
     const identity = await getAgentAddress();
     const accepts = buildAllocateAccepts(identity.walletAddress).filter((option) => option.withReport === withReport);
@@ -4211,7 +4393,7 @@ async function handleX402AllocateRequest(
         jobId,
       });
 
-      const statusPath = `/execution-status/${encodeURIComponent(jobId)}`;
+      const statusPath = buildStatusPath(jobId);
       return res.status(202).json({
         success: true,
         executionModelVersion: EXECUTION_MODEL_VERSION,
@@ -4274,24 +4456,44 @@ async function handleX402AllocateRequest(
     }
 
     if (decisionId && decisionScopedRecord?.state === "accepted" && decisionScopedRecord.jobId) {
-      const storedPayer = decisionScopedRecord.payment?.fromAddress;
-      if (!storedPayer || !paymentPayersMatch(storedPayer, payer)) {
+      const replay = decideAllocateReplay(decisionScopedRecord, payer, allocateJobHealth(decisionScopedRecord.jobId));
+      if (replay === "payer_mismatch") {
         return sendIdempotencyPayerMismatch(res, options.routePath, decisionId);
       }
       attachBazaarDiscovery(res, options.discoveryExtension);
-      return idempotentResponse(res, decisionScopedRecord);
+      if (replay === "replay") {
+        return idempotentResponse(res, decisionScopedRecord);
+      }
+
+      // The payment stands, so nothing settles and usage and referrals aren't counted again.
+      const retryJobId = buildAllocateJobId(decisionId);
+      runPhase1({
+        jobId: retryJobId,
+        executionTimestamp: nowIso(),
+        riskMode: deriveRiskMode(inputShape.riskTolerance),
+        riskTolerance: inputShape.riskTolerance,
+        investmentTimeframe: inputShape.timeframe,
+        portfolioSegment: inputShape.portfolioSegment,
+        walletAddress: payer,
+      });
+      void orchestrateAllocateJob(retryJobId).catch((error) => {
+        console.error(`Allocate orchestration failed for ${retryJobId}:`, error);
+      });
+      const retried: X402AllocateRecord = { ...decisionScopedRecord, jobId: retryJobId, updatedAt: nowIso() };
+      stateStore.setAllocateRecord(decisionId, retried);
+      return idempotentResponse(res, retried);
     }
 
     if (getAddressUsageCount(payer) >= getX402FromAddressDailyCap()) {
       return sendRateLimited(res, "from_address_daily_cap", secondsUntilNextUtcDay());
     }
 
-    const settlement = await httpServer.processSettlement(
+    const settlement = await settleWithRetry(() => httpServer.processSettlement(
       processResult.paymentPayload,
       processResult.paymentRequirements,
       processResult.declaredExtensions,
       { request: httpContext },
-    );
+    ));
 
     if (!settlement.success) {
       console.error("x402 settlement failed", {
@@ -4432,7 +4634,7 @@ async function handleX402AllocateRequest(
     attachBazaarDiscovery(res, options.discoveryExtension);
     applySettlementResponseHeaders(res, settlement);
 
-    const statusPath = `/execution-status/${encodeURIComponent(jobId)}`;
+    const statusPath = buildStatusPath(jobId);
     return res.status(202).json({
       success: true,
       executionModelVersion: EXECUTION_MODEL_VERSION,
@@ -4796,6 +4998,9 @@ router.post("/phase1/run", (req: Request, res: Response) => {
   const portfolioSegment = typeof req.body?.portfolioSegment === "string" ? req.body.portfolioSegment : undefined;
   const walletAddress = typeof req.body?.walletAddress === "string" ? req.body.walletAddress : undefined;
 
+  const access = authorizeJobStart(req.body?.runGrant, jobId);
+  if (!access.ok) return failure(res, new Error(access.error), access.status);
+
   try {
     runPhase1({
       jobId,
@@ -4810,6 +5015,7 @@ router.post("/phase1/run", (req: Request, res: Response) => {
     return res.status(202).json({
       status: "started",
       phase: REVIEW_MARKET_CONDITIONS_PHASE,
+      jobToken: access.jobToken,
     });
   } catch (error) {
     return failure(res, error, 400);
@@ -4821,6 +5027,9 @@ router.post("/phase3/run", (req: Request, res: Response) => {
 
   if (typeof jobId !== "string" || !jobId.trim()) {
     return failure(res, new Error("jobId is required."), 400);
+  }
+  if (!verifyJobAccessToken(jobId, req.get(JOB_TOKEN_HEADER))) {
+    return failure(res, new Error("A valid job access token is required."), 401);
   }
 
   try {
@@ -4840,6 +5049,9 @@ router.post("/phase4/run", (req: Request, res: Response) => {
   if (typeof jobId !== "string" || !jobId.trim()) {
     return failure(res, new Error("jobId is required."), 400);
   }
+  if (!verifyJobAccessToken(jobId, req.get(JOB_TOKEN_HEADER))) {
+    return failure(res, new Error("A valid job access token is required."), 401);
+  }
 
   try {
     runPhase4(jobId);
@@ -4858,6 +5070,9 @@ router.post("/phase5/run", (req: Request, res: Response) => {
   if (typeof jobId !== "string" || !jobId.trim()) {
     return failure(res, new Error("jobId is required."), 400);
   }
+  if (!verifyJobAccessToken(jobId, req.get(JOB_TOKEN_HEADER))) {
+    return failure(res, new Error("A valid job access token is required."), 401);
+  }
 
   try {
     runPhase5(jobId);
@@ -4875,6 +5090,9 @@ router.post("/phase6/run", (req: Request, res: Response) => {
 
   if (typeof jobId !== "string" || !jobId.trim()) {
     return failure(res, new Error("jobId is required."), 400);
+  }
+  if (!verifyJobAccessToken(jobId, req.get(JOB_TOKEN_HEADER))) {
+    return failure(res, new Error("A valid job access token is required."), 401);
   }
 
   try {

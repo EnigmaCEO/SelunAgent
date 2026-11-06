@@ -5,9 +5,11 @@ import express from "express";
 import { createAgentRouter, getX402AllocateMetadataByJobId, getX402CapabilitiesData } from "./routes/agent.routes";
 import { createAgentProgramRouter } from "./routes/agent-program.routes";
 import { createReferralRouter } from "./routes/referral.routes";
+import { createAssistantRouter } from "./assistant/assistant.routes";
 import { EXECUTION_MODEL_VERSION, getConfig } from "./config";
 import { resolveBackendPath } from "./runtime-paths";
 import { initializeAgentProgramPersistence, isAgentProgramDatabaseConfigured } from "./services/agent-program.service";
+import { JOB_TOKEN_HEADER, verifyJobAccessToken } from "./services/job-access.service";
 import { getExecutionStatus, getExecutionStatusByWallet } from "./services/phase1-execution.service";
 import { initializeReferralPersistence, isReferralDatabaseConfigured } from "./services/referral.service";
 
@@ -231,7 +233,13 @@ if (fs.existsSync(backendEnvLocalPath)) {
 const app = express();
 app.set("trust proxy", resolveTrustProxySetting(process.env.TRUST_PROXY));
 
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({
+  limit: "1mb",
+  // PayPal signs the exact bytes it sent, so its webhook keeps them.
+  verify: (req, _res, buffer) => {
+    if (req.url?.endsWith("/paypal/webhook")) (req as typeof req & { rawBody?: string }).rawBody = buffer.toString("utf8");
+  },
+}));
 
 function parseCsv(value: string | undefined): string[] {
   if (!value?.trim()) return [];
@@ -602,6 +610,7 @@ app.get("/openapi", async (req, res) => {
 app.use("/referral", createReferralRouter());
 app.use("/api", createAgentProgramRouter());
 app.use("/agent", createAgentRouter());
+app.use("/assistant", createAssistantRouter());
 
 app.get("/execution-status/wallet/:walletAddress", (req, res) => {
   const walletAddress = req.params.walletAddress?.trim();
@@ -613,14 +622,15 @@ app.get("/execution-status/wallet/:walletAddress", (req, res) => {
     });
   }
 
+  // Wallet addresses are public, so this only reports progress. Results need the job token.
   const status = getExecutionStatusByWallet(walletAddress);
-  const sanitizedStatus = sanitizeExecutionStatusForAllocator(status);
-  const agentContract = buildAgentContract(sanitizedStatus as JsonRecord);
   return res.status(status.found ? 200 : 404).json({
     success: status.found,
     executionModelVersion: EXECUTION_MODEL_VERSION,
-    ...sanitizedStatus,
-    ...(agentContract ? { agentContract } : {}),
+    found: status.found,
+    walletAddress: status.walletAddress,
+    phase: status.phase,
+    status: status.status,
   });
 });
 
@@ -631,6 +641,15 @@ app.get("/execution-status/:jobId", (req, res) => {
       success: false,
       executionModelVersion: EXECUTION_MODEL_VERSION,
       error: "jobId is required.",
+    });
+  }
+
+  const queryToken = typeof req.query.accessToken === "string" ? req.query.accessToken : undefined;
+  if (!verifyJobAccessToken(jobId, req.get(JOB_TOKEN_HEADER) ?? queryToken)) {
+    return res.status(401).json({
+      success: false,
+      executionModelVersion: EXECUTION_MODEL_VERSION,
+      error: "A valid job access token is required.",
     });
   }
 
