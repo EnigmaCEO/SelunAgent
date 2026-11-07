@@ -5,7 +5,7 @@ import { sandboxFaultFile, withSandboxFaults } from "./sandbox-faults";
 import { sendCoverageNoticeEmail } from "../services/email.service";
 import { createHash } from "node:crypto";
 import { Router, type NextFunction, type Request, type RequestHandler, type Response } from "express";
-import { getPaidToolResponse, getX402CapabilitiesData, listWalletPaymentRows, requireAdminRequest, runPaidCapability } from "../routes/agent.routes";
+import { getChatCapabilitiesData, getPaidToolResponse, getX402CapabilitiesData, listWalletPaymentRows, requireAdminRequest, runPaidCapability } from "../routes/agent.routes";
 import { issuePurchaseToken, issueReportToken, readPurchaseToken } from "../services/job-access.service";
 import { legacyClientIp } from "../services/legacy-cooldown";
 import { AssistantError, AssistantService, DEFAULT_LIMITS, STRIPE_META, hostedProvider, type AssistantDeps, type AssistantLimits } from "./assistant.service";
@@ -89,7 +89,8 @@ function createDefaultDeps(paypal: PayPalCommerceService | null, stripe: PayPalC
     llm: openAi ? new OpenAiClient(openAi) : null,
     gateway: new HttpX402Gateway(internalBaseUrl),
     loadCatalog: async () => {
-      const data = await getX402CapabilitiesData();
+      // The chat's prices, which include its markup on per-use services.
+      const data = await getChatCapabilitiesData();
       return { resources: data.resources };
     },
     limits: readAssistantLimits(),

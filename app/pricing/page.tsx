@@ -206,6 +206,11 @@ export default function PricingPage() {
               The allocation wizard accepts <strong>card payment via Stripe</strong>. No wallet
               required for wizard users.
             </p>
+            <p className={styles.sectionBody}>
+              The prices below are for x402 API calls. Bought in the <Link href="/chat">Selun chat</Link>,
+              each per-use service costs <strong>$1 more</strong>, whether you pay with a crypto wallet,
+              PayPal, or a card. The chat shows the exact price before you pay.
+            </p>
           </section>
 
           {/* Async vs sync */}

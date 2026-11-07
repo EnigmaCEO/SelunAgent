@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { PaymentRow } from "../assistant/paypal-commerce.service";
 import { Router, type Request, type Response } from "express";
 import { createHash, timingSafeEqual } from "node:crypto";
@@ -100,6 +101,17 @@ import type {
 import { completeRefund, isRefundCompleted, type X402RefundRecord } from "../services/x402-state.types";
 
 const router = Router();
+
+// The chat's own route for each marked-up service. The path is rewritten to the public handler, which then
+// quotes and verifies the chat price. A product with no chat price, or an unknown path, isn't served here.
+router.use((req, res, next) => {
+  if (req.method !== "POST" || !req.path.startsWith(CHAT_PREFIX)) return next();
+  const publicPath = `/x402/${req.path.slice(CHAT_PREFIX.length)}`;
+  const definition = getX402ToolDefinitions().find((entry) => entry.routePath === `/agent${publicPath}`);
+  if (!definition || !marksUp(definition.productId)) return failure(res, new Error("Not found."), 404);
+  req.url = publicPath + req.url.slice(req.path.length);
+  chatChannel.run(true, next);
+});
 const WIZARD_PAYMENT_CLOCK_SKEW_MS = 2 * 60_000;
 router.use(createLegacyCooldown());
 
@@ -768,7 +780,36 @@ function buildAllocateAmountExtra(withReport: boolean, optionId: X402AllocateOpt
   };
 }
 
+/**
+ * Selun's chat sells each per-use service at its API price plus a fixed amount, set by SELUN_CHAT_MARKUP_USD
+ * (default $1). The chat pays through /agent/x402/chat/..., which runs the same handler with this flag set, so
+ * every price that request quotes, verifies, and records includes the markup. Agents calling the public routes
+ * pay the API price. The report and subscription are priced on their own, so they're left out.
+ */
+const chatChannel = new AsyncLocalStorage<true>();
+const CHAT_PREFIX = "/x402/chat/";
+const UNMARKED_PRODUCTS = new Set<X402ToolProductId>(["comprehensive_report"]);
+
+export function getChatMarkupUsd(): number {
+  const raw = Number(process.env.SELUN_CHAT_MARKUP_USD ?? "1");
+  return Number.isFinite(raw) && raw >= 0 ? raw : 1;
+}
+
+function marksUp(productId: X402ToolProductId): boolean {
+  return !UNMARKED_PRODUCTS.has(productId) && getChatMarkupUsd() > 0;
+}
+
+/** The price a chat customer pays for this service, whichever method they choose. */
+export function getChatToolPriceUsdc(productId: X402ToolProductId): string {
+  const base = Number(getApiToolPriceUsdc(productId));
+  return marksUp(productId) ? formatUsdcAmount(base + getChatMarkupUsd()) : formatUsdcAmount(base);
+}
+
 function getX402ToolPriceUsdc(productId: X402ToolProductId): string {
+  return chatChannel.getStore() ? getChatToolPriceUsdc(productId) : getApiToolPriceUsdc(productId);
+}
+
+function getApiToolPriceUsdc(productId: X402ToolProductId): string {
   const config = getConfig();
   switch (productId) {
     case "market_regime":
@@ -2362,6 +2403,21 @@ async function buildX402CapabilitiesData() {
 
 export async function getX402CapabilitiesData() {
   return buildX402CapabilitiesData();
+}
+
+/** What the chat sells: marked-up services point at their chat route and price. Nothing here is public. */
+export async function getChatCapabilitiesData() {
+  const data = await buildX402CapabilitiesData();
+  const chatPaths = new Map(getX402ToolDefinitions().filter((entry) => marksUp(entry.productId)).map((entry) => [entry.routePath, entry.productId]));
+  return {
+    ...data,
+    resources: data.resources.map((resource) => {
+      const productId = chatPaths.get(resource.endpoint);
+      if (!productId) return resource;
+      const amountUsdc = getChatToolPriceUsdc(productId);
+      return { ...resource, endpoint: resource.endpoint.replace("/agent/x402/", "/agent/x402/chat/"), pricing: { amountUsdc, price: toUsdPrice(amountUsdc) } };
+    }),
+  };
 }
 
 function getToolTitle(productId: X402ToolProductId): string {
