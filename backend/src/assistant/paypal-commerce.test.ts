@@ -1544,3 +1544,19 @@ test("a Stripe refund or a lost dispute takes access away, and a won dispute res
   await send("evt_lost", "charge.dispute.closed", { id: "dp_2", status: "lost", payment_intent: CAPTURE, charge: "ch_1" });
   assert.equal(access(), "revoked");
 });
+
+test("a fee the provider reports late is filled in by the periodic check, even after a refund", async () => {
+  let now = Date.parse("2026-11-07T12:00:00.000Z");
+  const h = harness({ now: () => new Date(now) });
+  const { purchaseId } = await paidPurchase(h);
+  const purchase = (h.service as unknown as { all(): { purchases: Record<string, { payment: { processorFee?: unknown; status: string } }> } }).all().purchases[purchaseId];
+  assert.equal(purchase.payment.processorFee ?? null, null);
+  const getCapture = h.api.getCapture.bind(h.api);
+  h.api.getCapture = async (id: string) => ({ ...(await getCapture(id)), processorFee: { fee: "0.31", net: "0.19", currency: "USD" } });
+  now += 30_000;
+  await h.service.sweep();
+  assert.equal(purchase.payment.processorFee ?? null, null, "not asked again within a minute");
+  now += 60_000;
+  await h.service.sweep();
+  assert.deepEqual(purchase.payment.processorFee, { fee: "0.31", net: "0.19", currency: "USD" });
+});

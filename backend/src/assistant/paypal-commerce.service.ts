@@ -1090,6 +1090,17 @@ export class PayPalCommerceService {
     });
   }
 
+  /**
+   * Stripe records its fee a moment after the payment, so it can be missing when the payment is first read.
+   * Asked again for a week at most, and not more than once a minute.
+   */
+  private feeMissing(purchase: Purchase): boolean {
+    if (purchase.payment.processorFee || !purchase.payment.capturedAt) return false;
+    const now = this.now().getTime();
+    const checked = purchase.payment.checkedAt ? Date.parse(purchase.payment.checkedAt) : 0;
+    return now - Date.parse(purchase.payment.capturedAt) < 7 * 86_400_000 && now - checked > 60_000;
+  }
+
   /** Catches anything webhooks missed. Failures are logged and retried on the next pass. */
   async sweep() {
     const abandoned = this.now().getTime() - 3 * 86_400_000;
@@ -1105,10 +1116,10 @@ export class PayPalCommerceService {
       if (this.deps.checkUnpaidOrders && purchase.kind === "one_time" && purchase.payment.status === "created" && Date.parse(purchase.createdAt) > unpaidCutoff) {
         // Refused until the customer has paid, so most of these simply wait for the next sweep.
         await this.capture(purchase.purchaseId).catch(() => undefined);
-      } else if (purchase.payment.captureId && purchase.access !== "revoked") {
+      } else if (purchase.payment.captureId && (purchase.access !== "revoked" || this.feeMissing(purchase))) {
         await this.withLock(purchase.purchaseId, async () => {
-          await this.reconcile(purchase);
-          this.startFulfillment(purchase);
+          await this.reconcile(purchase, this.feeMissing(purchase));
+          if (purchase.access !== "revoked") this.startFulfillment(purchase);
         }).catch((error) => console.warn("PayPal purchase sync failed:", error instanceof Error ? error.message : error));
       } else if (purchase.payment.saleId && purchase.access !== "revoked") {
         this.startFulfillment(purchase);
