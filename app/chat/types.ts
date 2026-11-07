@@ -34,6 +34,8 @@ export type PayPalPhase = "awaiting_payment" | "payment_pending" | "running" | "
 
 /** Kept with the action in this browser. The token is the only way to read the purchase. */
 export type PayPalState = {
+  /** The hosted checkout holding this purchase. */
+  method?: string;
   token: string;
   kind: "one_time" | "subscription";
   phase: PayPalPhase;
@@ -64,6 +66,9 @@ export type PaymentRail = {
   status: "available" | "coming_soon";
 };
 
+export type PaymentOption = { id: string; label: string; flow: "wallet_signature" | "hosted_checkout"; note: string };
+export type Billing = "once" | "monthly";
+
 export type ActionState = "awaiting_approval" | "executing" | "completed" | "failed" | "declined";
 
 export type ActionView = {
@@ -82,7 +87,8 @@ export type ActionView = {
   assumptions: string[];
   state: ActionState;
   decisionId: string;
-  rails: PaymentRail[];
+  paymentOptions: PaymentOption[];
+  billing: Billing;
   document: ResultDocument | null;
   reportToken?: string | null;
   /** Whether a paid result can offer a PDF here. */
@@ -101,9 +107,10 @@ export type PublicCapability = {
   outputType: string;
   duration: string;
   limitations: string | null;
-  execution: "x402_tool" | "wizard_handoff" | "paypal_checkout" | "paypal_subscription";
+  execution: "x402_tool" | "wizard_handoff" | "hosted_checkout";
   priceUsdc: string;
   currency?: "USDC" | "USD";
+  billing?: Billing;
 };
 
 export type SystemSummary = { slug: string; name: string; status: string; summary: string; url: string | null };

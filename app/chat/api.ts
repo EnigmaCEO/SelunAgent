@@ -72,28 +72,28 @@ export function executeAction(conversationId: string, actionId: string, approved
   });
 }
 
-export function startPayPalCheckout(conversationId: string, actionId: string, approvedPrice: string) {
-  return request<{ approveUrl: string; kind: "one_time" | "subscription"; purchaseToken: string; action: ActionView }>(`actions/${actionId}/paypal-checkout`, {
+export function startCheckout(conversationId: string, actionId: string, method: string, approvedPrice: string) {
+  return request<{ approveUrl: string; kind: "one_time" | "subscription"; method: string; purchaseToken: string; action: ActionView }>(`actions/${actionId}/checkout`, {
     method: "POST",
     conversationId,
-    body: { approved: true, approvedPrice },
+    body: { method, approved: true, approvedPrice },
   });
 }
 
-export function capturePayPal(purchaseToken: string) {
-  return request<PayPalStatusView>("paypal/capture", { method: "POST", body: { purchaseToken } });
+export function capturePurchase(provider: string, purchaseToken: string) {
+  return request<PayPalStatusView>(`${provider}/capture`, { method: "POST", body: { purchaseToken } });
 }
 
-export function fetchPayPalStatus(purchaseToken: string) {
-  return request<PayPalStatusView>("paypal/status", { method: "POST", body: { purchaseToken } });
+export function fetchPurchaseStatus(provider: string, purchaseToken: string) {
+  return request<PayPalStatusView>(`${provider}/status`, { method: "POST", body: { purchaseToken } });
 }
 
-export function cancelPayPalSubscription(purchaseToken: string) {
-  return request<PayPalStatusView>("paypal/cancel", { method: "POST", body: { purchaseToken } });
+export function cancelSubscription(provider: string, purchaseToken: string) {
+  return request<PayPalStatusView>(`${provider}/cancel`, { method: "POST", body: { purchaseToken } });
 }
 
-export function updateSubscriptionAssets(purchaseToken: string, assets: string[]) {
-  return request<PayPalStatusView>("paypal/subscription/assets", { method: "POST", body: { purchaseToken, assets } });
+export function updateSubscriptionAssets(provider: string, purchaseToken: string, assets: string[]) {
+  return request<PayPalStatusView>(`${provider}/subscription/assets`, { method: "POST", body: { purchaseToken, assets } });
 }
 
 export function declineAction(conversationId: string, actionId: string) {

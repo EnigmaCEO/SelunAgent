@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { ScorecardPreflight, type ScreeningSnapshot } from "./scorecard-preflight";
 import { ScoreUnavailableError, UndeliverableError } from "../services/fulfillment-errors";
 import { withSandboxFaults } from "./sandbox-faults";
+import type { CheckoutInput, CheckoutProvider } from "./commerce";
+
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { createServer, type Server } from "node:http";
@@ -243,6 +245,19 @@ test("a locked asset that can't score refunds after a few tries, without waiting
 });
 
 const hour = 60 * 60_000;
+
+test("each product lists its own payment methods, and billing doesn't depend on the provider", () => {
+  const catalog = { resources: [{ productId: "asset_scorecard", endpoint: "/x", pricing: { amountUsdc: "0.50" } }] } as unknown as Parameters<typeof buildRegistry>[0];
+  const methods = (paypal: boolean) => buildRegistry(catalog, paypal ? { reportUsd: "4.99", subscriptionUsd: "9.99" } : null)
+    .map((entry) => [entry.id, entry.paymentMethods, entry.billing]);
+  assert.deepEqual(methods(false), [["asset_scorecard", ["x402_wallet"], "once"]]);
+  assert.deepEqual(methods(true), [
+    ["asset_scorecard", ["x402_wallet"], "once"],
+    ["comprehensive_report", ["paypal"], "once"],
+    ["monthly_intelligence", ["paypal"], "monthly"],
+  ]);
+  assert.deepEqual(buildRegistry(catalog, { reportUsd: "4.99", subscriptionUsd: "9.99" }, ["paypal", "stripe"]).find((entry) => entry.id === "comprehensive_report")?.paymentMethods, ["paypal", "stripe"]);
+});
 
 test("the staging fault switch can't touch a live purchase, and does nothing without its file", async () => {
   const file = path.join(dir, "fault.json");
@@ -1266,8 +1281,8 @@ test("PayPal products are offered only when PayPal is configured", () => {
   assert.equal(buildRegistry(catalog).some((entry) => entry.currency === "USD"), false);
   const withPayPal = buildRegistry(catalog, { reportUsd: "4.99", subscriptionUsd: "9.99" });
   assert.deepEqual(withPayPal.filter((entry) => entry.currency === "USD").map((entry) => [entry.id, entry.priceUsdc, entry.execution]), [
-    ["comprehensive_report", "4.99", "paypal_checkout"],
-    ["monthly_intelligence", "9.99", "paypal_subscription"],
+    ["comprehensive_report", "4.99", "hosted_checkout"],
+    ["monthly_intelligence", "9.99", "hosted_checkout"],
   ]);
   assert.equal(withPayPal.find((entry) => entry.id === "asset_scorecard")?.execution, "x402_tool", "individual services stay on x402");
   assert.equal(withPayPal.some((entry) => entry.id.startsWith("allocate") && entry.currency === "USD"), false, "allocations aren't sold through PayPal");
@@ -1279,13 +1294,14 @@ test("PayPal products are offered only when PayPal is configured", () => {
 
 type RouteHarness = ReturnType<typeof harness> & { url: string; server: Server; deps: ConstructorParameters<typeof AssistantService>[0] };
 
-async function routeHarness(): Promise<RouteHarness> {
+async function routeHarness(checkoutProviders: CheckoutProvider[] = []): Promise<RouteHarness> {
   const h = harness();
   const script = [
     { content: null, toolCalls: [{ id: "1", type: "function" as const, function: { name: "propose_comprehensive_report", arguments: JSON.stringify({ assets: ["BTC"] }) } }] },
     { content: "Here's the quote.", toolCalls: [] },
   ];
   const deps: ConstructorParameters<typeof AssistantService>[0] = {
+    checkoutProviders,
     llm: { complete: async () => script.shift() ?? { content: "Here is a summary.", toolCalls: [] } },
     gateway: {
       requestChallenge: async () => { throw new Error("no wallet path should run"); },
@@ -1309,23 +1325,55 @@ async function routeHarness(): Promise<RouteHarness> {
 const post = (url: string, body: unknown, headers: Record<string, string> = {}) =>
   fetch(url, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body) });
 
+test("a registered provider appears on the card and starts its own checkout, with nothing else changed", async () => {
+  const started: CheckoutInput[] = [];
+  const h = await routeHarness([{
+    id: "newpay",
+    label: "NewPay",
+    note: () => "You'll go to NewPay to approve.",
+    start: async (input) => { started.push(input); return { approveUrl: "https://newpay.test/go", kind: "one_time", id: "np-1" }; },
+  }]);
+  try {
+    const chat = (await (await post(`${h.url}/chat`, { message: "A full report on Bitcoin" })).json()) as { conversationId: string; blocks: { type: string; action: { id: string; decisionId: string; paymentOptions: { id: string; label: string; flow: string; note: string }[] } }[] };
+    const action = chat.blocks.find((block) => block.type === "action")!.action;
+    assert.deepEqual(action.paymentOptions.map((option) => [option.id, option.flow]), [["paypal", "hosted_checkout"], ["newpay", "hosted_checkout"]]);
+    assert.equal(action.paymentOptions[1].note, "You'll go to NewPay to approve.");
+    const conversation = { "x-selun-conversation": chat.conversationId };
+
+    const refused = await post(`${h.url}/actions/${action.id}/checkout`, { method: "unlisted", approved: true, approvedPrice: "4.99" }, conversation);
+    assert.equal(refused.status, 400);
+    assert.equal(started.length, 0);
+
+    const reply = await post(`${h.url}/actions/${action.id}/checkout`, { method: "newpay", approved: true, approvedPrice: "4.99" }, conversation);
+    assert.equal(reply.status, 200);
+    const body = await reply.json() as { approveUrl: string; method: string; kind: string };
+    assert.deepEqual([body.approveUrl, body.method, body.kind], ["https://newpay.test/go", "newpay", "one_time"]);
+    assert.equal(started[0].purchaseKey, action.decisionId);
+    assert.equal(h.api.orders.size, 0, "PayPal wasn't touched");
+  } finally {
+    await new Promise((resolve) => h.server.close(resolve));
+  }
+});
+
 test("the full purchase through the routes: quote, checkout, return, result, PDF", async () => {
   const h = await routeHarness();
   try {
-    const chat = (await (await post(`${h.url}/chat`, { message: "I want a full report on Bitcoin, I'll pay with PayPal" })).json()) as { conversationId: string; blocks: { type: string; action: { id: string; priceUsdc: string; currency: string; execution: string; decisionId: string } }[] };
+    const chat = (await (await post(`${h.url}/chat`, { message: "I want a full report on Bitcoin, I'll pay with PayPal" })).json()) as { conversationId: string; blocks: { type: string; action: { id: string; priceUsdc: string; currency: string; execution: string; decisionId: string; paymentOptions: { id: string }[]; billing: string } }[] };
     const action = chat.blocks.find((block) => block.type === "action")!.action;
     assert.equal(action.priceUsdc, "4.99");
     assert.equal(action.currency, "USD");
-    assert.equal(action.execution, "paypal_checkout");
+    assert.equal(action.execution, "hosted_checkout");
+    assert.deepEqual(action.paymentOptions.map((option) => option.id), ["paypal"]);
+    assert.equal(action.billing, "once");
     const conversation = { "x-selun-conversation": chat.conversationId };
 
     // The wallet path is closed for this product, and approval is required.
     assert.equal((await post(`${h.url}/actions/${action.id}/challenge`, {}, conversation)).status, 400);
-    assert.equal((await post(`${h.url}/actions/${action.id}/paypal-checkout`, {}, conversation)).status, 400);
-    assert.equal((await post(`${h.url}/actions/${action.id}/paypal-checkout`, { approved: true, approvedPrice: "0.01" }, conversation)).status, 409, "a lower price is refused");
+    assert.equal((await post(`${h.url}/actions/${action.id}/checkout`, {}, conversation)).status, 400);
+    assert.equal((await post(`${h.url}/actions/${action.id}/checkout`, { method: "paypal", approved: true, approvedPrice: "0.01" }, conversation)).status, 409, "a lower price is refused");
     assert.equal(h.api.orders.size, 0);
 
-    const started = (await (await post(`${h.url}/actions/${action.id}/paypal-checkout`, { approved: true, approvedPrice: "4.99" }, conversation)).json()) as { approveUrl: string; purchaseToken: string };
+    const started = (await (await post(`${h.url}/actions/${action.id}/checkout`, { method: "paypal", approved: true, approvedPrice: "4.99" }, conversation)).json()) as { approveUrl: string; purchaseToken: string };
     assert.match(started.approveUrl, /approve\/ORDER-1/);
     assert.equal(h.runs.length, 0, "starting checkout runs nothing");
     assert.equal(h.api.orders.get("ORDER-1")?.amount, "4.99", "the server's price, not the browser's");
@@ -1351,7 +1399,7 @@ test("the full purchase through the routes: quote, checkout, return, result, PDF
     assert.equal(Buffer.from(await pdf.arrayBuffer()).subarray(0, 5).toString(), "%PDF-");
 
     // Checkout can't be restarted once paid.
-    assert.equal((await post(`${h.url}/actions/${action.id}/paypal-checkout`, { approved: true, approvedPrice: "4.99" }, conversation)).status, 409);
+    assert.equal((await post(`${h.url}/actions/${action.id}/checkout`, { method: "paypal", approved: true, approvedPrice: "4.99" }, conversation)).status, 409);
 
     h.api.remoteCapture.set(CAPTURE, "REFUNDED");
     const webhookResponse = await fetch(`${h.url}/paypal/webhook`, { method: "POST", headers: { "content-type": "application/json" }, body: webhook("r1", "PAYMENT.CAPTURE.REVERSED", { id: CAPTURE }) });

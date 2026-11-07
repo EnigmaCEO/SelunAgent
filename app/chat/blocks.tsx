@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { Fragment, useState, type FormEvent, type ReactNode } from "react";
 import { ApiError, downloadReport, emailReport } from "./api";
-import type { ActionView, Block, CoverageItem, PublicCapability, ResultDocument, ResultSection, SiteSource, SystemDetail, SystemSummary, Tone } from "./types";
+import type { ActionView, Block, CoverageItem, PaymentOption, PublicCapability, ResultDocument, ResultSection, SiteSource, SystemDetail, SystemSummary, Tone } from "./types";
 import styles from "./chat.module.css";
 
 export function formatUsdc(amount: string): string {
@@ -227,10 +227,12 @@ function ResultCard({ document, reportToken, monthly = false }: { document: Resu
 
 export type ApprovalPhase = "idle" | "preparing" | "signing" | "submitting" | "redirecting";
 
+const TERMS_UP_FRONT = new Set(["comprehensive_report", "monthly_intelligence"]);
+
 const PHASE_LABEL: Record<ApprovalPhase, string> = {
   idle: "",
   preparing: "Confirming price…",
-  redirecting: "Opening PayPal…",
+  redirecting: "Opening checkout…",
   signing: "Check your wallet…",
   submitting: "Sending approval…",
 };
@@ -287,7 +289,7 @@ function ActionCard(props: {
   action: ActionView;
   phase: ApprovalPhase;
   error: string | null;
-  onApprove: (action: ActionView) => void;
+  onApprove: (action: ActionView, option: PaymentOption) => void;
   onDecline: (action: ActionView) => void;
   onCancelSubscription: (action: ActionView) => void;
   onUpdateAssets: (action: ActionView, assets: string[]) => void;
@@ -295,8 +297,9 @@ function ActionCard(props: {
 }) {
   const { action, phase, error, onApprove, onDecline, onCancelSubscription, onUpdateAssets, onAsk } = props;
   const busy = phase !== "idle";
-  const usesPayPal = action.execution === "paypal_checkout" || action.execution === "paypal_subscription";
-  const monthly = action.execution === "paypal_subscription";
+  const options = action.paymentOptions ?? [];
+  const [chosenMethod, setChosenMethod] = useState<string | null>(null);
+  const method = options.find((option) => option.id === chosenMethod) ?? options[0];
   const subscription = action.paypal?.kind === "subscription" ? action.paypal : null;
   const subscriptionRow = subscription && subscription.subscriptionStatus && subscription.subscriptionStatus !== "created" && (
     <div className={styles.subscriptionRow}>
@@ -374,7 +377,7 @@ function ActionCard(props: {
           <div>
             <p className={styles.actionRunningTitle}>
               {action.paypal?.phase === "payment_pending"
-                ? `Waiting for PayPal: ${action.title}`
+                ? `Waiting for payment: ${action.title}`
                 : action.paypal?.phase === "delayed"
                   ? `Delayed: ${action.title}`
                   : action.paypal?.phase === "needs_selection"
@@ -396,7 +399,7 @@ function ActionCard(props: {
   // The simple card's heading already names the assets, and defaults wait in the section below.
   const shownDetails = simple ? action.details.filter((detail) => detail.label !== "Assets" && !defaulted.has(detail.label)) : action.details;
   // A subscription's or report's terms are part of the decision, so they stay in view.
-  const limitationUpFront = usesPayPal && action.limitations;
+  const limitationUpFront = TERMS_UP_FRONT.has(action.capabilityId) && action.limitations;
   const hasMore = Boolean(action.limitations && !limitationUpFront) || (action.coverage?.length ?? 0) > 0 || defaults.length > 0;
   return (
     <article className={styles.actionCard} aria-label={`${simple?.title ?? action.title} quote`}>
@@ -408,7 +411,7 @@ function ActionCard(props: {
         </div>
         <div className={styles.price}>
           <strong>{formatUsdc(action.priceUsdc)}</strong>
-          <span>{usesPayPal ? (monthly ? "USD / month" : "USD") : "USDC"}</span>
+          <span>{action.currency}{action.billing === "monthly" ? " / month" : ""}</span>
         </div>
       </header>
 
@@ -453,26 +456,33 @@ function ActionCard(props: {
         <p className={styles.inlineError} role="alert">{error ?? action.paypal?.message}</p>
       )}
 
-      {(!failed || action.failure?.retryable) && (
+      {options.length > 1 && !failed && (
+        <fieldset className={styles.paymentMethods} disabled={busy}>
+          <legend>Pay with</legend>
+          {options.map((option) => (
+            <label key={option.id} className={styles.paymentMethod}>
+              <input type="radio" name={`payment-${action.id}`} checked={option.id === method?.id} onChange={() => setChosenMethod(option.id)} />
+              {option.label}
+            </label>
+          ))}
+        </fieldset>
+      )}
+
+      {method && (!failed || action.failure?.retryable) && (
         <div className={styles.actionButtons}>
-          <button type="button" className={styles.approveButton} disabled={busy} onClick={() => onApprove(action)}>
+          <button type="button" className={styles.approveButton} disabled={busy} onClick={() => onApprove(action, method)}>
             {busy
               ? PHASE_LABEL[phase]
-              : usesPayPal
-                ? monthly ? `Subscribe for ${formatUsdc(action.priceUsdc)}/month with PayPal` : `Pay ${formatUsdc(action.priceUsdc)} with PayPal`
-                : failed ? "Try again with wallet" : `Approve ${formatUsdc(action.priceUsdc)} with wallet`}
+              : failed
+                ? "Try again"
+                : action.billing === "monthly" ? `Subscribe for ${formatUsdc(action.priceUsdc)}/month` : `Pay ${formatUsdc(action.priceUsdc)}`}
           </button>
           {!failed && <button type="button" className={styles.ghostButton} disabled={busy} onClick={() => onDecline(action)}>Not now</button>}
         </div>
       )}
 
-      <p className={styles.approvalNote}>
-        {usesPayPal
-          ? monthly
-            ? "You'll go to PayPal to approve. PayPal charges this amount each month until you cancel, and you can cancel here or in PayPal at any time."
-            : "You'll go to PayPal to approve this exact amount. Nothing is charged until you do."
-          : "Nothing is charged until you approve this exact amount in your wallet. Pays in USDC on Base."}
-      </p>
+      {method && <p className={styles.approvalNote}>{method.note}</p>}
+      {!method && !failed && <p className={styles.approvalNote}>Payment isn&apos;t available for this right now, and nothing has been charged.</p>}
     </article>
   );
 }
@@ -560,7 +570,7 @@ function CapabilitiesCard({ items, onAsk }: { items: PublicCapability[]; onAsk: 
         <li key={item.id} className={styles.capability}>
           <div className={styles.capabilityTop}>
             <h3>{item.title}</h3>
-            <span className={styles.capabilityPrice}>{formatUsdc(item.priceUsdc)}{item.execution === "paypal_subscription" ? "/month" : ""}</span>
+            <span className={styles.capabilityPrice}>{formatUsdc(item.priceUsdc)}{item.billing === "monthly" ? "/month" : ""}</span>
           </div>
           <p>{item.summary}</p>
           <button type="button" className={styles.textButton} onClick={() => onAsk(`Tell me more about ${item.title}`)}>Tell me more</button>
@@ -575,7 +585,7 @@ export function BlockView(props: {
   phase: ApprovalPhase;
   actionError: string | null;
   referralHref: (href: string) => string;
-  onApprove: (action: ActionView) => void;
+  onApprove: (action: ActionView, option: PaymentOption) => void;
   onDecline: (action: ActionView) => void;
   onCancelSubscription: (action: ActionView) => void;
   onUpdateAssets: (action: ActionView, assets: string[]) => void;

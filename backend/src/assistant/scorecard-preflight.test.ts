@@ -365,7 +365,7 @@ async function quotedReport(check: ScorecardPreflight["check"], tool = "propose_
   const card = reply.blocks.find((block) => block.type === "action");
   assert.ok(card?.type === "action");
   assert.equal(card.action.eligibilityChecked, true);
-  const approve = () => service.instance.startPayPalCheckout(reply.conversationId, card.action.id, { approved: true, approvedPrice: card.action.priceUsdc });
+  const approve = () => service.instance.startCheckout(reply.conversationId, card.action.id, { method: "paypal", approved: true, approvedPrice: card.action.priceUsdc });
   return { ...service, approve };
 }
 

@@ -23,7 +23,7 @@ PayPal products are offered only when `PAYPAL_ENV`, `PAYPAL_CLIENT_ID`, and `PAY
 
 ## One-time purchase
 
-1. The card's button calls `POST /assistant/actions/:id/paypal-checkout`. The server creates an order at its own price, and returns PayPal's approval URL and a purchase token.
+1. The card's button calls `POST /assistant/actions/:id/checkout` with `method: "paypal"`. The server creates an order at its own price, and returns PayPal's approval URL and a purchase token.
 2. The customer approves on PayPal and returns to `/?paypal=return`.
 3. The browser sends the token to `POST /assistant/paypal/capture`. The server reads the order from PayPal, checks its amount, currency, and purchase reference, then captures it.
 4. Only a capture PayPal reports as `COMPLETED` starts the run. `PENDING` waits for a webhook or the next check.

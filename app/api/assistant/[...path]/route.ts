@@ -8,7 +8,7 @@ export const maxDuration = 60;
 const CONVERSATION_HEADER = "x-selun-conversation";
 
 const ALLOWED_GET = [/^status$/, /^capabilities$/, /^actions\/[0-9a-f-]{36}$/];
-const ALLOWED_POST = [/^chat$/, /^paypal\/subscription\/assets$/, /^actions\/[0-9a-f-]{36}\/(challenge|execute|decline|paypal-checkout)$/, /^report\/(download|email)$/, /^paypal\/(capture|status|cancel)$/];
+const ALLOWED_POST = [/^chat$/, /^[a-z0-9_]+\/subscription\/assets$/, /^actions\/[0-9a-f-]{36}\/(challenge|execute|decline|checkout)$/, /^report\/(download|email)$/, /^[a-z0-9_]+\/(capture|status|cancel)$/];
 
 function backendBaseUrl() {
   return process.env.SELUN_BACKEND_URL?.trim() || "http://localhost:8787";

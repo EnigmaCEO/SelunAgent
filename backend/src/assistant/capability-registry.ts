@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { assetLabel, resolveAsset, type KnownAsset } from "./asset-resolver";
+import { WALLET_METHOD, type Billing } from "./commerce";
 
 /**
  * Capability registry: the allowlist of what the assistant may offer.
@@ -39,11 +40,14 @@ export type Capability = {
   outputType: string;
   duration: string;
   limitations: string | null;
-  execution: "x402_tool" | "wizard_handoff" | "paypal_checkout" | "paypal_subscription";
+  execution: "x402_tool" | "wizard_handoff" | "hosted_checkout";
   endpoint: string;
   /** The amount in `currency`. PayPal products are priced in USD, everything else in USDC. */
   priceUsdc: string;
   currency: "USDC" | "USD";
+  /** Which payment methods accept this. Empty when payment happens elsewhere, as in the plan builder. */
+  paymentMethods: string[];
+  billing: Billing;
 };
 
 export type PayPalPrices = { reportUsd: string; subscriptionUsd: string };
@@ -510,7 +514,7 @@ const PAYPAL_SPECS: ToolSpec[] = [
   },
 ];
 
-const HANDOFF_SPECS: Omit<Capability, "endpoint" | "priceUsdc" | "currency">[] = [
+const HANDOFF_SPECS: Omit<Capability, "endpoint" | "priceUsdc" | "currency" | "paymentMethods" | "billing">[] = [
   {
     id: "allocate",
     title: "Personal Portfolio Plan",
@@ -545,7 +549,7 @@ export function listToolSpecs(includePayPal = false): readonly ToolSpec[] {
 }
 
 /** Joins the static allowlist to the live catalog. Products missing from the catalog are dropped. */
-export function buildRegistry(catalog: CapabilityCatalog, paypal?: PayPalPrices | null): Capability[] {
+export function buildRegistry(catalog: CapabilityCatalog, paypal?: PayPalPrices | null, hostedMethods: readonly string[] = ["paypal"]): Capability[] {
   const capabilities: Capability[] = [];
   const priced = (id: string) => catalog.resources.find((resource) => resource.productId === id);
 
@@ -564,12 +568,14 @@ export function buildRegistry(catalog: CapabilityCatalog, paypal?: PayPalPrices 
       endpoint: resource.endpoint,
       priceUsdc: resource.pricing.amountUsdc,
       currency: "USDC",
+      paymentMethods: [WALLET_METHOD],
+      billing: "once",
     });
   }
   for (const spec of HANDOFF_SPECS) {
     const resource = priced(spec.id);
     if (!resource) continue;
-    capabilities.push({ ...spec, endpoint: resource.endpoint, priceUsdc: resource.pricing.amountUsdc, currency: "USDC" });
+    capabilities.push({ ...spec, endpoint: resource.endpoint, priceUsdc: resource.pricing.amountUsdc, currency: "USDC", paymentMethods: [], billing: "once" });
   }
   if (paypal) {
     for (const spec of PAYPAL_SPECS) {
@@ -582,10 +588,12 @@ export function buildRegistry(catalog: CapabilityCatalog, paypal?: PayPalPrices 
         outputType: spec.outputType,
         duration: spec.duration,
         limitations: spec.limitations,
-        execution: subscription ? "paypal_subscription" : "paypal_checkout",
+        execution: "hosted_checkout",
         endpoint: "",
         priceUsdc: subscription ? paypal.subscriptionUsd : paypal.reportUsd,
         currency: "USD",
+        paymentMethods: [...hostedMethods],
+        billing: subscription ? "monthly" : "once",
       });
     }
   }

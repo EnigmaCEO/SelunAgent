@@ -312,14 +312,15 @@ export function createAssistantRouter(injected?: AssistantDeps, injectedReports?
     }
   });
 
-  router.post("/actions/:actionId/paypal-checkout", limited(actionLimiter), async (req, res) => {
+  router.post("/actions/:actionId/checkout", limited(actionLimiter), async (req, res) => {
     try {
-      const started = await getService().startPayPalCheckout(conversationId(req), String(req.params.actionId), {
+      const started = await getService().startCheckout(conversationId(req), String(req.params.actionId), {
+        method: req.body?.method,
         approved: req.body?.approved,
         approvedPrice: req.body?.approvedPrice,
       });
       res.set("Cache-Control", "no-store");
-      res.json({ success: true, approveUrl: started.approveUrl, kind: started.kind, purchaseToken: issuePurchaseToken(started.id, started.kind), action: started.action });
+      res.json({ success: true, approveUrl: started.approveUrl, kind: started.kind, method: started.method, purchaseToken: issuePurchaseToken(started.id, started.kind), action: started.action });
     } catch (error) {
       sendError(res, error);
     }

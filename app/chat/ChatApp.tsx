@@ -5,9 +5,9 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { appendReferralParam } from "@/app/lib/referral";
 import { useReferralCapture } from "@/app/lib/use-referral-capture";
-import { ApiError, cancelPayPalSubscription, capturePayPal, declineAction, executeAction, fetchAction, fetchPayPalStatus, fetchStatus, requestChallenge, sendChat, startPayPalCheckout, updateSubscriptionAssets } from "./api";
+import { ApiError, cancelSubscription, capturePurchase, declineAction, executeAction, fetchAction, fetchPurchaseStatus, fetchStatus, requestChallenge, sendChat, startCheckout, updateSubscriptionAssets } from "./api";
 import { BlockView, RichText, type ApprovalPhase } from "./blocks";
-import type { ActionView, AssistantStatus, Block, ChatItem, Conversation, PayPalStatusView } from "./types";
+import type { ActionView, AssistantStatus, Block, ChatItem, Conversation, PaymentOption, PayPalStatusView } from "./types";
 import { assertWalletAvailable, signX402Challenge, toBaseUnits, WalletError } from "./wallet";
 import styles from "./chat.module.css";
 
@@ -79,7 +79,7 @@ function hasOpenPayPalWork(action: ActionView): boolean {
   return action.state === "completed" && action.explanationStatus === "pending";
 }
 
-type PendingPayPal = { token: string; kind: "one_time" | "subscription"; conversationId: string; actionId: string };
+type PendingPayPal = { method?: string; label?: string; token: string; kind: "one_time" | "subscription"; conversationId: string; actionId: string };
 
 function readPendingPayPal(): PendingPayPal | null {
   try {
@@ -91,7 +91,7 @@ function readPendingPayPal(): PendingPayPal | null {
 }
 
 /** What the card should show. The server's document replaces whatever was on screen, so a revoked report disappears. */
-function applyPayPalView(action: ActionView, token: string, view: PayPalStatusView): ActionView {
+function applyPayPalView(action: ActionView, token: string, view: PayPalStatusView, method = action.paypal?.method ?? "paypal"): ActionView {
   const running = view.phase === "running" || view.phase === "payment_pending" || view.phase === "delayed" || view.phase === "needs_selection";
   return {
     ...action,
@@ -107,6 +107,7 @@ function applyPayPalView(action: ActionView, token: string, view: PayPalStatusVi
     decisionId: view.decisionId ?? action.decisionId,
     failure: null,
     paypal: {
+      method,
       token,
       kind: view.kind,
       phase: view.phase,
@@ -147,7 +148,7 @@ export default function ChatApp() {
     fetchStatus().then(setStatus).catch(() => setStatusFailed(true));
 
     const params = new URLSearchParams(window.location.search);
-    const outcome = params.get("paypal");
+    const outcome = params.get("checkout") ?? params.get("paypal");
     if (outcome !== "return" && outcome !== "cancel") {
       setActiveId(fresh.id);
       return;
@@ -161,20 +162,20 @@ export default function ChatApp() {
       return;
     }
     if (outcome === "cancel") {
-      setActionErrors((previous) => ({ ...previous, [pending.actionId]: "You cancelled at PayPal, so nothing was charged." }));
+      setActionErrors((previous) => ({ ...previous, [pending.actionId]: `You cancelled at ${pending.label ?? "PayPal"}, so nothing was charged.` }));
       return;
     }
     setPhases((previous) => ({ ...previous, [pending.actionId]: "submitting" }));
-    capturePayPal(pending.token)
+    capturePurchase(pending.method ?? "paypal", pending.token)
       .then((view) => {
         setConversations((previous) => previous.map((conversation) => (
           conversation.id === pending.conversationId
-            ? { ...conversation, updatedAt: Date.now(), items: mapBlockActions(conversation.items, (action) => (action.id === pending.actionId ? applyPayPalView(action, pending.token, view) : action)) }
+            ? { ...conversation, updatedAt: Date.now(), items: mapBlockActions(conversation.items, (action) => (action.id === pending.actionId ? applyPayPalView(action, pending.token, view, pending.method) : action)) }
             : conversation
         )));
       })
       .catch((error: unknown) => {
-        const message = error instanceof ApiError ? error.message : "We couldn't confirm your PayPal payment yet. Please reload this page to check again.";
+        const message = error instanceof ApiError ? error.message : "We couldn't confirm your payment yet. Please reload this page to check again.";
         setActionErrors((previous) => ({ ...previous, [pending.actionId]: message }));
       })
       .finally(() => setPhases((previous) => ({ ...previous, [pending.actionId]: "idle" })));
@@ -264,11 +265,11 @@ export default function ChatApp() {
   const refreshPayPal = useCallback((action: ActionView) => {
     const token = action.paypal?.token;
     if (!token) return;
-    fetchPayPalStatus(token)
+    fetchPurchaseStatus(action.paypal?.method ?? "paypal", token)
       .then((view) => applyActionView(applyPayPalView(action, token, view)))
       .catch((error: unknown) => {
         // The purchase stays recorded on the server. A failed check changes nothing on screen.
-        console.warn("PayPal status check failed:", error instanceof ApiError ? error.code : error);
+        console.warn("Purchase status check failed:", error instanceof ApiError ? error.code : error);
       });
   }, [applyActionView]);
 
@@ -362,23 +363,23 @@ export default function ChatApp() {
     }
   }, [active, thinking, updateConversation]);
 
-  const handleApprove = useCallback(async (action: ActionView) => {
+  const handleApprove = useCallback(async (action: ActionView, option: PaymentOption) => {
     const serverId = active?.serverId;
     if (!serverId) return;
     const setPhase = (phase: ApprovalPhase) => setPhases((previous) => ({ ...previous, [action.id]: phase }));
     setActionErrors((previous) => ({ ...previous, [action.id]: null }));
 
-    if (action.execution === "paypal_checkout" || action.execution === "paypal_subscription") {
+    if (option.flow === "hosted_checkout") {
       setPhase("redirecting");
       try {
-        const started = await startPayPalCheckout(serverId, action.id, action.priceUsdc);
+        const started = await startCheckout(serverId, action.id, option.id, action.priceUsdc);
         const conversationId = conversationsRef.current.find((entry) => entry.serverId === serverId)?.id ?? activeId;
         // Written before leaving the page, so the return can find this purchase.
-        window.localStorage.setItem(PAYPAL_PENDING_KEY, JSON.stringify({ token: started.purchaseToken, kind: started.kind, conversationId, actionId: action.id }));
+        window.localStorage.setItem(PAYPAL_PENDING_KEY, JSON.stringify({ method: started.method, label: option.label, token: started.purchaseToken, kind: started.kind, conversationId, actionId: action.id }));
         window.location.assign(started.approveUrl);
       } catch (error) {
         if (error instanceof ApiError && error.action) applyActionView(error.action);
-        const message = error instanceof ApiError ? error.message : "PayPal checkout couldn't start. You have not been charged. Please try again.";
+        const message = error instanceof ApiError ? error.message : `${option.label} checkout couldn't start. You have not been charged. Please try again.`;
         setActionErrors((previous) => ({ ...previous, [action.id]: message }));
         setPhase("idle");
       }
@@ -414,7 +415,7 @@ export default function ChatApp() {
     const token = action.paypal?.token;
     if (!token || !window.confirm("Cancel your monthly subscription? You won't be charged again, and reports you've paid for stay available.")) return;
     try {
-      applyActionView(applyPayPalView(action, token, await cancelPayPalSubscription(token)));
+      applyActionView(applyPayPalView(action, token, await cancelSubscription(action.paypal?.method ?? "paypal", token)));
     } catch (error) {
       setActionErrors((previous) => ({ ...previous, [action.id]: error instanceof ApiError ? error.message : "We couldn't cancel that. Please try again, or cancel in your PayPal account." }));
     }
@@ -425,7 +426,7 @@ export default function ChatApp() {
     if (!token) return;
     setActionErrors((previous) => ({ ...previous, [action.id]: null }));
     try {
-      applyActionView(applyPayPalView(action, token, await updateSubscriptionAssets(token, assets)));
+      applyActionView(applyPayPalView(action, token, await updateSubscriptionAssets(action.paypal?.method ?? "paypal", token, assets)));
     } catch (error) {
       setActionErrors((previous) => ({ ...previous, [action.id]: error instanceof ApiError ? error.message : "We couldn't change your assets. Please try again." }));
     }

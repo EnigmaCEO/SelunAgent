@@ -1,3 +1,4 @@
+import type { ScreeningSnapshot } from "./scorecard-preflight";
 import { formatUnits, parseUnits } from "viem";
 import type { ResultDocument } from "./result-presenter";
 
@@ -46,6 +47,46 @@ export function getPaymentRails(paypalAvailable = false): PaymentRail[] {
     { id: "paypal_subscription", label: "Subscription", description: "One comprehensive report each month through PayPal.", status: paypalStatus },
   ];
 }
+
+/**
+ * How a customer pays. The card and the chat client work from `flow`, never from a provider's name, so a new
+ * hosted checkout is one `CheckoutProvider` passed to the assistant. It then appears on every hosted product.
+ */
+export type Billing = "once" | "monthly";
+export type PaymentFlow = "wallet_signature" | "hosted_checkout";
+export type PaymentOption = { id: string; label: string; flow: PaymentFlow; note: string };
+
+export const WALLET_METHOD = "x402_wallet";
+
+export const WALLET_OPTION: PaymentOption = {
+  id: WALLET_METHOD,
+  label: "Crypto wallet",
+  flow: "wallet_signature",
+  note: "Nothing is charged until you approve this exact amount in your wallet. Pays in USDC on Base.",
+};
+
+export type CheckoutInput = {
+  capabilityId: string;
+  title: string;
+  body: Record<string, unknown>;
+  conversationId: string;
+  actionId: string;
+  /** Stable for this quote, so a repeated request reuses the same purchase. */
+  purchaseKey: string;
+  billing: Billing;
+  screening?: ScreeningSnapshot | null;
+};
+
+/**
+ * A provider also serves `POST /assistant/<id>/capture` and `/status`, which the client calls on return from
+ * checkout, and it must only start a purchase's fulfillment once it has verified the payment itself.
+ */
+export type CheckoutProvider = {
+  id: string;
+  label: string;
+  note: (billing: Billing) => string;
+  start: (input: CheckoutInput) => Promise<{ approveUrl: string; kind: "one_time" | "subscription"; id: string }>;
+};
 
 export type SpendLimits = {
   maxActionUsdc: string;

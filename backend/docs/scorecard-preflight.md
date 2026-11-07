@@ -81,4 +81,8 @@ The notice email can only point to the subscription in the chat where it started
 
 ## Payment methods
 
-Individual $0.50 services stay on x402. PayPal offers only the $4.99 comprehensive report and the $9.99 monthly subscription, because PayPal's fee would exceed the price of a $0.50 service.
+Each product lists the payment methods it accepts, and the purchase card shows those, so its button names no provider. With more than one method, the customer picks on the card.
+
+A new hosted checkout is one `CheckoutProvider` (`commerce.ts`) passed to the assistant as `checkoutProviders`. It then appears on every hosted product, and the card, the chat client, and the model's quote need no change. The provider supplies its own `<id>/capture` and `<id>/status` routes, returns customers to `/?checkout=return` or `/?checkout=cancel`, and must verify payment itself before starting fulfillment.
+
+Today, individual $0.50 services are wallet-only, because a fixed per-payment fee would take most of a $0.50 sale. The $4.99 comprehensive report and the $9.99 monthly subscription are PayPal-only.
