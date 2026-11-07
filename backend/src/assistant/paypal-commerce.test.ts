@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { ScorecardPreflight, type ScreeningSnapshot } from "./scorecard-preflight";
 import { ScoreUnavailableError, UndeliverableError } from "../services/fulfillment-errors";
+import { withSandboxFaults } from "./sandbox-faults";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { createServer, type Server } from "node:http";
@@ -242,6 +243,15 @@ test("a locked asset that can't score refunds after a few tries, without waiting
 });
 
 const hour = 60 * 60_000;
+
+test("the staging fault switch can't touch a live purchase, and does nothing without its file", async () => {
+  const file = path.join(dir, "fault.json");
+  fs.writeFileSync(file, JSON.stringify({ fault: "provider" }));
+  const run = async () => RESULT;
+  assert.equal(withSandboxFaults("live", file, run), run);
+  await assert.rejects(() => withSandboxFaults("sandbox", file, run)(), /Sandbox test/);
+  assert.equal(await withSandboxFaults("sandbox", path.join(dir, "absent.json"), run)(), RESULT);
+});
 
 test("a provider outage doesn't refund in minutes: the customer is told, and it recovers on the same payment", async () => {
   const start = Date.parse("2026-11-07T12:00:00.000Z");

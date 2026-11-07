@@ -1,4 +1,5 @@
 import { resolveAsset } from "./asset-resolver";
+import { sandboxFaultFile, withSandboxFaults } from "./sandbox-faults";
 import { sendCoverageNoticeEmail } from "../services/email.service";
 import { createHash } from "node:crypto";
 import { Router, type NextFunction, type Request, type RequestHandler, type Response } from "express";
@@ -71,6 +72,11 @@ export function readAssistantLimits(): Partial<AssistantLimits> {
 const PAYPAL_SWEEP_MS = 30 * 60_000;
 
 /** Production wiring: read at first use because server.ts loads dotenv after imports. */
+function positiveMs(value: string | undefined): number | undefined {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
 function createDefaultDeps(paypal: PayPalCommerceService | null, prices: { reportUsd: string; subscriptionUsd: string } | null): AssistantDeps {
   const openAi = readOpenAiConfig();
   const port = process.env.PORT ?? "8787";
@@ -157,7 +163,9 @@ export function createAssistantRouter(injected?: AssistantDeps, injectedReports?
       ? new PayPalCommerceService({
         api: new PayPalClient(config),
         config,
-        runReport: runComprehensiveReport,
+        runReport: withSandboxFaults(config.env, sandboxFaultFile(), runComprehensiveReport),
+        retryWindowMs: positiveMs(process.env.PAYPAL_RETRY_WINDOW_MS),
+        retryDelayMs: positiveMs(process.env.PAYPAL_RETRY_DELAY_MS),
         notifyCoverage: async (email, notice) => {
           const sent = await sendCoverageNoticeEmail({ toEmail: email, ...notice });
           if (sent.status === "failed") throw new Error(sent.error ?? "The notice couldn't be sent.");
