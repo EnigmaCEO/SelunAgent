@@ -5,9 +5,9 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { appendReferralParam } from "@/app/lib/referral";
 import { useReferralCapture } from "@/app/lib/use-referral-capture";
-import { ApiError, cancelSubscription, capturePurchase, declineAction, executeAction, fetchAction, fetchPurchaseStatus, fetchStatus, requestChallenge, sendChat, startCheckout, updateSubscriptionAssets } from "./api";
+import { ApiError, cancelSubscription, capturePurchase, declineAction, executeAction, fetchAction, fetchPurchaseStatus, fetchStatus, requestChallenge, sendChat, startCheckout, updateSubscriptionAssets, fetchCredits } from "./api";
 import { BlockView, RichText, type ApprovalPhase } from "./blocks";
-import type { ActionView, AssistantStatus, Block, ChatItem, Conversation, PaymentOption, PayPalStatusView } from "./types";
+import type { ActionView, AssistantStatus, Block, ChatItem, Conversation, PaymentOption, PayPalStatusView, CreditView } from "./types";
 import { assertWalletAvailable, signX402Challenge, toBaseUnits, WalletError } from "./wallet";
 import styles from "./chat.module.css";
 
@@ -133,6 +133,7 @@ export default function ChatApp() {
   const [draft, setDraft] = useState("");
   const [thinking, setThinking] = useState(false);
   const [status, setStatus] = useState<AssistantStatus | null>(null);
+  const [credits, setCredits] = useState<CreditView | null>(null);
   const [statusFailed, setStatusFailed] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [phases, setPhases] = useState<Record<string, ApprovalPhase>>({});
@@ -152,6 +153,7 @@ export default function ChatApp() {
     setConversations([fresh, ...stored]);
     setHydrated(true);
     fetchStatus().then(setStatus).catch(() => setStatusFailed(true));
+    fetchCredits().then((reply) => setCredits(reply.credits)).catch(() => undefined);
 
     const params = new URLSearchParams(window.location.search);
     const outcome = params.get("checkout") ?? params.get("paypal");
@@ -376,6 +378,7 @@ export default function ChatApp() {
 
     const attempt = async (id: string | null) => {
       const reply = await sendChat(id, text);
+      if (reply.credits) setCredits(reply.credits);
       updateConversation(conversationId, (conversation) => ({
         ...conversation,
         serverId: reply.conversationId,
@@ -557,7 +560,26 @@ export default function ChatApp() {
   const maxChars = status?.limits.maxMessageChars ?? 2_000;
   const referralHref = useCallback((href: string) => appendReferralParam(href, referralCode), [referralCode]);
 
+  // Quiet while there's plenty left, and in view once it runs low.
+  const low = credits !== null && credits.remaining <= 2;
+  const creditLine = credits && (credits.earned > 0
+    ? `${credits.remaining} Selun AI ${credits.remaining === 1 ? "question" : "questions"} remaining`
+    : `${credits.remaining} of ${credits.guestQuestions} free questions remaining`);
+  const creditPanel = credits && low && (
+    <div className={styles.creditPanel} role="status">
+      <p className={styles.creditTitle}>Your Selun AI access</p>
+      <p className={styles.creditCount}>{credits.remaining === 0 ? "You've used your free questions" : creditLine}</p>
+      <p className={styles.creditHint}>
+        {credits.remaining === 0
+          ? `Asking about Selun's services and prices is always free. Each analysis you buy adds ${credits.purchaseGrant} more questions.`
+          : `Questions about Selun's services and prices don't count. Each analysis you buy adds ${credits.purchaseGrant} more.`}
+      </p>
+    </div>
+  );
+
   const composer = (
+    <>
+    {creditPanel}
     <form
       className={styles.composer}
       onSubmit={(event) => {
@@ -581,6 +603,8 @@ export default function ChatApp() {
         <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden><path fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" d="M10 16V4m0 0-5 5m5-5 5 5" /></svg>
       </button>
     </form>
+    {credits && !low && <p className={styles.creditQuiet}>{creditLine}</p>}
+    </>
   );
 
   const offlineNotice = offline && (

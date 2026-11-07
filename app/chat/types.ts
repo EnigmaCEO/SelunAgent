@@ -71,6 +71,9 @@ export type PaymentRail = {
   status: "available" | "coming_soon";
 };
 
+/** Selun AI questions left. Kept on the server: this is only what it reported. */
+export type CreditView = { remaining: number; free: number; earned: number; guestQuestions: number; purchaseGrant: number };
+
 export type PaymentOption = { id: string; label: string; shortLabel: string; detail: string; flow: "wallet_signature" | "hosted_checkout"; currency: "USDC" | "USD"; note: string };
 export type Billing = "once" | "monthly";
 

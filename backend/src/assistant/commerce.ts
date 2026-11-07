@@ -83,6 +83,8 @@ export type CheckoutInput = {
   amount: string;
   billing: Billing;
   screening?: ScreeningSnapshot | null;
+  /** The Selun AI account a completed purchase adds questions to. */
+  creditId?: string | null;
 };
 
 /**

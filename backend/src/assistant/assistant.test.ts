@@ -11,6 +11,7 @@ import { buildRegistry, getToolSpec, TOOL_CAPABILITY_IDS, type CapabilityCatalog
 import { SpendLedger } from "./commerce";
 import { LlmError, OpenAiClient, readOpenAiConfig, type ChatMessage, type LlmClient, type LlmRequest, type LlmResponse } from "./openai-client";
 import { presentResult } from "./result-presenter";
+import { AiCredits, readCreditConfig } from "./ai-credits";
 import { classifyPaidFailure, HttpX402Gateway, type ChallengeOutcome, type PaidOutcome, type X402Gateway } from "./x402-gateway";
 
 const PAYER = "0xfe2d5E9c5aE6E48B7F8b0b82AC4dE8B423bA0557";
@@ -873,4 +874,82 @@ test("a wallet's daily cap says so, instead of suggesting a retry in a moment", 
   const done = await waitForState(made.service, conversationId, action.id, (view) => view.state === "failed");
   assert.match(done.failure?.message ?? "", /today's limit.*You have not been charged/);
   assert.equal(done.failure?.mayHaveCharged, false);
+});
+
+function creditedService(script: (LlmResponse | Error)[], config: Partial<ReturnType<typeof readCreditConfig>> = {}) {
+  const llm = new ScriptedLlm(script);
+  const credits = new AiCredits({ ...readCreditConfig({}), ...config }, null);
+  const service = new AssistantService({ llm, gateway: new FakeGateway(), loadCatalog: async () => catalog(), limits: { catalogTtlMs: 0 }, credits });
+  return { llm, credits, service };
+}
+
+const answer = (text = "A stablecoin is a token designed to hold a steady price.") => ({ content: text, toolCalls: [] });
+
+test("a guest gets five substantive answers, and questions about Selun's services never count", async () => {
+  const { llm, service } = creditedService([answer(), answer("Selun's services are listed on the card."), answer(), answer(), answer(), answer(), answer("Each analysis adds questions.")]);
+  const first = await service.chat({ message: "What is a stablecoin?", clientKey: "c1" });
+  assert.deepEqual([first.credits?.remaining, first.credits?.free], [4, 4]);
+  const token = first.guestToken!;
+  const priced = await service.chat({ message: "How much does the Asset Scorecard cost?", guestToken: token, clientKey: "c1" });
+  assert.equal(priced.credits?.remaining, 4, "a price question is free");
+  let last = priced;
+  for (let index = 0; index < 4; index += 1) last = await service.chat({ message: "Explain market volatility", guestToken: token, clientKey: "c1" });
+  assert.equal(last.credits?.remaining, 0);
+  assert.ok(!last.blocks.some((block) => block.type === "notice"), "the fifth answer is still given in full");
+
+  const asked = llm.requests.length;
+  const offTopic = await service.chat({ message: "Explain what staking is", guestToken: token, clientKey: "c1" });
+  assert.equal(llm.requests.length, asked, "nothing a service answers: no model call");
+  assert.match(offTopic.text, /used your free questions, so I can't answer that one.*adds 10 more/);
+
+  const limited = await service.chat({ message: "Analyze the risks of Bitcoin", guestToken: token, clientKey: "c1" });
+  const request = llm.requests.at(-1)!;
+  assert.match(String(request.messages[0].content), /used their free Selun AI questions/);
+  assert.ok(!(request.tools ?? []).some((tool) => tool.function.name === "search_sagitta_sites"), "no knowledge tools once questions run out");
+  assert.match(limited.text, /used your free questions/, "an answer that offered no service isn't shown");
+  assert.equal(limited.credits?.remaining, 0);
+});
+
+test("the allowance lives on the server: a new conversation keeps it, and clearing the browser only goes so far", async () => {
+  const { service } = creditedService([], { guestsPerClientPerDay: 2 });
+  const first = await service.chat({ message: "What is DeFi?", clientKey: "c2" });
+  const again = await service.chat({ message: "What is staking?", guestToken: first.guestToken, clientKey: "c2" });
+  assert.equal(again.credits?.remaining, 3, "the same guest, in a new conversation");
+  const cleared = await service.chat({ message: "What is DeFi?", clientKey: "c2" });
+  assert.equal(cleared.credits?.remaining, 4, "a second allowance today");
+  const tooMany = await service.chat({ message: "What is DeFi?", clientKey: "c2" });
+  assert.deepEqual([tooMany.credits?.remaining, tooMany.guestToken], [0, null], "the third is refused, but Selun still helps with its services");
+  const forged = await service.chat({ message: "What is DeFi?", guestToken: "made-up-token-0000000000", clientKey: "c2" });
+  assert.equal(forged.credits?.remaining, 0, "an unknown token isn't an allowance");
+});
+
+test("a held-back answer, a failed request, or one stopped by the cost ceiling never uses a question", async () => {
+  const advice = answer("I guarantee Bitcoin will double, so buy it now.");
+  const { llm, service } = creditedService([advice, advice]);
+  const held = await service.chat({ message: "Will Bitcoin go up?", clientKey: "c3" });
+  assert.equal(held.credits?.remaining, 5, "held back by the grounding checks");
+
+  const failing = creditedService([new LlmError("upstream", "down")]);
+  const failed = await failing.service.chat({ message: "What is DeFi?", clientKey: "c3" }).catch((error: unknown) => error);
+  assert.ok(failed instanceof AssistantError);
+
+  const expensive = { inputTokens: 40_000, cachedTokens: 0, outputTokens: 500 };
+  const capped = creditedService([{ content: null, toolCalls: [toolCall("list_capabilities", {})], usage: expensive }, answer("never asked")]);
+  const reply = await capped.service.chat({ message: "Tell me everything about crypto", clientKey: "c3" });
+  assert.equal(capped.llm.requests.length, 1, "no second model call past the ceiling");
+  assert.equal(reply.credits?.remaining, 5);
+  assert.equal(llm.requests[0].maxOutputTokens, 700, "free answers are kept short");
+});
+
+test("a paid analysis adds ten questions once, and a paid month adds a hundred", async () => {
+  const { credits, service } = creditedService([]);
+  const first = await service.chat({ message: "What is DeFi?", clientKey: "c4" });
+  assert.equal(service.grantQuestions(first.guestToken, "purchase-1", false), true);
+  assert.equal(service.grantQuestions(first.guestToken, "purchase-1", false), false, "a repeat adds nothing");
+  service.grantQuestions(first.guestToken, "cycle-1", true);
+  assert.deepEqual(credits.view(credits.find(first.guestToken)), { remaining: 114, free: 4, earned: 110, guestQuestions: 5 });
+  assert.equal(service.grantQuestions(null, "purchase-2", false), false);
+  const summary = credits.summary();
+  assert.equal(summary.metered.answers, 1);
+  assert.equal(summary.accountsWithPurchases, 1);
 });

@@ -23,6 +23,8 @@ export type LlmRequest = {
   messages: ChatMessage[];
   tools?: ChatTool[];
   deadlineMs?: number;
+  /** Lower than the configured limit, for answers that should stay short. */
+  maxOutputTokens?: number;
 };
 
 export type LlmUsage = { inputTokens: number; cachedTokens: number; outputTokens: number };
@@ -89,7 +91,7 @@ export class OpenAiClient implements LlmClient {
         body: JSON.stringify({
           model: this.config.model,
           messages: request.messages,
-          max_completion_tokens: this.config.maxOutputTokens,
+          max_completion_tokens: Math.min(request.maxOutputTokens ?? this.config.maxOutputTokens, this.config.maxOutputTokens),
           store: false,
           ...(request.tools?.length ? { tools: request.tools, tool_choice: "auto" } : {}),
         }),

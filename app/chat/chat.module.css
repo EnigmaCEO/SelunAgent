@@ -362,6 +362,43 @@
   margin: 0 0 8px;
 }
 
+.creditPanel {
+  margin: 0 0 8px;
+  padding: 10px 14px;
+  border: 1px solid #d3deeb;
+  border-radius: 12px;
+  background: #f1f6fc;
+}
+
+.creditPanel p {
+  margin: 0;
+}
+
+.creditTitle {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.creditCount {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.creditHint {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.creditQuiet {
+  margin: 6px 4px 0;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: right;
+}
+
 .disclaimer {
   margin: 8px 4px 0;
   color: var(--muted);

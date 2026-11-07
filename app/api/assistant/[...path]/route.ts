@@ -6,8 +6,9 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 const CONVERSATION_HEADER = "x-selun-conversation";
+const GUEST_HEADER = "x-selun-guest";
 
-const ALLOWED_GET = [/^status$/, /^capabilities$/, /^actions\/[0-9a-f-]{36}$/];
+const ALLOWED_GET = [/^status$/, /^credits$/, /^capabilities$/, /^actions\/[0-9a-f-]{36}$/];
 const ALLOWED_POST = [/^chat$/, /^[a-z0-9_]+\/subscription\/assets$/, /^actions\/[0-9a-f-]{36}\/(challenge|execute|decline|checkout)$/, /^report\/(download|email)$/, /^[a-z0-9_]+\/(capture|status|cancel)$/];
 
 function backendBaseUrl() {
@@ -25,6 +26,8 @@ async function relay(req: Request, path: string, init: { method: "GET" | "POST";
     : { Accept: "application/json" };
   const conversation = req.headers.get(CONVERSATION_HEADER);
   if (conversation) headers[CONVERSATION_HEADER] = conversation;
+  const guest = req.headers.get(GUEST_HEADER);
+  if (guest && /^[A-Za-z0-9_-]{16,64}$/.test(guest)) headers[GUEST_HEADER] = guest;
 
   try {
     const response = await fetch(`${backendBaseUrl()}${backendPath}`, {

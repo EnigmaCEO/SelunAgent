@@ -1,4 +1,4 @@
-import type { ActionView, AssistantStatus, Block, PaymentChallenge, PayPalStatusView } from "./types";
+import type { ActionView, AssistantStatus, Block, CreditView, PaymentChallenge, PayPalStatusView } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -22,6 +22,7 @@ async function request<T>(path: string, init: { method?: "GET" | "POST"; convers
       headers: {
         ...(init.body !== undefined ? { "Content-Type": "application/json" } : {}),
         ...(init.conversationId ? { "x-selun-conversation": init.conversationId } : {}),
+        ...(readGuestToken() ? { "x-selun-guest": readGuestToken()! } : {}),
       },
       body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
     });
@@ -44,12 +45,38 @@ export function fetchStatus() {
   return request<AssistantStatus>("status");
 }
 
-export function sendChat(conversationId: string | null, message: string) {
-  return request<{ conversationId: string; text: string; blocks: Block[] }>("chat", {
+const GUEST_KEY = "selun.guest.v1";
+
+/** The server-issued ID that names this browser's Selun AI allowance. The allowance itself lives on the server. */
+function readGuestToken(): string | null {
+  try {
+    return window.localStorage.getItem(GUEST_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function saveGuestToken(token: string | null | undefined) {
+  if (!token) return;
+  try {
+    window.localStorage.setItem(GUEST_KEY, token);
+  } catch {
+    // Blocked storage means a new allowance per visit, within the server's daily limit.
+  }
+}
+
+export async function sendChat(conversationId: string | null, message: string) {
+  const reply = await request<{ conversationId: string; text: string; blocks: Block[]; credits?: CreditView | null; guestToken?: string | null }>("chat", {
     method: "POST",
     conversationId,
     body: { message },
   });
+  saveGuestToken(reply.guestToken);
+  return reply;
+}
+
+export function fetchCredits() {
+  return request<{ credits: CreditView | null }>("credits");
 }
 
 export function fetchAction(conversationId: string, actionId: string) {

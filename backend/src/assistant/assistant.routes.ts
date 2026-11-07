@@ -1,3 +1,4 @@
+import { AiCredits, readCreditConfig } from "./ai-credits";
 import type { PaymentRow } from "./paypal-commerce.service";
 import path from "node:path";
 import { resolveAsset } from "./asset-resolver";
@@ -97,6 +98,7 @@ function createDefaultDeps(paypal: PayPalCommerceService | null, stripe: PayPalC
     sites: getSiteKnowledge(),
     preflight: getScorecardPreflight(),
     hostedPrices: prices,
+    credits: process.env.SELUN_AI_CREDITS?.trim() === "off" ? null : new AiCredits(readCreditConfig(), process.env.SELUN_AI_CREDITS_FILE?.trim() || path.resolve(process.cwd(), process.cwd().endsWith("backend") ? "data" : "backend/data", "ai-credits.json")),
     checkoutProviders: stripe ? [hostedProvider(STRIPE_META, stripe)] : [],
     paypal: paypal && prices
       ? {
@@ -118,6 +120,8 @@ function sendError(res: Response, error: unknown) {
   console.error("Assistant route error:", error instanceof Error ? error.message : error);
   return res.status(500).json({ success: false, code: "internal_error", error: "Something went wrong. Please try again." });
 }
+
+const GUEST_HEADER = "x-selun-guest";
 
 function conversationId(req: Request): string | undefined {
   return req.get(CONVERSATION_HEADER)?.trim() || undefined;
@@ -223,6 +227,8 @@ export function createAssistantRouter(injected?: AssistantDeps, injectedReports?
 
   function onPurchaseUpdate(current: PayPalCommerceService, purchase: Purchase) {
     if (purchase.fulfillment.status !== "complete" || purchase.access !== "active") return;
+    // Once per purchase, kept with the purchase so a restart or an expired conversation doesn't lose it.
+    getService().grantQuestions(purchase.creditId ?? null, purchase.purchaseId, purchase.kind === "subscription_cycle");
     const document = current.documentOf(purchase);
     if (document) getService().recordPayPalResult(purchase.conversationId, purchase.actionId, document, issueReportToken(purchase.capabilityId, purchase.decisionId));
   }
@@ -309,6 +315,19 @@ export function createAssistantRouter(injected?: AssistantDeps, injectedReports?
     res.json({ success: true, summary: summarizePayments(rows), payments: rows });
   });
 
+  // Internal: what Selun AI answers cost, for setting allowances and credit packs. Staff token only.
+  router.get("/admin/ai-usage", (req, res) => {
+    if (!requireAdminRequest(req, res)) return;
+    res.set("Cache-Control", "no-store");
+    res.json({ success: true, usage: getService().creditSummary() });
+  });
+
+  // The questions a guest has left. Reading it never opens an allowance.
+  router.get("/credits", (req, res) => {
+    res.set("Cache-Control", "no-store");
+    res.json({ success: true, credits: getService().creditView(req.get(GUEST_HEADER)?.trim() || null) });
+  });
+
   router.get("/status", (_req, res) => {
     const current = getService();
     res.set("Cache-Control", "no-store");
@@ -331,7 +350,7 @@ export function createAssistantRouter(injected?: AssistantDeps, injectedReports?
 
   router.post("/chat", limited(chatLimiter), async (req, res) => {
     try {
-      const reply = await getService().chat({ conversationId: conversationId(req), message: req.body?.message });
+      const reply = await getService().chat({ conversationId: conversationId(req), message: req.body?.message, guestToken: req.get(GUEST_HEADER)?.trim() || null, clientKey: clientKey(req) });
       res.set("Cache-Control", "no-store");
       res.json({ success: true, ...reply });
     } catch (error) {

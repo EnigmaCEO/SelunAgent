@@ -40,6 +40,8 @@ export type Purchase = {
   currency: "USD";
   conversationId: string | null;
   actionId: string | null;
+  /** The Selun AI account its completion adds questions to. */
+  creditId?: string | null;
   subscriptionLocalId: string | null;
   approveUrl: string | null;
   payment: {
@@ -97,6 +99,8 @@ export type LocalSubscription = {
   nextBillingTime: string | null;
   conversationId: string | null;
   actionId: string | null;
+  /** The Selun AI account its completion adds questions to. */
+  creditId?: string | null;
   /** Applies to the first paid month only. */
   screening?: ScreeningSnapshot | null;
   /** PayPal sale ID to purchase ID. One entry per paid billing cycle. */
@@ -380,6 +384,7 @@ export class PayPalCommerceService {
     conversationId: string | null;
     actionId: string | null;
     screening?: ScreeningSnapshot | null;
+    creditId?: string | null;
   }): Promise<{ purchaseId: string; approveUrl: string }> {
     const purchaseId = purchaseIdFor(input.decisionId);
     return this.withLock(purchaseId, async () => {
@@ -415,6 +420,7 @@ export class PayPalCommerceService {
         currency: "USD",
         conversationId: input.conversationId,
         actionId: input.actionId,
+        creditId: input.creditId ?? null,
         subscriptionLocalId: null,
         approveUrl,
         payment: { status: "created", orderId, captureId: null, saleId: null, payerId: null, capturedAt: null, refundId: null, checkedAt: null },
@@ -885,6 +891,7 @@ export class PayPalCommerceService {
     conversationId: string | null;
     actionId: string | null;
     screening?: ScreeningSnapshot | null;
+    creditId?: string | null;
   }): Promise<{ subscriptionLocalId: string; approveUrl: string }> {
     const localId = `ps-${createHash("sha256").update(input.actionKey).digest("hex").slice(0, 24)}`;
     return this.withLock(localId, async () => {
@@ -923,6 +930,7 @@ export class PayPalCommerceService {
         nextBillingTime: null,
         conversationId: input.conversationId,
         actionId: input.actionId,
+        creditId: input.creditId ?? null,
         screening: input.screening ?? null,
         cycles: {},
         audit: [{ at, event: "subscription_created", detail: subscriptionId }],
@@ -1004,6 +1012,7 @@ export class PayPalCommerceService {
       currency: "USD",
       conversationId: subscription.conversationId,
       actionId: subscription.actionId,
+      creditId: subscription.creditId ?? null,
       subscriptionLocalId: subscription.localId,
       approveUrl: null,
       payment: { status: "captured", orderId: null, captureId: null, saleId: sale.id, payerId: subscription.payerId, processorFee: sale.processorFee ?? null, capturedAt: at, refundId: null, checkedAt: at },

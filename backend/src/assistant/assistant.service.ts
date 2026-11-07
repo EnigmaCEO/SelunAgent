@@ -1,3 +1,4 @@
+import type { AiCredits, TurnKind } from "./ai-credits";
 import { randomBytes, randomUUID } from "node:crypto";
 import { decodePaymentSignatureHeader } from "@x402/core/http";
 import type { PaymentRequired } from "@x402/core/types";
@@ -26,7 +27,7 @@ import {
   type SpendDenial,
   type SpendLimits,
 } from "./commerce";
-import { LlmError, type ChatMessage, type ChatTool, type LlmClient } from "./openai-client";
+import { LlmError, type ChatMessage, type ChatTool, type LlmClient, type LlmUsage } from "./openai-client";
 import { presentResult, type ResultDocument } from "./result-presenter";
 import { lookupSagitta, type SystemDetail, type SystemSummary } from "./sagitta-directory";
 import { citedSections, type FactSheet } from "./sagitta-facts";
@@ -135,7 +136,36 @@ type Session = {
   queue: Promise<unknown>;
   /** Symbols named or resolved in the current turn. */
   turnAssets: Set<string>;
+  /** The Selun AI account this conversation's questions come from. */
+  creditId?: string;
+  /** Set for the length of one chat turn. */
+  turn?: TurnBudget;
 };
+
+type TurnBudget = {
+  /** Out of questions: help only with Selun's services, without the site facts. */
+  limited: boolean;
+  maxCostUsd: number;
+  maxOutputTokens?: number;
+  usage: { requests: number; inputTokens: number; cachedTokens: number; outputTokens: number };
+  /** Held back by the grounding checks, or closed without a model answer. Never charged. */
+  suppressed: boolean;
+  /** Stopped by the cost ceiling. Never charged. */
+  capped: boolean;
+};
+
+/** Tools that answer general or Sagitta questions, which aren't offered once questions run out. */
+const KNOWLEDGE_TOOLS = new Set(["search_sagitta_sites", "lookup_sagitta"]);
+
+/** Asking about Selun's services, prices, purchases, results, or support never uses a question. */
+const SERVICE_INTENT = /\b(price|prices|pricing|cost|costs|how much|fee|fees|buy|purchase|pay|payment|paypal|stripe|card|wallet|usdc|checkout|subscri\w*|cancel|refund|receipt|report|scorecard|analysis|analyses|quote|services?|what can you do|what do you do|help|support|contact|pdf|email|order)\b/i;
+
+/** Out of questions, these may still lead to a service card, so the model is asked. Anything else gets OUT_OF_QUESTIONS without a model call. */
+const MAY_NEED_SERVICE = /(analy\w*|risks?|safe|safety|portfolio|plan|rebalanc\w*|allocat\w*|regime|market (update|conditions)|protocol)/i;
+
+const OUT_OF_QUESTIONS = (grant: number) => `You've used your free questions, so I can't answer that one. I can still show you Selun's analyses and what they cost, and each one you buy adds ${grant} more questions.`;
+
+const LIMITED_INSTRUCTION = "The customer has used their free Selun AI questions. Help only with Selun's services: what they do, their prices, buying one, and their results. Offer the matching service for anything else, and say briefly that each analysis they buy adds more questions. Don't answer general, educational, or Sagitta questions yourself.";
 
 export type AssistantLimits = SpendLimits & {
   maxMessageChars: number;
@@ -212,6 +242,8 @@ export type AssistantDeps = {
   checkoutProviders?: CheckoutProvider[];
   /** The USD prices of the report and subscription, when PayPal isn't what supplies them. */
   hostedPrices?: PayPalPrices | null;
+  /** Selun AI question allowances. Without it, questions aren't limited. */
+  credits?: AiCredits | null;
   llm: LlmClient | null;
   gateway: X402Gateway;
   loadCatalog: () => Promise<CapabilityCatalog>;
@@ -442,7 +474,7 @@ export class AssistantService {
     this.dailyTurns.count += 1;
   }
 
-  async chat(input: { conversationId?: string; message: unknown }) {
+  async chat(input: { conversationId?: string; message: unknown; guestToken?: string | null; clientKey?: string }) {
     if (!this.deps.llm) {
       throw new AssistantError("assistant_not_configured", 503, "Selun AI is not available right now.");
     }
@@ -462,20 +494,90 @@ export class AssistantService {
     return this.enqueue(session, async () => {
       const checkpoint = session.messages.length;
       session.messages.push({ role: "user", content: message });
+      const credits = this.deps.credits ?? null;
+      const account = credits ? credits.account(input.guestToken || session.creditId, input.clientKey ?? "unknown") : null;
+      if (account) session.creditId = account.id;
+      const earned = Boolean(account && account.free === 0 && account.earned > 0);
+      session.turn = {
+        limited: Boolean(credits) && credits!.remaining(account) <= 0,
+        maxCostUsd: credits ? (earned ? credits.config.earnedTurnCostUsd : credits.config.freeTurnCostUsd) : Number.POSITIVE_INFINITY,
+        maxOutputTokens: credits && !earned ? credits.config.freeOutputTokens : undefined,
+        usage: { requests: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0 },
+        suppressed: false,
+        capped: false,
+      };
       try {
-        const reply = await this.runModel(session);
+        // Out of questions and nothing here a service could answer: no model call at all.
+        const offTopic = session.turn.limited && !SERVICE_INTENT.test(message) && !MAY_NEED_SERVICE.test(message) && findAssetMentions(message).length === 0;
+        const reply = offTopic ? { text: OUT_OF_QUESTIONS(credits!.config.purchaseGrant), blocks: [] as Block[] } : await this.runModel(session);
+        if (offTopic) session.messages.push({ role: "assistant", content: reply.text });
         // Listing pages under "the sites don't say that" would suggest they do.
         // Unless a page governs the question: "the whitepaper doesn't name a regulator" is an answer from that page.
         const blocks = saysNotCovered(reply.text) && !whitepaperTopics(message).length ? reply.blocks.filter((block) => block.type !== "sagitta_sources") : reply.blocks;
         // After that, so a fact the reply does state from the sheet still shows its page.
-        this.citeFacts(message, reply.text, blocks);
-        return { conversationId: session.id, text: reply.text, blocks };
+        if (!session.turn.limited) this.citeFacts(message, reply.text, blocks);
+        if (!credits) return { conversationId: session.id, text: reply.text, blocks };
+
+        const turn = session.turn;
+        const kind = this.turnKind(message, blocks);
+        // A failed, held-back, or cut-short answer never uses a question.
+        const charged = kind === "metered" && !turn.limited && !turn.suppressed && !turn.capped && Boolean(account) && credits.charge(account!);
+        let text = reply.text;
+        // The model was told not to answer, but an answer with no service in it is never shown.
+        if (turn.limited && kind === "metered" && !offTopic) {
+          text = OUT_OF_QUESTIONS(credits.config.purchaseGrant);
+          const last = session.messages.at(-1);
+          if (last?.role === "assistant") last.content = text;
+        }
+        credits.record({ kind, charged, limited: turn.limited, suppressed: turn.suppressed, capped: turn.capped, ...turn.usage, costUsd: Number(credits.costOf(turn.usage).toFixed(6)) });
+        return { conversationId: session.id, text, blocks, credits: { ...credits.view(account), purchaseGrant: credits.config.purchaseGrant }, guestToken: account?.id ?? null };
       } catch (error) {
         // Leave the transcript as it was so a retry cannot duplicate or strand tool calls.
         session.messages.length = checkpoint;
         throw error;
+      } finally {
+        session.turn = undefined;
       }
     });
+  }
+
+  /** A turn that shows or clarifies Selun's own services is free. Anything else is a substantive answer. */
+  private turnKind(message: string, blocks: Block[]): TurnKind {
+    const offersService = blocks.some((block) => block.type === "action" || block.type === "handoff" || block.type === "capabilities" || block.type === "asset_choice");
+    return offersService || SERVICE_INTENT.test(message) ? "service" : "metered";
+  }
+
+  /** The questions a guest has left, without opening an allowance for them. */
+  creditView(guestToken: string | null | undefined) {
+    const credits = this.deps.credits;
+    if (!credits) return null;
+    return { ...credits.view(credits.find(guestToken)), purchaseGrant: credits.config.purchaseGrant };
+  }
+
+  creditSummary() {
+    return this.deps.credits?.summary() ?? null;
+  }
+
+  /** Adds questions for a completed purchase, once per purchase. */
+  grantQuestions(creditId: string | null | undefined, purchaseKey: string, monthly: boolean): boolean {
+    const credits = this.deps.credits;
+    if (!credits) return false;
+    return credits.grant(creditId, purchaseKey, monthly ? credits.config.subscriptionGrant : credits.config.purchaseGrant);
+  }
+
+  private countUsage(session: Session, usage: LlmUsage | undefined) {
+    const turn = session.turn;
+    if (!turn) return;
+    turn.usage.requests += 1;
+    if (!usage) return;
+    turn.usage.inputTokens += usage.inputTokens;
+    turn.usage.cachedTokens += usage.cachedTokens;
+    turn.usage.outputTokens += usage.outputTokens;
+  }
+
+  private overBudget(session: Session): boolean {
+    const turn = session.turn;
+    return Boolean(turn && this.deps.credits && this.deps.credits.costOf(turn.usage) >= turn.maxCostUsd);
   }
 
   /** An answer from the fact sheet still shows which pages it came from. */
@@ -512,14 +614,17 @@ export class AssistantService {
   private async callModel(session: Session, tools: ChatTool[] | undefined, deadline: number, correction: string | null = null) {
     const remaining = deadline - this.now().getTime();
     if (remaining <= 0) throw new LlmError("timeout", "The turn ran out of time.");
+    const limited = Boolean(session.turn?.limited);
+    const system = buildSystemPrompt(this.now().toISOString().slice(0, 10), limited ? null : this.deps.sites?.facts ?? null, this.deps.sites?.fetchedAt.slice(0, 10) ?? "");
     return this.deps.llm!.complete({
       messages: [
-        { role: "system", content: buildSystemPrompt(this.now().toISOString().slice(0, 10), this.deps.sites?.facts ?? null, this.deps.sites?.fetchedAt.slice(0, 10) ?? "") },
+        { role: "system", content: limited ? `${system}\n\n${LIMITED_INSTRUCTION}` : system },
         ...this.contextWindow(session),
         ...(correction ? [{ role: "user" as const, content: correction }] : []),
       ],
       tools,
       deadlineMs: remaining,
+      maxOutputTokens: session.turn?.maxOutputTokens,
     });
   }
 
@@ -534,7 +639,8 @@ export class AssistantService {
     const deadline = this.now().getTime() + this.limits.turnBudgetMs;
     const blocks: Block[] = [];
     // With the sheet, cards are added without a tool call, and that call was a whole extra request.
-    const tools = this.buildTools().filter((tool) => !(this.deps.sites?.facts && tool.function.name === "lookup_sagitta"));
+    const limited = Boolean(session.turn?.limited);
+    const tools = this.buildTools().filter((tool) => !(this.deps.sites?.facts && tool.function.name === "lookup_sagitta") && !(limited && KNOWLEDGE_TOOLS.has(tool.function.name)));
     let correction: string | null = null;
     let corrected = false;
     let searchNudged = false;
@@ -546,7 +652,7 @@ export class AssistantService {
     // Left to the model, these questions get answered from the sheet or searched in the sheet's words,
     // so the page that governs them is read first. This adds passages but no request.
     const asked = customerMessage?.role === "user" ? customerMessage.content : "";
-    const readWhitepaper = Boolean(this.deps.sites) && whitepaperTopics(asked).length > 0;
+    const readWhitepaper = !limited && Boolean(this.deps.sites) && whitepaperTopics(asked).length > 0;
     if (readWhitepaper) {
       const id = `call_whitepaper_${session.messages.length}`;
       const args = { query: asked.slice(0, 300) };
@@ -559,15 +665,16 @@ export class AssistantService {
         // Told to skip a search, the model searches anyway, so the sheet gets the first try by offering no tools.
         // A reply that doesn't repeat a stated fact is sent to search below.
         const question = customerMessage?.role === "user" ? customerMessage.content : "";
-        const sheetFirst = round === 0 && Boolean(this.deps.sites?.facts) && namesSagitta(question) && !readWhitepaper;
+        const sheetFirst = !limited && round === 0 && Boolean(this.deps.sites?.facts) && namesSagitta(question) && !readWhitepaper;
         const response = await this.callModel(session, sheetFirst ? undefined : tools, deadline, correction);
+        this.countUsage(session, response.usage);
         correction = null;
         if (response.toolCalls.length === 0) {
           // "The sites don't say" is only true once they've been searched.
           const unsearched = !blocks.some((block) => block.type === "sagitta_sources" || block.type === "action" || block.type === "handoff");
           const facts = this.deps.sites?.facts;
           const grounded = facts ? citedSections(facts, response.content ?? "").length > 0 : blocks.some((block) => block.type === "sagitta_system" || block.type === "sagitta_directory");
-          if (this.deps.sites && !searchNudged && unsearched && (saysNotCovered(response.content ?? "") || OFFERS_TO_SEARCH.test(response.content ?? "") || (namesSagitta(question) && !grounded))) {
+          if (this.deps.sites && !limited && !searchNudged && unsearched && (saysNotCovered(response.content ?? "") || OFFERS_TO_SEARCH.test(response.content ?? "") || (namesSagitta(question) && !grounded))) {
             searchNudged = true;
             correction = "(Automatic step, not typed by the customer.) You replied without searching. If this is about Sagitta or its products, call search_sagitta_sites now and answer from the passages. If it isn't, repeat your reply.";
             continue;
@@ -577,6 +684,7 @@ export class AssistantService {
             console.warn("Assistant reply held back:", issues.join("; "));
             if (corrected) {
               const text = readWhitepaper ? UNSUPPORTED_WHITEPAPER_REPLY : UNSUPPORTED_REPLY;
+              if (session.turn) session.turn.suppressed = true;
               session.messages.push({ role: "assistant", content: text });
               return { text, blocks };
             }
@@ -597,6 +705,11 @@ export class AssistantService {
           const result = await this.runTool(session, call.function.name, call.function.arguments, blocks);
           session.messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result) });
         }
+        // The tool results are kept, but no further model call is made past this answer's cost ceiling.
+        if (this.overBudget(session)) {
+          session.turn!.capped = true;
+          break;
+        }
       }
     } catch (error) {
       if (error instanceof LlmError) throw this.mapLlmError(error);
@@ -608,6 +721,7 @@ export class AssistantService {
     const text = blocks.length > 0
       ? "Here is what I found. Take a look and let me know how you'd like to continue."
       : "I couldn't work that out. Could you rephrase it?";
+    if (session.turn) session.turn.suppressed = true;
     session.messages.push({ role: "assistant", content: text });
     return { text, blocks };
   }
@@ -1077,6 +1191,7 @@ export class AssistantService {
         body: action.body,
         conversationId: session.id,
         actionId: action.id,
+        creditId: session.creditId ?? null,
         purchaseKey: action.decisionId,
         amount: action.capability.priceUsdc,
         billing: action.capability.billing,
@@ -1232,6 +1347,7 @@ export class AssistantService {
       action.document = document;
       action.reportToken = isJobAccessConfigured() ? issueReportToken(action.capability.id, action.decisionId) : null;
       action.state = "completed";
+      this.grantQuestions(session.creditId, action.decisionId, false);
       action.explanationStatus = this.deps.llm ? "pending" : "unavailable";
       if (this.deps.llm) await this.enqueue(session, () => this.explainResult(session, action, document));
       return;
