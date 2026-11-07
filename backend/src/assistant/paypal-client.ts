@@ -48,6 +48,9 @@ export class PayPalApiError extends Error {
   }
 }
 
+/** What the provider says it kept and paid out. For internal reporting only: customers never see it. */
+export type ProcessorFee = { fee: string; net: string; currency: string };
+
 export type PayPalOrder = {
   orderId: string;
   status: string;
@@ -55,13 +58,16 @@ export type PayPalOrder = {
   amount: string | null;
   currency: string | null;
   payerId: string | null;
+  /** Only ever offered back to whoever holds this purchase, to confirm where a report goes. */
+  payerEmail?: string | null;
+  processorFee?: ProcessorFee | null;
   captureId: string | null;
   captureStatus: string | null;
   captureAmount: string | null;
   captureCurrency: string | null;
 };
 
-export type PayPalCapture = { captureId: string; status: string; amount: string | null; currency: string | null };
+export type PayPalCapture = { captureId: string; status: string; amount: string | null; currency: string | null; processorFee?: ProcessorFee | null };
 
 export type PayPalSubscription = {
   subscriptionId: string;
@@ -73,7 +79,7 @@ export type PayPalSubscription = {
   nextBillingTime: string | null;
 };
 
-export type PayPalSaleTransaction = { id: string; status: string; amount: string | null; currency: string | null; time: string };
+export type PayPalSaleTransaction = { id: string; status: string; amount: string | null; currency: string | null; time: string; processorFee?: ProcessorFee | null };
 
 export type PayPalDispute = { disputeId: string; status: string; outcome: string | null; transactionIds: string[] };
 
@@ -120,6 +126,17 @@ function approveLink(payload: Json): string {
   return href;
 }
 
+function processorFeeOf(fee: Json, net: Json): ProcessorFee | null {
+  const feeValue = text(fee.value);
+  const netValue = text(net.value);
+  return feeValue && netValue ? { fee: feeValue, net: netValue, currency: text(fee.currency_code) ?? "USD" } : null;
+}
+
+function captureFee(capture: Json): ProcessorFee | null {
+  const breakdown = record(capture.seller_receivable_breakdown);
+  return processorFeeOf(record(breakdown.paypal_fee), record(breakdown.net_amount));
+}
+
 export function parseOrder(payload: Json): PayPalOrder {
   const unit = record(Array.isArray(payload.purchase_units) ? payload.purchase_units[0] : null);
   const amount = record(unit.amount);
@@ -135,6 +152,8 @@ export function parseOrder(payload: Json): PayPalOrder {
     amount: text(amount.value),
     currency: text(amount.currency_code),
     payerId: text(payer.payer_id) ?? text(paypalSource.account_id),
+    payerEmail: text(payer.email_address) ?? text(paypalSource.email_address),
+    processorFee: captureFee(capture),
     captureId: text(capture.id),
     captureStatus: text(capture.status),
     captureAmount: text(captureAmount.value),
@@ -228,7 +247,7 @@ export class PayPalClient implements PayPalApi {
   async getCapture(captureId: string) {
     const payload = await this.call("GET", `/v2/payments/captures/${encodeURIComponent(captureId)}`);
     const amount = record(payload.amount);
-    return { captureId, status: text(payload.status) ?? "UNKNOWN", amount: text(amount.value), currency: text(amount.currency_code) };
+    return { captureId, status: text(payload.status) ?? "UNKNOWN", amount: text(amount.value), currency: text(amount.currency_code), processorFee: captureFee(payload) };
   }
 
   async refundCapture(captureId: string, requestId: string, note: string) {
@@ -305,13 +324,15 @@ export class PayPalClient implements PayPalApi {
     });
     const transactions = Array.isArray(payload.transactions) ? payload.transactions.map(record) : [];
     return transactions.map((entry) => {
-      const gross = record(record(entry.amount_with_breakdown).gross_amount);
+      const breakdown = record(entry.amount_with_breakdown);
+      const gross = record(breakdown.gross_amount);
       return {
         id: text(entry.id) ?? "",
         status: text(entry.status) ?? "UNKNOWN",
         amount: text(gross.value),
         currency: text(gross.currency_code),
         time: text(entry.time) ?? "",
+        processorFee: processorFeeOf(record(breakdown.fee_amount), record(breakdown.net_amount)),
       };
     });
   }

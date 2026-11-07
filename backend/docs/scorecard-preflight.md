@@ -81,8 +81,17 @@ The notice email can only point to the subscription in the chat where it started
 
 ## Payment methods
 
-Each product lists the payment methods it accepts, and the purchase card shows those, so its button names no provider. With more than one method, the customer picks on the card.
+The card's button names no provider and no method is preselected. Pressing it shows the methods available for that product, and the customer picks one.
 
-A new hosted checkout is one `CheckoutProvider` (`commerce.ts`) passed to the assistant as `checkoutProviders`. It then appears on every hosted product, and the card, the chat client, and the model's quote need no change. The provider supplies its own `<id>/capture` and `<id>/status` routes, returns customers to `/?checkout=return` or `/?checkout=cancel`, and must verify payment itself before starting fulfillment.
+| Product | Crypto wallet | PayPal | Card (Stripe) |
+| --- | --- | --- | --- |
+| $0.50 services | Yes | Yes | Yes |
+| Services under $0.50 | Yes | Yes | No, Stripe's minimum is $0.50 |
+| $4.99 comprehensive report | Yes | Yes | Yes |
+| $9.99 monthly subscription | No, a wallet can't charge monthly | Yes | Yes |
 
-Today, individual $0.50 services are wallet-only, because a fixed per-payment fee would take most of a $0.50 sale. The $4.99 comprehensive report and the $9.99 monthly subscription are PayPal-only.
+A new hosted provider implements `PayPalApi` (see `stripe-client.ts`), gets one `PayPalCommerceService` for its retries and refunds, and is registered with `hostedProvider` in `assistant.routes.ts`. It then appears on every product it can charge, and the card, the chat client, and the model's quote need no change. A provider with a different flow can instead be a `CheckoutProvider` (`commerce.ts`) with its own capture and status routes.
+
+A live Stripe key is refused unless `STRIPE_ENV=live`. Stripe has no webhook handling yet: payments and refunds are found by checking Stripe on return and every sweep.
+
+A fixed per-payment fee takes much of a $0.50 sale through PayPal or Stripe.

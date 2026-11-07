@@ -7,7 +7,7 @@ import { issueReportToken } from "../services/job-access.service";
 import { AssistantError } from "./assistant-error";
 import { getToolSpec } from "./capability-registry";
 import { COMPREHENSIVE_REPORT_ID, type PayPalPaymentEvidence } from "./commerce";
-import { PayPalApiError, type PayPalApi, type PayPalConfig, type PayPalSaleTransaction, type WebhookHeaders } from "./paypal-client";
+import { PayPalApiError, type PayPalApi, type PayPalConfig, type PayPalSaleTransaction, type WebhookHeaders, type ProcessorFee } from "./paypal-client";
 import { presentResult, type ResultDocument } from "./result-presenter";
 import { purchaseOf, snapshotProblem, type PreflightResult, type ScreenProfile, type ScreeningSnapshot } from "./scorecard-preflight";
 
@@ -48,6 +48,10 @@ export type Purchase = {
     captureId: string | null;
     saleId: string | null;
     payerId: string | null;
+    /** Never part of a result, a report, or anything the model reads. */
+    payerEmail?: string | null;
+    /** Internal reporting only: never in a result, a view, or anything the model reads. */
+    processorFee?: ProcessorFee | null;
     capturedAt: string | null;
     refundId: string | null;
     checkedAt: string | null;
@@ -130,6 +134,24 @@ export type PurchaseView = {
   decisionId: string;
   document: ResultDocument | null;
   reportToken: string | null;
+  /** Fills in the report's email field, for the customer to confirm or change. */
+  payerEmail: string | null;
+};
+
+/** One payment in the internal fee report. A null fee means the provider hasn't reported one yet. */
+export type PaymentRow = {
+  provider: string;
+  productId: string;
+  kind: string;
+  paidAt: string;
+  reference: string;
+  amount: string;
+  currency: string;
+  status: string;
+  fee: string | null;
+  net: string | null;
+  feeCurrency: string | null;
+  netKept: string | null;
 };
 
 export type SubscriptionView = {
@@ -157,7 +179,11 @@ export type PayPalCommerceDeps = {
   api: PayPalApi;
   config: Pick<PayPalConfig, "env" | "returnBaseUrl" | "reportPriceUsd" | "subscriptionPriceUsd" | "webhookId">;
   /** The same pipeline as the x402 services. Takes a decision and an input, returns the result. */
-  runReport: (decisionId: string, input: Record<string, unknown>, screening?: ScreeningSnapshot | null) => Promise<Record<string, unknown>>;
+  runReport: (decisionId: string, input: Record<string, unknown>, screening?: ScreeningSnapshot | null, capabilityId?: string) => Promise<Record<string, unknown>>;
+  /** Which provider this instance runs. Defaults to PayPal. */
+  provider?: { id: string; label: string };
+  /** For a provider that charges at checkout: a customer who paid and closed the page is found by checking. */
+  checkUnpaidOrders?: boolean;
   /** Tells a subscriber a report lost an asset's score, or that this month's report needs different assets. */
   notifyCoverage?: (email: string, notice: CoverageNotice) => Promise<void>;
   /** Confirms new assets for a subscription before they replace the old ones. */
@@ -191,7 +217,7 @@ function defaultStateFile(): string {
   return path.resolve(process.cwd(), process.cwd().endsWith("backend") ? "data" : "backend/data", "paypal-commerce.json");
 }
 
-const QUOTE_EXPIRED_MESSAGE = "This quote expired before PayPal confirmed it, so nothing was charged. Please ask Selun for a new quote.";
+const QUOTE_EXPIRED_MESSAGE = "This quote expired before payment was confirmed, so nothing was charged. Please ask Selun for a new quote.";
 const RETRY_WINDOW_MS = 24 * 60 * 60_000;
 const SELECTION_WINDOW_MS = 3 * 24 * 60 * 60_000;
 const MAX_RETRY_DELAY_MS = 60 * 60_000;
@@ -203,7 +229,7 @@ const REFUNDED_MESSAGE = "We couldn't complete your report, so your payment has 
 const REFUND_FAILED_MESSAGE = "We couldn't complete your report, and the automatic refund didn't go through. Our team has been alerted and will refund you. Please contact support with the request ID below.";
 const REVOKED_MESSAGE = "This payment was refunded or reversed, so this report is no longer available.";
 const RESTRICTED_MESSAGE = "This purchase is under an open payment dispute, so this report is on hold until it's resolved.";
-const SLOW_MESSAGE = "PayPal is still confirming this payment. Your report will start once it clears.";
+const SLOW_MESSAGE = "This payment is still being confirmed. Your report will start once it clears.";
 
 /** Which assets a delivered report couldn't give an overall score, and why, from the result itself. */
 export function missingScores(response: Record<string, unknown> | null): CoverageNotice["missing"] {
@@ -243,8 +269,13 @@ export class PayPalCommerceService {
   private runsInFlight = 0;
   private readonly runWaiters: (() => void)[] = [];
 
+  private readonly providerId: string;
+  private readonly label: string;
+
   constructor(private readonly deps: PayPalCommerceDeps) {
     this.api = deps.api;
+    this.providerId = deps.provider?.id ?? "paypal";
+    this.label = deps.provider?.label ?? "PayPal";
     this.stateFile = deps.stateFile ?? defaultStateFile();
     this.now = deps.now ?? (() => new Date());
     this.maxAttempts = deps.maxAttempts ?? 3;
@@ -269,7 +300,7 @@ export class PayPalCommerceService {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         // Starting empty could repeat a charge's fulfillment or lose a refund record.
         console.error("PayPal state could not be read:", error instanceof Error ? error.message : error);
-        throw new AssistantError("service_unavailable", 503, "PayPal checkout is temporarily unavailable. Please try again shortly.");
+        throw new AssistantError("service_unavailable", 503, `${this.label} checkout is temporarily unavailable. Please try again shortly.`);
       }
       this.store = { purchases: {}, subscriptions: {}, plans: {}, webhookEvents: {} };
     }
@@ -340,6 +371,8 @@ export class PayPalCommerceService {
   // ---- One-time checkout ----
 
   async createCheckout(input: {
+    /** The server's price. Defaults to the report's. */
+    amount?: string;
     decisionId: string;
     capabilityId: string;
     title: string;
@@ -362,13 +395,13 @@ export class PayPalCommerceService {
         }
         return { purchaseId, approveUrl: existing.approveUrl };
       }
-      const amount = this.deps.config.reportPriceUsd;
+      const amount = input.amount ?? this.deps.config.reportPriceUsd;
       const { orderId, approveUrl } = await this.api.createOrder({
         purchaseId,
         amount,
         description: `Selun ${input.title}`,
-        returnUrl: `${this.deps.config.returnBaseUrl}/?paypal=return&purchase=${purchaseId}`,
-        cancelUrl: `${this.deps.config.returnBaseUrl}/?paypal=cancel&purchase=${purchaseId}`,
+        returnUrl: `${this.deps.config.returnBaseUrl}/?checkout=return&purchase=${purchaseId}`,
+        cancelUrl: `${this.deps.config.returnBaseUrl}/?checkout=cancel&purchase=${purchaseId}`,
       });
       const at = this.now().toISOString();
       const purchase: Purchase = {
@@ -428,12 +461,12 @@ export class PayPalCommerceService {
     const mismatch = this.matchesOrder(purchase, order.amount, order.currency, order.customId);
     if (mismatch) {
       this.stamp(purchase, "order_mismatch", mismatch);
-      this.alert(`PayPal order ${orderId} doesn't match its purchase: ${mismatch}`, purchase);
+      this.alert(`${this.label} order ${orderId} doesn't match its purchase: ${mismatch}`, purchase);
       throw new AssistantError("payment_not_verified", 409, "We couldn't verify this payment. You have not been charged by Selun for it.");
     }
     if (order.status !== "COMPLETED") {
       if (order.status !== "APPROVED") {
-        throw new AssistantError("payment_not_approved", 409, "PayPal hasn't confirmed your approval yet, so nothing has been charged. Please try checkout again.");
+        throw new AssistantError("payment_not_approved", 409, `${this.label} hasn't confirmed your approval yet, so nothing has been charged. Please try checkout again.`);
       }
       // The last moment nothing has been charged. Once captured, the purchase keeps this decision.
       if (purchase.screening && snapshotProblem(purchase.screening, purchaseOf(purchase.input), this.now().getTime())) {
@@ -442,23 +475,25 @@ export class PayPalCommerceService {
       }
       order = await this.api.captureOrder(orderId, `selun-capture-${purchase.purchaseId}`);
     }
-    if (!order.captureId) throw new AssistantError("payment_not_verified", 502, "PayPal didn't confirm the payment. Please try again shortly.");
+    if (!order.captureId) throw new AssistantError("payment_not_verified", 502, `${this.label} didn't confirm the payment. Please try again shortly.`);
 
     const captureMismatch = this.matchesOrder(purchase, order.captureAmount ?? order.amount, order.captureCurrency ?? order.currency, order.customId);
     if (captureMismatch) {
       this.stamp(purchase, "capture_mismatch", captureMismatch);
-      this.alert(`PayPal capture ${order.captureId} doesn't match its purchase: ${captureMismatch}`, purchase);
+      this.alert(`${this.label} capture ${order.captureId} doesn't match its purchase: ${captureMismatch}`, purchase);
       throw new AssistantError("payment_not_verified", 409, "We couldn't verify this payment. Our team has been alerted.");
     }
 
     const owner = this.findPurchase((entry) => entry.payment.captureId === order.captureId);
     if (owner && owner.purchaseId !== purchase.purchaseId) {
-      this.alert(`PayPal capture ${order.captureId} is already tied to ${owner.purchaseId}`, purchase);
+      this.alert(`${this.label} capture ${order.captureId} is already tied to ${owner.purchaseId}`, purchase);
       throw new AssistantError("payment_not_verified", 409, "We couldn't verify this payment. Our team has been alerted.");
     }
 
     purchase.payment.captureId = order.captureId;
     purchase.payment.payerId = order.payerId;
+    purchase.payment.payerEmail = order.payerEmail ?? null;
+    purchase.payment.processorFee = order.processorFee ?? null;
     purchase.payment.checkedAt = this.now().toISOString();
     this.applyCaptureStatus(purchase, order.captureStatus ?? "UNKNOWN");
   }
@@ -551,7 +586,8 @@ export class PayPalCommerceService {
 
   private buildResponse(purchase: Purchase, result: Record<string, unknown>): Record<string, unknown> {
     const evidence: PayPalPaymentEvidence = {
-      provider: "paypal",
+      provider: this.providerId,
+      ...(this.providerId === "paypal" ? {} : { label: this.label }),
       amount: purchase.amount,
       currency: purchase.currency,
       orderId: purchase.payment.orderId,
@@ -563,7 +599,7 @@ export class PayPalCommerceService {
     };
     return {
       status: "completed",
-      endpoint: `paypal:${purchase.capabilityId}`,
+      endpoint: `${this.providerId}:${purchase.capabilityId}`,
       decisionId: purchase.decisionId,
       productId: purchase.capabilityId,
       payment: { required: true, verified: true, ...evidence },
@@ -581,7 +617,7 @@ export class PayPalCommerceService {
     let failure: unknown;
     await this.takeRunSlot();
     try {
-      const result = await this.deps.runReport(purchase.decisionId, purchase.input, purchase.screening ?? null);
+      const result = await this.deps.runReport(purchase.decisionId, purchase.input, purchase.screening ?? null, purchase.capabilityId);
       const response = this.buildResponse(purchase, result);
       const spec = getToolSpec(purchase.capabilityId);
       // A result that can't become a report isn't a delivered one.
@@ -734,7 +770,7 @@ export class PayPalCommerceService {
     if (phase === "payment_pending") return SLOW_MESSAGE;
     if (phase === "delayed") return DELAYED_MESSAGE;
     if (phase === "needs_selection") return NEEDS_SELECTION_MESSAGE;
-    if (phase === "failed") return purchase.payment.status === "declined" ? "PayPal declined this payment, so you have not been charged." : REFUND_FAILED_MESSAGE;
+    if (phase === "failed") return purchase.payment.status === "declined" ? `${this.label} declined this payment, so you have not been charged.` : REFUND_FAILED_MESSAGE;
     return null;
   }
 
@@ -754,6 +790,7 @@ export class PayPalCommerceService {
       decisionId: purchase.decisionId,
       document: completed ? this.documentOf(purchase) : null,
       reportToken: completed ? issueReportToken(purchase.capabilityId, purchase.decisionId) : null,
+      payerEmail: completed ? purchase.payment.payerEmail ?? null : null,
     };
   }
 
@@ -765,6 +802,7 @@ export class PayPalCommerceService {
     try {
       const capture = await this.api.getCapture(purchase.payment.captureId);
       purchase.payment.checkedAt = this.now().toISOString();
+      purchase.payment.processorFee = capture.processorFee ?? purchase.payment.processorFee ?? null;
       this.applyCaptureStatus(purchase, capture.status);
       this.save();
     } catch (error) {
@@ -781,10 +819,40 @@ export class PayPalCommerceService {
     });
   }
 
-  /** For the report service. x402 results aren't handled here and always pass. */
+  /** Every payment taken, for internal reporting. Holds no customer details. */
+  paymentRows(): PaymentRow[] {
+    return Object.values(this.all().purchases).flatMap((purchase): PaymentRow[] => {
+      const { payment } = purchase;
+      const reference = payment.captureId ?? payment.saleId;
+      if (!reference || !payment.capturedAt) return [];
+      const refunded = payment.status === "refunded" || payment.status === "reversed";
+      const fee = payment.processorFee ?? null;
+      return [{
+        provider: this.providerId,
+        productId: purchase.capabilityId,
+        kind: purchase.kind,
+        paidAt: payment.capturedAt,
+        reference,
+        amount: purchase.amount,
+        currency: purchase.currency,
+        status: payment.status,
+        fee: fee?.fee ?? null,
+        net: fee?.net ?? null,
+        feeCurrency: fee?.currency ?? null,
+        // A refund returns the sale, and the provider keeps its fee.
+        netKept: fee ? (refunded ? (-Number(fee.fee)).toFixed(2) : fee.net) : null,
+      }];
+    });
+  }
+
+  ownsDecision(decisionId: string): boolean {
+    return Boolean(this.findPurchase((entry) => entry.decisionId === decisionId));
+  }
+
+  /** For the report service. Results this service didn't sell aren't handled here and pass. */
   async assertReportAccess(capabilityId: string, decisionId: string): Promise<void> {
-    if (capabilityId !== COMPREHENSIVE_REPORT_ID) return;
     const purchase = this.findPurchase((entry) => entry.decisionId === decisionId);
+    if (!purchase && capabilityId !== COMPREHENSIVE_REPORT_ID) return;
     if (!purchase) throw new AssistantError("report_not_found", 404, "We couldn't find a paid result for this report.");
     await this.withLock(purchase.purchaseId, () => this.reconcile(purchase));
     if (purchase.access === "revoked") throw new AssistantError("report_revoked", 403, REVOKED_MESSAGE);
@@ -792,8 +860,7 @@ export class PayPalCommerceService {
   }
 
   loadPaidResponse(capabilityId: string, decisionId: string): Record<string, unknown> | null {
-    if (capabilityId !== COMPREHENSIVE_REPORT_ID) return null;
-    const purchase = this.findPurchase((entry) => entry.decisionId === decisionId);
+    const purchase = this.findPurchase((entry) => entry.decisionId === decisionId && entry.capabilityId === capabilityId);
     return purchase?.fulfillment.status === "complete" ? purchase.responseData : null;
   }
 
@@ -837,8 +904,8 @@ export class PayPalCommerceService {
       const { subscriptionId, approveUrl } = await this.api.createSubscription({
         planId,
         customId: localId,
-        returnUrl: `${this.deps.config.returnBaseUrl}/?paypal=return&subscription=${localId}`,
-        cancelUrl: `${this.deps.config.returnBaseUrl}/?paypal=cancel&subscription=${localId}`,
+        returnUrl: `${this.deps.config.returnBaseUrl}/?checkout=return&subscription=${localId}`,
+        cancelUrl: `${this.deps.config.returnBaseUrl}/?checkout=cancel&subscription=${localId}`,
       });
       const at = this.now().toISOString();
       this.all().subscriptions[localId] = {
@@ -882,7 +949,7 @@ export class PayPalCommerceService {
   private async syncFromPayPal(subscription: LocalSubscription): Promise<PayPalSaleTransaction[] | null> {
     const remote = await this.api.getSubscription(subscription.paypalSubscriptionId!);
     if (remote.customId !== subscription.localId || remote.planId !== subscription.planId) {
-      this.alert(`PayPal subscription ${remote.subscriptionId} doesn't match its record.`, null);
+      this.alert(`${this.label} subscription ${remote.subscriptionId} doesn't match its record.`, null);
       throw new AssistantError("payment_not_verified", 409, "We couldn't verify this subscription. Our team has been alerted.");
     }
     subscription.subscriberEmail = remote.subscriberEmail ?? subscription.subscriberEmail;
@@ -906,10 +973,11 @@ export class PayPalCommerceService {
     return sales;
   }
 
-  private applySale(subscription: LocalSubscription, sale: { id: string; status: string; amount: string | null; currency: string | null }) {
+  private applySale(subscription: LocalSubscription, sale: PayPalSaleTransaction) {
     const known = subscription.cycles[sale.id];
     if (known) {
       const purchase = this.all().purchases[known];
+      if (purchase && sale.processorFee) purchase.payment.processorFee = sale.processorFee;
       if (purchase && sale.status === "REFUNDED") this.revoke(purchase, "refunded", "sale_refunded");
       if (purchase && sale.status === "REVERSED") this.revoke(purchase, "reversed", "sale_reversed");
       if (purchase) this.startFulfillment(purchase);
@@ -938,7 +1006,7 @@ export class PayPalCommerceService {
       actionId: subscription.actionId,
       subscriptionLocalId: subscription.localId,
       approveUrl: null,
-      payment: { status: "captured", orderId: null, captureId: null, saleId: sale.id, payerId: subscription.payerId, capturedAt: at, refundId: null, checkedAt: at },
+      payment: { status: "captured", orderId: null, captureId: null, saleId: sale.id, payerId: subscription.payerId, processorFee: sale.processorFee ?? null, capturedAt: at, refundId: null, checkedAt: at },
       fulfillment: { status: "waiting", attempts: 0, lastError: null, completedAt: null },
       access: "active",
       dispute: null,
@@ -970,8 +1038,8 @@ export class PayPalCommerceService {
       message: latest
         ? this.messageOf(latest, phase)
         : subscription.status === "active"
-          ? "Your subscription is active. PayPal is confirming the first payment, and your report will start once it clears."
-          : subscription.status === "created" ? "PayPal hasn't confirmed your subscription, so nothing has been charged." : null,
+          ? "Your subscription is active. The first payment is being confirmed, and your report will start once it clears."
+          : subscription.status === "created" ? `${this.label} hasn't confirmed your subscription, so nothing has been charged.` : null,
       nextBillingTime: subscription.nextBillingTime,
       decisionId: latest?.decisionId ?? null,
       document: completed ? this.documentOf(latest) : null,
@@ -1032,8 +1100,12 @@ export class PayPalCommerceService {
         await this.withLock(subscription.localId, async () => void (await this.syncFromPayPal(subscription))).catch((error) => console.warn("PayPal subscription sync failed:", error instanceof Error ? error.message : error));
       }
     }
+    const unpaidCutoff = this.now().getTime() - 2 * 60 * 60_000;
     for (const purchase of Object.values(this.all().purchases)) {
-      if (purchase.payment.captureId && purchase.access !== "revoked") {
+      if (this.deps.checkUnpaidOrders && purchase.kind === "one_time" && purchase.payment.status === "created" && Date.parse(purchase.createdAt) > unpaidCutoff) {
+        // Refused until the customer has paid, so most of these simply wait for the next sweep.
+        await this.capture(purchase.purchaseId).catch(() => undefined);
+      } else if (purchase.payment.captureId && purchase.access !== "revoked") {
         await this.withLock(purchase.purchaseId, async () => {
           await this.reconcile(purchase);
           this.startFulfillment(purchase);
@@ -1211,6 +1283,7 @@ export class PayPalCommerceService {
       }
       const capture = await this.api.getCapture(purchase.payment.captureId);
       purchase.payment.checkedAt = this.now().toISOString();
+      purchase.payment.processorFee = capture.processorFee ?? purchase.payment.processorFee ?? null;
       this.applyCaptureStatus(purchase, capture.status);
       // PayPal signed this reversal. If the capture still reads as complete, the signed event wins.
       if (reversed && purchase.access !== "revoked") this.revoke(purchase, "reversed", "capture_reversed");

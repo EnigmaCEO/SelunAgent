@@ -409,6 +409,6 @@ test("the model is told a report is PayPal in US dollars, not a wallet purchase 
   await instance.chat({ message: "Full report on Bitcoin" });
   const quote = told.find((result) => result.includes("quote_shown_to_customer")) ?? "";
   assert.match(quote, /"price_usd":"4.99"/);
-  assert.match(quote, /through PayPal/);
+  assert.match(quote, /picks how to pay on the card: PayPal/);
   assert.doesNotMatch(quote, /price_usdc/);
 });

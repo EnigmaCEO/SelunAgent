@@ -79,6 +79,11 @@ function hasOpenPayPalWork(action: ActionView): boolean {
   return action.state === "completed" && action.explanationStatus === "pending";
 }
 
+/** The server no longer holds this quote, for example after it restarted or the conversation expired. */
+function isQuoteGone(error: unknown): boolean {
+  return error instanceof ApiError && (error.code === "conversation_not_found" || error.code === "action_not_found");
+}
+
 type PendingPayPal = { method?: string; label?: string; token: string; kind: "one_time" | "subscription"; conversationId: string; actionId: string };
 
 function readPendingPayPal(): PendingPayPal | null {
@@ -110,6 +115,7 @@ function applyPayPalView(action: ActionView, token: string, view: PayPalStatusVi
       method,
       token,
       kind: view.kind,
+      payerEmail: view.payerEmail ?? action.paypal?.payerEmail ?? null,
       phase: view.phase,
       message: view.message,
       subscriptionStatus: view.status,
@@ -162,7 +168,7 @@ export default function ChatApp() {
       return;
     }
     if (outcome === "cancel") {
-      setActionErrors((previous) => ({ ...previous, [pending.actionId]: `You cancelled at ${pending.label ?? "PayPal"}, so nothing was charged.` }));
+      setActionErrors((previous) => ({ ...previous, [pending.actionId]: "You cancelled the checkout, so nothing was charged." }));
       return;
     }
     setPhases((previous) => ({ ...previous, [pending.actionId]: "submitting" }));
@@ -210,6 +216,31 @@ export default function ChatApp() {
         : conversation;
     }));
   }, []);
+
+  // Replaces a card without moving its conversation up the history.
+  const replaceQuote = useCallback((view: ActionView) => {
+    setConversations((previous) => previous.map((conversation) => ({
+      ...conversation,
+      items: mapBlockActions(conversation.items, (action) => (action.id === view.id ? view : action)),
+    })));
+  }, []);
+
+  /** Saved cards can be out of date, so the price and payment methods come from the server. Null if it can't be paid any more. */
+  const checkQuote = useCallback(async (serverId: string | null, action: ActionView): Promise<ActionView | null> => {
+    if (!serverId) {
+      replaceQuote({ ...action, expired: true });
+      return null;
+    }
+    try {
+      const { action: view } = await fetchAction(serverId, action.id);
+      replaceQuote(view);
+      return view.state === "awaiting_approval" ? view : null;
+    } catch (error) {
+      if (!isQuoteGone(error)) throw error;
+      replaceQuote({ ...action, expired: true });
+      return null;
+    }
+  }, [replaceQuote]);
 
   // Poll every action still running, including ones restored after a reload.
   const openWork = useMemo(() => {
@@ -310,6 +341,24 @@ export default function ChatApp() {
     }
   }, [hydrated, refreshPayPal]);
 
+  // On each visit, recheck saved quotes once. Pressing Pay checks again, so a failure here changes nothing on screen.
+  useEffect(() => {
+    if (!hydrated) return;
+    const pendingAction = readPendingPayPal()?.actionId;
+    for (const conversation of conversationsRef.current) {
+      for (const item of conversation.items) {
+        if (item.role !== "assistant") continue;
+        for (const block of item.blocks) {
+          if (block.type !== "action") continue;
+          const { action } = block;
+          if (action.state === "awaiting_approval" && !action.paypal && !action.expired && action.id !== pendingAction) {
+            checkQuote(conversation.serverId, action).catch(() => undefined);
+          }
+        }
+      }
+    }
+  }, [hydrated, checkQuote]);
+
   const send = useCallback(async (rawText: string) => {
     const text = rawText.trim();
     if (!text || thinking || !active) return;
@@ -363,6 +412,24 @@ export default function ChatApp() {
     }
   }, [active, thinking, updateConversation]);
 
+  // Asks again in the customer's own words, since the old conversation is gone.
+  const handleNewQuote = useCallback((action: ActionView) => {
+    const items = active?.items ?? [];
+    const card = items.findIndex((item) => item.role === "assistant" && item.blocks.some((block) => block.type === "action" && block.action.id === action.id));
+    const asked = items.slice(0, Math.max(card, 0)).reverse().find((item) => item.role === "user");
+    void send(asked?.role === "user" ? asked.text : `I'd like a quote for ${action.title}`);
+  }, [active?.items, send]);
+
+  const handleCheckQuote = useCallback(async (action: ActionView): Promise<ActionView | null> => {
+    setActionErrors((previous) => ({ ...previous, [action.id]: null }));
+    try {
+      return await checkQuote(active?.serverId ?? null, action);
+    } catch {
+      setActionErrors((previous) => ({ ...previous, [action.id]: "We couldn't reach checkout. You have not been charged. Please try again." }));
+      return null;
+    }
+  }, [active?.serverId, checkQuote]);
+
   const handleApprove = useCallback(async (action: ActionView, option: PaymentOption) => {
     const serverId = active?.serverId;
     if (!serverId) return;
@@ -378,6 +445,11 @@ export default function ChatApp() {
         window.localStorage.setItem(PAYPAL_PENDING_KEY, JSON.stringify({ method: started.method, label: option.label, token: started.purchaseToken, kind: started.kind, conversationId, actionId: action.id }));
         window.location.assign(started.approveUrl);
       } catch (error) {
+        if (isQuoteGone(error)) {
+          replaceQuote({ ...action, expired: true });
+          setPhase("idle");
+          return;
+        }
         if (error instanceof ApiError && error.action) applyActionView(error.action);
         const message = error instanceof ApiError ? error.message : `${option.label} checkout couldn't start. You have not been charged. Please try again.`;
         setActionErrors((previous) => ({ ...previous, [action.id]: message }));
@@ -386,6 +458,7 @@ export default function ChatApp() {
       return;
     }
 
+    let signed = false;
     try {
       assertWalletAvailable();
       setPhase("preparing");
@@ -394,11 +467,16 @@ export default function ChatApp() {
 
       setPhase("signing");
       const { paymentSignature } = await signX402Challenge(paymentRequired, toBaseUnits(fresh.priceUsdc));
+      signed = true;
 
       setPhase("submitting");
       const executed = await executeAction(serverId, action.id, fresh.priceUsdc, paymentSignature);
       applyActionView(executed.action);
     } catch (error) {
+      if (!signed && isQuoteGone(error)) {
+        replaceQuote({ ...action, expired: true });
+        return;
+      }
       if (error instanceof ApiError && error.action) applyActionView(error.action);
       // A repeated request lost the race to the first one, which is running fine.
       if (error instanceof ApiError && error.code === "action_not_payable" && (error.action?.state === "executing" || error.action?.state === "completed")) return;
@@ -409,7 +487,7 @@ export default function ChatApp() {
     } finally {
       setPhase("idle");
     }
-  }, [active?.serverId, activeId, applyActionView]);
+  }, [active?.serverId, activeId, applyActionView, replaceQuote]);
 
   const handleCancelSubscription = useCallback(async (action: ActionView) => {
     const token = action.paypal?.token;
@@ -618,6 +696,8 @@ export default function ChatApp() {
                             phase={block.type === "action" ? phases[block.action.id] ?? "idle" : "idle"}
                             actionError={block.type === "action" ? actionErrors[block.action.id] ?? null : null}
                             referralHref={referralHref}
+                            onCheckQuote={handleCheckQuote}
+                            onNewQuote={handleNewQuote}
                             onApprove={handleApprove}
                             onDecline={handleDecline}
                             onCancelSubscription={handleCancelSubscription}

@@ -43,7 +43,7 @@ function paymentFacts(document: ResultDocument): { amountPaid: string; paymentRe
   if (paypal) {
     return {
       amountPaid: `${paypal.amount} ${paypal.currency}`,
-      paymentReference: { label: paypal.saleId ? "PayPal payment" : "PayPal capture", value: paypal.saleId ?? paypal.captureId ?? "" },
+      paymentReference: { label: `${paypal.label ?? "PayPal"} ${paypal.saleId ? "payment" : "capture"}`, value: paypal.saleId ?? paypal.captureId ?? "" },
     };
   }
   return { amountPaid: `${amountUsdc} USDC`, paymentReference: { label: "Payment transaction", value: transactionHash ?? "" } };

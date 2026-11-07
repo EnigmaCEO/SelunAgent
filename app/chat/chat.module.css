@@ -1007,6 +1007,12 @@
   padding: 2px 0 0;
 }
 
+.resultCard .explanation {
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: #f1f6fc;
+}
+
 .aiLabel {
   display: block;
   margin-bottom: 5px;
@@ -1430,27 +1436,54 @@
   font: inherit;
 }
 
-.paymentMethods {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 16px;
-  align-items: center;
-  margin: 0 0 12px;
+.paymentChoice {
+  display: grid;
+  gap: 6px;
+  margin: 0;
   padding: 0;
   border: 0;
-  font-size: 14px;
 }
 
-.paymentMethods legend {
-  float: left;
-  margin-right: 16px;
+.paymentChoice legend {
+  margin-bottom: 6px;
   padding: 0;
   font-weight: 600;
 }
 
-.paymentMethod {
-  display: inline-flex;
-  gap: 6px;
+.paymentRow {
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  gap: 2px 10px;
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid #d3deeb;
+  border-radius: 10px;
+  background: #fff;
   cursor: pointer;
+}
+
+.paymentRow:hover {
+  border-color: #8fb3d6;
+}
+
+.paymentRow:has(input:checked) {
+  border-color: var(--brand);
+  box-shadow: inset 0 0 0 1px var(--brand);
+}
+
+.paymentRow input {
+  margin: 0;
+  accent-color: var(--brand);
+}
+
+.paymentRow strong {
+  font-size: 14.5px;
+  font-weight: 600;
+}
+
+.paymentRow span {
+  margin-left: auto;
+  font-size: 13px;
+  opacity: 0.75;
 }

@@ -122,10 +122,10 @@ function CoverageList({ items }: { items?: CoverageItem[] }) {
   );
 }
 
-function ReportActions({ reportToken, title, monthly }: { reportToken: string; title: string; monthly: boolean }) {
+function ReportActions({ reportToken, title, monthly, suggestedEmail }: { reportToken: string; title: string; monthly: boolean; suggestedEmail: string | null }) {
   const [downloading, setDownloading] = useState(false);
   const [sending, setSending] = useState(false);
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(suggestedEmail ?? "");
   const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
   const failure = (error: unknown, fallback: string) => setMessage({ text: error instanceof ApiError ? error.message : fallback, error: true });
 
@@ -183,14 +183,15 @@ function ReportActions({ reportToken, title, monthly }: { reportToken: string; t
           <button type="submit" className={styles.ghostButton} disabled={sending || !email}>{sending ? "Sending…" : "Send"}</button>
         </div>
       </form>
-      <p className={styles.reportNote}>The report contains the {title} result exactly as the service returned it, not the AI summary. {monthly ? "Each paid month's report goes to your PayPal address, and we only send copies to addresses you enter here." : "We only send it to the address you enter here."}</p>
+      <p className={styles.reportNote}>The report contains the {title} result exactly as the service returned it, not the AI summary. {monthly ? "Each paid month's report goes to your PayPal address, and we only send copies to addresses you enter here." : suggestedEmail ? "We filled in the address from your payment. Change it if you'd like, and nothing is sent until you press Send." : "We only send it to the address you enter here."}</p>
       {message && <p className={message.error ? styles.inlineError : styles.reportStatus} role={message.error ? "alert" : "status"}>{message.text}</p>}
     </div>
   );
 }
 
-function ResultCard({ document, reportToken, monthly = false }: { document: ResultDocument; reportToken?: string | null; monthly?: boolean }) {
+function ResultCard({ document, reportToken, monthly = false, suggestedEmail = null, children }: { document: ResultDocument; reportToken?: string | null; monthly?: boolean; suggestedEmail?: string | null; children?: ReactNode }) {
   const { provenance } = document;
+  const more = document.sections.filter((section) => section.more);
   const snapshot = formatDate(document.snapshotAt);
   const tx = provenance.transactionHash ?? "";
   const shortTx = `${tx.slice(0, 8)}…${tx.slice(-6)}`;
@@ -206,21 +207,30 @@ function ResultCard({ document, reportToken, monthly = false }: { document: Resu
       </header>
       {snapshot && <p className={styles.resultMeta}>Data as of {snapshot}</p>}
       <div className={styles.resultBody}>
-        {document.sections.map((section, index) => <SectionView key={index} section={section} />)}
+        {document.sections.filter((section) => !section.more).map((section, index) => <SectionView key={index} section={section} />)}
       </div>
-      <CoverageList items={document.coverage} />
+      {children}
+      {more.length > 0 ? (
+        <details className={styles.moreInfo}>
+          <summary>Full analysis and methodology</summary>
+          <div className={styles.resultBody}>
+            {more.map((section, index) => <SectionView key={index} section={section} />)}
+          </div>
+          <CoverageList items={document.coverage} />
+        </details>
+      ) : <CoverageList items={document.coverage} />}
       {document.notice && <p className={styles.analysisNotice}>{document.notice}</p>}
       <footer className={styles.receipt}>
         {provenance.paypal
-          ? <span>Paid {formatUsdc(provenance.paypal.amount)} USD with PayPal{provenance.paypal.environment === "sandbox" ? " (test)" : ""}</span>
+          ? <span>Paid {formatUsdc(provenance.paypal.amount)} USD with {provenance.paypal.label ?? "PayPal"}{provenance.paypal.environment === "sandbox" ? " (test)" : ""}</span>
           : <span>Paid {formatUsdc(provenance.amountUsdc ?? "")} USDC</span>}
         {provenance.paypal
-          ? <span>PayPal reference {paypalReference}</span>
+          ? <span>{provenance.paypal.label ?? "PayPal"} reference {paypalReference}</span>
           : provenance.explorerUrl
           ? <a href={provenance.explorerUrl} target="_blank" rel="noopener noreferrer">Receipt {shortTx}<span className={styles.srOnly}> (opens in a new tab)</span></a>
           : <span>Receipt {shortTx}</span>}
       </footer>
-      {reportToken && <ReportActions reportToken={reportToken} title={document.title} monthly={monthly} />}
+      {reportToken && <ReportActions reportToken={reportToken} title={document.title} monthly={monthly} suggestedEmail={monthly ? null : suggestedEmail} />}
     </article>
   );
 }
@@ -256,11 +266,11 @@ function simpleCard(action: ActionView): SimpleCard | null {
     return {
       title: one ? `${one.name} Risk Analysis` : `Risk Analysis: ${symbols}`,
       eyebrow: `Asset Scorecard · ${symbols}`,
-      lead: `Understand ${one ? `${one.name}'s` : "each asset's"} historical volatility, major price declines, and market standing through a clear risk assessment.`,
-      includes: ["Up to 1 year of price history", "Risk and market-standing scores", ...pdf],
-      note: "Based on historical data through the last completed UTC day. Live prices and current news are not included.",
+      lead: "Historical volatility, major price declines, and market-standing analysis.",
+      includes: ["Risk assessment", "Historical data, up to 1 year", ...pdf],
+      note: "A historical risk analysis, not a live market update. Data runs through the last completed UTC day, without live prices or current news.",
       assurance: action.eligibilityChecked
-        ? `Selun confirmed ${one ? one.name : "these assets"} can get an overall score and locked that decision to this purchase. If a price feed fails during the run, you can retry without paying again.`
+        ? `${one ? `${one.name} is` : "These assets are"} eligible for a complete analysis. If the data feed fails, you can retry at no additional cost.`
         : undefined,
       moreLabel: "What's included and how scores work",
     };
@@ -289,23 +299,42 @@ function ActionCard(props: {
   action: ActionView;
   phase: ApprovalPhase;
   error: string | null;
+  onCheckQuote: (action: ActionView) => Promise<ActionView | null>;
+  onNewQuote: (action: ActionView) => void;
   onApprove: (action: ActionView, option: PaymentOption) => void;
   onDecline: (action: ActionView) => void;
   onCancelSubscription: (action: ActionView) => void;
   onUpdateAssets: (action: ActionView, assets: string[]) => void;
   onAsk: (text: string) => void;
 }) {
-  const { action, phase, error, onApprove, onDecline, onCancelSubscription, onUpdateAssets, onAsk } = props;
+  const { action, phase, error, onCheckQuote, onNewQuote, onApprove, onDecline, onCancelSubscription, onUpdateAssets, onAsk } = props;
   const busy = phase !== "idle";
   const options = action.paymentOptions ?? [];
-  const [chosenMethod, setChosenMethod] = useState<string | null>(null);
-  const method = options.find((option) => option.id === chosenMethod) ?? options[0];
+  const retryOption = options.find((option) => option.flow === "wallet_signature");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [chosen, setChosen] = useState<PaymentOption | null>(null);
+  const [checking, setChecking] = useState(false);
+  // Nothing is preselected unless there is only one method to pick.
+  const selected = options.length === 1 ? options[0] : options.find((option) => option.id === selectedId) ?? null;
+  const continueToPay = async () => {
+    if (!selected) return;
+    setChecking(true);
+    const fresh = await onCheckQuote(action);
+    setChecking(false);
+    // If the method or the price changed, the card now shows the new terms to approve.
+    const current = fresh?.paymentOptions.find((option) => option.id === selected.id);
+    if (fresh && current && fresh.priceUsdc === action.priceUsdc) pay(current);
+  };
+  const pay = (option: PaymentOption) => {
+    setChosen(option);
+    onApprove(action, option);
+  };
   const subscription = action.paypal?.kind === "subscription" ? action.paypal : null;
   const subscriptionRow = subscription && subscription.subscriptionStatus && subscription.subscriptionStatus !== "created" && (
     <div className={styles.subscriptionRow}>
       <p role="status">
         {subscription.subscriptionStatus === "active"
-          ? `Your monthly subscription is active.${subscription.nextBillingTime ? ` Next payment: ${formatDate(subscription.nextBillingTime)}.` : ""} Each paid month's report is also emailed to your PayPal address.`
+          ? `Your monthly subscription is active.${subscription.nextBillingTime ? ` Next payment: ${formatDate(subscription.nextBillingTime)}.` : ""} Each paid month's report is also emailed to you.`
           : subscription.subscriptionStatus === "cancelled"
             ? "Your subscription is cancelled, so you won't be charged again. Reports you've paid for stay available."
             : `Your subscription is ${subscription.subscriptionStatus}.`}
@@ -352,7 +381,7 @@ function ActionCard(props: {
     return (
       <div className={styles.stack}>
         {subscriptionRow}
-        <ResultCard document={action.document} reportToken={action.reportToken} monthly={Boolean(subscription)} />
+        <ResultCard document={action.document} reportToken={action.reportToken} monthly={Boolean(subscription)} suggestedEmail={action.paypal?.payerEmail ?? null}>
         {action.explanationStatus === "pending" && <p className={styles.quietStatus} role="status"><span className={styles.spinner} aria-hidden />Writing a plain-language summary…</p>}
         {action.explanation && (
           <div className={styles.explanation}>
@@ -361,6 +390,19 @@ function ActionCard(props: {
           </div>
         )}
         {action.explanationStatus === "unavailable" && <p className={styles.quietStatus}>A written summary isn&apos;t available right now, but the result above is complete.</p>}
+        </ResultCard>
+      </div>
+    );
+  }
+
+  if (action.expired) {
+    return (
+      <div className={styles.actionCard} role="status">
+        <p className={styles.actionRunningTitle}>{action.title}</p>
+        <p>This quote has expired, and nothing was charged.</p>
+        <div className={styles.actionButtons}>
+          <button type="button" className={styles.approveButton} onClick={() => onNewQuote(action)}>Get a new quote</button>
+        </div>
       </div>
     );
   }
@@ -411,7 +453,7 @@ function ActionCard(props: {
         </div>
         <div className={styles.price}>
           <strong>{formatUsdc(action.priceUsdc)}</strong>
-          <span>{action.currency}{action.billing === "monthly" ? " / month" : ""}</span>
+          {action.billing === "monthly" && <span>/ month</span>}
         </div>
       </header>
 
@@ -456,33 +498,41 @@ function ActionCard(props: {
         <p className={styles.inlineError} role="alert">{error ?? action.paypal?.message}</p>
       )}
 
-      {options.length > 1 && !failed && (
-        <fieldset className={styles.paymentMethods} disabled={busy}>
-          <legend>Pay with</legend>
-          {options.map((option) => (
-            <label key={option.id} className={styles.paymentMethod}>
-              <input type="radio" name={`payment-${action.id}`} checked={option.id === method?.id} onChange={() => setChosenMethod(option.id)} />
-              {option.label}
-            </label>
-          ))}
-        </fieldset>
-      )}
-
-      {method && (!failed || action.failure?.retryable) && (
+      {busy ? (
         <div className={styles.actionButtons}>
-          <button type="button" className={styles.approveButton} disabled={busy} onClick={() => onApprove(action, method)}>
-            {busy
-              ? PHASE_LABEL[phase]
-              : failed
-                ? "Try again"
-                : action.billing === "monthly" ? `Subscribe for ${formatUsdc(action.priceUsdc)}/month` : `Pay ${formatUsdc(action.priceUsdc)}`}
-          </button>
-          {!failed && <button type="button" className={styles.ghostButton} disabled={busy} onClick={() => onDecline(action)}>Not now</button>}
+          <button type="button" className={styles.approveButton} disabled>{PHASE_LABEL[phase]}</button>
         </div>
+      ) : failed ? (
+        // Only a wallet run can fail here, and retrying on it reuses the same request without paying again.
+        action.failure?.retryable && retryOption && (
+          <div className={styles.actionButtons}>
+            <button type="button" className={styles.approveButton} onClick={() => pay(retryOption)}>Try again</button>
+          </div>
+        )
+      ) : options.length === 0 ? null : (
+        <>
+          <fieldset className={styles.paymentChoice} disabled={checking}>
+            <legend>Payment method</legend>
+            {options.map((option) => (
+              <label key={option.id} className={styles.paymentRow}>
+                <input type="radio" name={`payment-${action.id}`} checked={selected?.id === option.id} onChange={() => setSelectedId(option.id)} />
+                <strong>{option.label}</strong>
+                {option.detail && <span>{option.detail}</span>}
+              </label>
+            ))}
+          </fieldset>
+          <div className={styles.actionButtons}>
+            <button type="button" className={styles.approveButton} disabled={!selected || checking} onClick={() => void continueToPay()}>
+              {checking ? "Checking…" : selected ? `Continue with ${selected.shortLabel}` : "Choose a payment method"}
+            </button>
+            <button type="button" className={styles.ghostButton} onClick={() => onDecline(action)}>Not now</button>
+          </div>
+        </>
       )}
 
-      {method && <p className={styles.approvalNote}>{method.note}</p>}
-      {!method && !failed && <p className={styles.approvalNote}>Payment isn&apos;t available for this right now, and nothing has been charged.</p>}
+      {busy && chosen && <p className={styles.approvalNote}>{chosen.note}</p>}
+      {!busy && !failed && options.length > 0 && <p className={styles.approvalNote}>{selected?.note ?? "Nothing is charged until you approve."}</p>}
+      {options.length === 0 && !failed && <p className={styles.approvalNote}>Payment isn&apos;t available for this right now, and nothing has been charged.</p>}
     </article>
   );
 }
@@ -585,6 +635,8 @@ export function BlockView(props: {
   phase: ApprovalPhase;
   actionError: string | null;
   referralHref: (href: string) => string;
+  onCheckQuote: (action: ActionView) => Promise<ActionView | null>;
+  onNewQuote: (action: ActionView) => void;
   onApprove: (action: ActionView, option: PaymentOption) => void;
   onDecline: (action: ActionView) => void;
   onCancelSubscription: (action: ActionView) => void;
@@ -595,7 +647,7 @@ export function BlockView(props: {
   const { block } = props;
   switch (block.type) {
     case "action":
-      return <ActionCard action={block.action} phase={props.phase} error={props.actionError} onUpdateAssets={props.onUpdateAssets} onApprove={props.onApprove} onDecline={props.onDecline} onCancelSubscription={props.onCancelSubscription} onAsk={props.onAsk} />;
+      return <ActionCard action={block.action} phase={props.phase} error={props.actionError} onUpdateAssets={props.onUpdateAssets} onCheckQuote={props.onCheckQuote} onNewQuote={props.onNewQuote} onApprove={props.onApprove} onDecline={props.onDecline} onCancelSubscription={props.onCancelSubscription} onAsk={props.onAsk} />;
     case "sagitta_sources":
       return <SourcesCard sources={block.sources} readAt={block.readAt} />;
     case "sagitta_system":

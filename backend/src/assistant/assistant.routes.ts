@@ -1,16 +1,20 @@
+import type { PaymentRow } from "./paypal-commerce.service";
+import path from "node:path";
 import { resolveAsset } from "./asset-resolver";
 import { sandboxFaultFile, withSandboxFaults } from "./sandbox-faults";
 import { sendCoverageNoticeEmail } from "../services/email.service";
 import { createHash } from "node:crypto";
 import { Router, type NextFunction, type Request, type RequestHandler, type Response } from "express";
-import { getPaidToolResponse, getX402CapabilitiesData, runComprehensiveReport } from "../routes/agent.routes";
+import { getPaidToolResponse, getX402CapabilitiesData, listWalletPaymentRows, requireAdminRequest, runPaidCapability } from "../routes/agent.routes";
 import { issuePurchaseToken, issueReportToken, readPurchaseToken } from "../services/job-access.service";
 import { legacyClientIp } from "../services/legacy-cooldown";
-import { AssistantError, AssistantService, DEFAULT_LIMITS, type AssistantDeps, type AssistantLimits } from "./assistant.service";
+import { AssistantError, AssistantService, DEFAULT_LIMITS, STRIPE_META, hostedProvider, type AssistantDeps, type AssistantLimits } from "./assistant.service";
 import { COMPREHENSIVE_REPORT_ID, getPaymentRails } from "./commerce";
 import { OpenAiClient, readOpenAiConfig } from "./openai-client";
 import { PayPalClient, readPayPalConfig } from "./paypal-client";
-import { PayPalCommerceService, type Purchase, type PurchaseView, type SubscriptionView } from "./paypal-commerce.service";
+import { readStripeConfig, StripeClient } from "./stripe-client";
+import { PayPalCommerceService, type CoverageNotice, type Purchase, type PurchaseView, type SubscriptionView } from "./paypal-commerce.service";
+import type { ScreenProfile } from "./scorecard-preflight";
 import { ReportService, type ReportDeps } from "./report.service";
 import { SITES_REFRESH_CHECK_MS, getSiteKnowledge } from "./sagitta-sites.runtime";
 import { DEFAULT_SCREEN_PROFILE, SCREEN_WARM_MS, getScorecardPreflight } from "./scorecard-preflight.runtime";
@@ -77,7 +81,7 @@ function positiveMs(value: string | undefined): number | undefined {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
-function createDefaultDeps(paypal: PayPalCommerceService | null, prices: { reportUsd: string; subscriptionUsd: string } | null): AssistantDeps {
+function createDefaultDeps(paypal: PayPalCommerceService | null, stripe: PayPalCommerceService | null, prices: { reportUsd: string; subscriptionUsd: string } | null): AssistantDeps {
   const openAi = readOpenAiConfig();
   const port = process.env.PORT ?? "8787";
   const internalBaseUrl = (process.env.ASSISTANT_INTERNAL_BASE_URL?.trim() || `http://127.0.0.1:${port}`).replace(/\/+$/, "");
@@ -91,6 +95,8 @@ function createDefaultDeps(paypal: PayPalCommerceService | null, prices: { repor
     limits: readAssistantLimits(),
     sites: getSiteKnowledge(),
     preflight: getScorecardPreflight(),
+    hostedPrices: prices,
+    checkoutProviders: stripe ? [hostedProvider(STRIPE_META, stripe)] : [],
     paypal: paypal && prices
       ? {
         prices,
@@ -135,22 +141,87 @@ function limited(limiter: WindowRateLimiter): RequestHandler {
   };
 }
 
+/** Totals by provider and currency. Payments with no reported fee are counted, not guessed. */
+export function summarizePayments(rows: PaymentRow[]) {
+  const totals = new Map<string, { provider: string; currency: string; payments: number; gross: number; fees: number; netKept: number; missingFee: number }>();
+  for (const row of rows) {
+    const key = `${row.provider}:${row.currency}`;
+    const total = totals.get(key) ?? { provider: row.provider, currency: row.currency, payments: 0, gross: 0, fees: 0, netKept: 0, missingFee: 0 };
+    total.payments += 1;
+    total.gross += Number(row.amount);
+    if (row.fee === null || row.netKept === null) total.missingFee += 1;
+    else {
+      total.fees += Number(row.fee);
+      total.netKept += Number(row.netKept);
+    }
+    totals.set(key, total);
+  }
+  return [...totals.values()].map((total) => ({ ...total, gross: total.gross.toFixed(2), fees: total.fees.toFixed(2), netKept: total.netKept.toFixed(2) }));
+}
+
 export function createAssistantRouter(injected?: AssistantDeps, injectedReports?: ReportDeps, injectedPayPal?: PayPalCommerceService) {
   const router = Router();
   let reports: ReportService | null = null;
   let paypal: PayPalCommerceService | null | undefined = injectedPayPal;
+  let stripe: PayPalCommerceService | null | undefined;
   let service: AssistantService | null = null;
 
   const getReports = () => (reports ??= new ReportService(injectedReports ?? {
-    loadPaidResponse: (capabilityId, decisionId) => (capabilityId === COMPREHENSIVE_REPORT_ID ? getPayPal()?.loadPaidResponse(capabilityId, decisionId) ?? null : getPaidToolResponse(capabilityId, decisionId)),
+    loadPaidResponse: (capabilityId, decisionId) => ownerOf(decisionId)?.loadPaidResponse(capabilityId, decisionId) ?? getPaidToolResponse(capabilityId, decisionId),
     assertAccess: async (capabilityId, decisionId) => {
-      if (capabilityId === COMPREHENSIVE_REPORT_ID) await getPayPal()?.assertReportAccess(capabilityId, decisionId);
+      await ownerOf(decisionId)?.assertReportAccess(capabilityId, decisionId);
     },
   }));
 
-  function onPurchaseUpdate(purchase: Purchase) {
-    const current = getPayPal();
-    if (!current || purchase.fulfillment.status !== "complete" || purchase.access !== "active") return;
+  function hostedServices(): PayPalCommerceService[] {
+    return [getPayPal(), getStripe()].filter((entry): entry is PayPalCommerceService => entry !== null);
+  }
+
+  function ownerOf(decisionId: string): PayPalCommerceService | undefined {
+    return hostedServices().find((entry) => entry.ownsDecision(decisionId));
+  }
+
+  function hostedDeps(env: "sandbox" | "live") {
+    return {
+      runReport: withSandboxFaults(env, sandboxFaultFile(), runPaidCapability),
+      retryWindowMs: positiveMs(process.env.PAYPAL_RETRY_WINDOW_MS),
+      retryDelayMs: positiveMs(process.env.PAYPAL_RETRY_DELAY_MS),
+      notifyCoverage: async (email: string, notice: CoverageNotice) => {
+        const sent = await sendCoverageNoticeEmail({ toEmail: email, ...notice });
+        if (sent.status === "failed") throw new Error(sent.error ?? "The notice couldn't be sent.");
+      },
+      checkAssets: (assets: string[], profile: ScreenProfile) => getScorecardPreflight().check(assets, profile),
+      deliverReport: async (reportToken: string, email: string) => {
+        await getReports().email(reportToken, { email, approved: true });
+      },
+    };
+  }
+
+  function getStripe(): PayPalCommerceService | null {
+    if (stripe !== undefined) return stripe;
+    if (injected || injectedPayPal) return (stripe = null);
+    const config = readStripeConfig();
+    if (!config) return (stripe = null);
+    const service: PayPalCommerceService = new PayPalCommerceService({
+      ...hostedDeps(config.env),
+      api: new StripeClient(config),
+      config,
+      provider: { id: STRIPE_META.id, label: STRIPE_META.label },
+      checkUnpaidOrders: true,
+      stateFile: process.env.SELUN_STRIPE_STATE_FILE?.trim() || path.resolve(process.cwd(), process.cwd().endsWith("backend") ? "data" : "backend/data", "stripe-commerce.json"),
+      onPurchaseUpdate: (purchase) => onPurchaseUpdate(service, purchase),
+    });
+    return (stripe = service);
+  }
+
+  function requireProvider(id: unknown): PayPalCommerceService {
+    const current = id === "paypal" ? getPayPal() : id === "stripe" ? getStripe() : null;
+    if (!current) throw new AssistantError("service_unavailable", 503, "That payment method isn't available right now.");
+    return current;
+  }
+
+  function onPurchaseUpdate(current: PayPalCommerceService, purchase: Purchase) {
+    if (purchase.fulfillment.status !== "complete" || purchase.access !== "active") return;
     const document = current.documentOf(purchase);
     if (document) getService().recordPayPalResult(purchase.conversationId, purchase.actionId, document, issueReportToken(purchase.capabilityId, purchase.decisionId));
   }
@@ -159,32 +230,21 @@ export function createAssistantRouter(injected?: AssistantDeps, injectedReports?
     if (paypal !== undefined) return paypal;
     if (injected) return (paypal = null);
     const config = readPayPalConfig();
-    paypal = config
-      ? new PayPalCommerceService({
-        api: new PayPalClient(config),
-        config,
-        runReport: withSandboxFaults(config.env, sandboxFaultFile(), runComprehensiveReport),
-        retryWindowMs: positiveMs(process.env.PAYPAL_RETRY_WINDOW_MS),
-        retryDelayMs: positiveMs(process.env.PAYPAL_RETRY_DELAY_MS),
-        notifyCoverage: async (email, notice) => {
-          const sent = await sendCoverageNoticeEmail({ toEmail: email, ...notice });
-          if (sent.status === "failed") throw new Error(sent.error ?? "The notice couldn't be sent.");
-        },
-        checkAssets: (assets, profile) => getScorecardPreflight().check(assets, profile),
-        onPurchaseUpdate,
-        deliverReport: async (reportToken, email) => {
-          await getReports().email(reportToken, { email, approved: true });
-        },
-      })
-      : null;
-    return paypal;
+    if (!config) return (paypal = null);
+    const service: PayPalCommerceService = new PayPalCommerceService({
+      ...hostedDeps(config.env),
+      api: new PayPalClient(config),
+      config,
+      onPurchaseUpdate: (purchase) => onPurchaseUpdate(service, purchase),
+    });
+    return (paypal = service);
   }
 
   const getService = () => {
     if (service) return service;
     const current = getPayPal();
-    const config = injected ? null : readPayPalConfig();
-    return (service = new AssistantService(injected ?? createDefaultDeps(current, config ? { reportUsd: config.reportPriceUsd, subscriptionUsd: config.subscriptionPriceUsd } : null)));
+    const config = injected ? null : readPayPalConfig() ?? readStripeConfig();
+    return (service = new AssistantService(injected ?? createDefaultDeps(current, injected ? null : getStripe(), config ? { reportUsd: config.reportPriceUsd, subscriptionUsd: config.subscriptionPriceUsd } : null)));
   };
 
   if (!injected && !injectedPayPal && process.env.SELUN_SITES_REFRESH !== "0") {
@@ -208,10 +268,10 @@ export function createAssistantRouter(injected?: AssistantDeps, injectedReports?
     // Picks up paid purchases interrupted by a restart, then catches anything webhooks missed.
     setImmediate(() => {
       try {
-        const current = getPayPal();
-        if (!current) return;
-        current.resume();
-        setInterval(() => void current.sweep().catch((error) => console.warn("PayPal sweep failed:", error instanceof Error ? error.message : error)), PAYPAL_SWEEP_MS).unref();
+        for (const current of hostedServices()) {
+          current.resume();
+          setInterval(() => void current.sweep().catch((error) => console.warn("Purchase sweep failed:", error instanceof Error ? error.message : error)), PAYPAL_SWEEP_MS).unref();
+        }
       } catch (error) {
         console.error("PayPal purchases could not be resumed:", error instanceof Error ? error.message : error);
       }
@@ -238,6 +298,15 @@ export function createAssistantRouter(injected?: AssistantDeps, injectedReports?
 
   const chatLimiter = new WindowRateLimiter(readPositiveInt("ASSISTANT_CHAT_RATE_LIMIT_PER_15M", 40), 15 * 60_000);
   const actionLimiter = new WindowRateLimiter(readPositiveInt("ASSISTANT_ACTION_RATE_LIMIT_PER_15M", 60), 15 * 60_000);
+
+  // Internal: what each payment cost to process and what Selun kept. Staff token only, and it holds no customer details.
+  router.get("/admin/payments", (req, res) => {
+    if (!requireAdminRequest(req, res)) return;
+    res.set("Cache-Control", "no-store");
+    const rows = [...hostedServices().flatMap((entry) => entry.paymentRows()), ...listWalletPaymentRows()]
+      .sort((left, right) => right.paidAt.localeCompare(left.paidAt));
+    res.json({ success: true, summary: summarizePayments(rows), payments: rows });
+  });
 
   router.get("/status", (_req, res) => {
     const current = getService();
@@ -326,10 +395,10 @@ export function createAssistantRouter(injected?: AssistantDeps, injectedReports?
     }
   });
 
-  router.post("/paypal/capture", limited(actionLimiter), async (req, res) => {
+  router.post("/:provider/capture", limited(actionLimiter), async (req, res) => {
     try {
       const claim = purchaseClaim(req.body?.purchaseToken);
-      const current = requirePayPal();
+      const current = requireProvider(req.params.provider);
       const view = claim.kind === "subscription" ? await current.syncSubscription(claim.id) : await current.capture(claim.id);
       res.set("Cache-Control", "no-store");
       res.json({ success: true, ...withSummary(view, current.conversationOf(claim)) });
@@ -338,10 +407,10 @@ export function createAssistantRouter(injected?: AssistantDeps, injectedReports?
     }
   });
 
-  router.post("/paypal/status", limited(actionLimiter), async (req, res) => {
+  router.post("/:provider/status", limited(actionLimiter), async (req, res) => {
     try {
       const claim = purchaseClaim(req.body?.purchaseToken);
-      const current = requirePayPal();
+      const current = requireProvider(req.params.provider);
       const view = claim.kind === "subscription" ? await current.syncSubscription(claim.id) : await current.status(claim.id);
       res.set("Cache-Control", "no-store");
       res.json({ success: true, ...withSummary(view, current.conversationOf(claim)) });
@@ -350,11 +419,11 @@ export function createAssistantRouter(injected?: AssistantDeps, injectedReports?
     }
   });
 
-  router.post("/paypal/cancel", limited(actionLimiter), async (req, res) => {
+  router.post("/:provider/cancel", limited(actionLimiter), async (req, res) => {
     try {
       const claim = purchaseClaim(req.body?.purchaseToken);
       if (claim.kind !== "subscription") throw new AssistantError("invalid_request", 400, "Only a subscription can be cancelled.");
-      const current = requirePayPal();
+      const current = requireProvider(req.params.provider);
       res.set("Cache-Control", "no-store");
       res.json({ success: true, ...withSummary(await current.cancelSubscription(claim.id), current.conversationOf(claim)) });
     } catch (error) {
@@ -362,7 +431,7 @@ export function createAssistantRouter(injected?: AssistantDeps, injectedReports?
     }
   });
 
-  router.post("/paypal/subscription/assets", limited(actionLimiter), async (req, res) => {
+  router.post("/:provider/subscription/assets", limited(actionLimiter), async (req, res) => {
     try {
       const claim = purchaseClaim(req.body?.purchaseToken);
       if (claim.kind !== "subscription") throw new AssistantError("invalid_request", 400, "Only a subscription can change its assets.");
@@ -375,7 +444,7 @@ export function createAssistantRouter(injected?: AssistantDeps, injectedReports?
       if (assets.length === 0 || assets.length > 12 || resolved.length !== queries.length) {
         throw new AssistantError("invalid_request", 400, "Name between 1 and 12 assets Selun recognizes, by name or symbol.");
       }
-      const current = requirePayPal();
+      const current = requireProvider(req.params.provider);
       const view = await current.updateSubscriptionAssets(claim.id, assets);
       res.set("Cache-Control", "no-store");
       res.json({ success: true, ...withSummary(view, current.conversationOf(claim)) });

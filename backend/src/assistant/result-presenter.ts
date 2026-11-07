@@ -14,7 +14,10 @@ export type Tone = "positive" | "neutral" | "caution" | "negative";
 
 export const ANALYSIS_NOTICE = "This is Selun's analysis of the data described here. It is not a recommendation to buy, sell, or hold anything.";
 
-export type ResultSection =
+/** `more` keeps a section under "Full analysis and methodology" on the card. The PDF always shows it. */
+export type ResultSection = SectionBody & { more?: boolean };
+
+type SectionBody =
   | { kind: "highlight"; label: string; value: string; tone: Tone; detail?: string }
   | { kind: "metrics"; title?: string; items: { label: string; value: string; tone?: Tone; meter?: number }[] }
   | { kind: "table"; title?: string; columns: { key: string; label: string; numeric?: boolean }[]; rows: Record<string, string>[] }
@@ -193,6 +196,7 @@ function presentScorecardV2(result: Json): ResultSection[] {
   const noOverall: string[] = [];
   const partial: string[] = [];
 
+  const moreMeasures: ResultSection[] = [];
   for (const card of cards) {
     const asset = text(card.asset) ?? "?";
     const history = record(card.priceHistory);
@@ -209,10 +213,17 @@ function presentScorecardV2(result: Json): ResultSection[] {
       items: [
         measured ? score("Overall score", card.overallScore) : { label: "Overall score", value: "Not scored" },
         measured ? score("Price risk (higher is riskier)", card.priceRiskScore) : { label: "Price risk", value: "Not measured" },
+        score("Market standing", card.qualityScore),
         { label: "Annualized volatility", value: pct(history.annualizedVolatilityPct) },
         { label: "Largest drawdown", value: pct(history.maxDrawdownPct) },
+      ],
+    });
+    moreMeasures.push({
+      kind: "metrics",
+      more: true,
+      title: `More on ${text(card.name) ?? asset} (${asset})`,
+      items: [
         { label: "Now below period high", value: pct(history.currentDrawdownPct) },
-        score("Market standing", card.qualityScore),
         score("Liquidity", card.liquidityScore),
         score("Market structure", card.structuralScore),
         { label: "Role in Selun's portfolio model", value: humanize(card.role) },
@@ -243,7 +254,7 @@ function presentScorecardV2(result: Json): ResultSection[] {
     const names = unscreened.map((entry) => text(entry.asset) ?? "?").join(", ");
     sections.push({ kind: "note", text: `${names} ${unscreened.length === 1 ? "is" : "are"} outside the universe screened for the ${segment} segment, so there is no market standing or overall score. A different segment may include ${unscreened.length === 1 ? "it" : "them"}.` });
   }
-  if (windows.size > 0) sections.push({ kind: "note", text: `Measured from ${[...windows].join("; ")}.` });
+  if (windows.size > 0) sections.push({ kind: "note", text: `Measured from ${[...windows].join("; ")}. These figures describe the past and don't predict future prices.` });
   for (const line of noOverall) sections.push({ kind: "note", text: line });
   if (partial.length > 0) {
     sections.push({ kind: "note", text: `${partial.join(", ")} ${partial.length === 1 ? "has" : "have"} under a year of price history, so the largest drawdown may be understated.` });
@@ -254,7 +265,9 @@ function presentScorecardV2(result: Json): ResultSection[] {
       text: `${unscored.join(", ")} could not be identified, so the service returned nothing for ${unscored.length === 1 ? "it" : "them"}.`,
     });
   }
-  sections.push({ kind: "note", text: "The overall score is market standing reduced by measured price risk. Price risk uses fixed scales, so it doesn't depend on which other assets are listed. These figures describe the past and don't predict future prices." });
+  sections.push(...moreMeasures);
+  const methodStart = sections.length;
+  sections.push({ kind: "note", text: "The overall score is market standing reduced by measured price risk. Price risk uses fixed scales, so it doesn't depend on which other assets are listed." });
   sections.push({ kind: "note", text: "Market standing and liquidity come from trading volume, market size, and category, and they top out for the largest assets. Between those assets, overall scores differ only through price risk." });
   if (cards.some((card) => card.tokenCategory === "stablecoin")) {
     sections.push({ kind: "note", text: "A stablecoin scores high because its price barely moved during this period. That doesn't assess its reserves or issuer, and it isn't a comparison of potential returns." });
@@ -268,6 +281,7 @@ function presentScorecardV2(result: Json): ResultSection[] {
     sections.push({ kind: "note", text: `Eligibility and market standing come from the screen of ${String(text(result.screening.screenedAt)).slice(0, 16).replace("T", " ")} UTC, locked to this purchase. Price history was measured when the analysis ran.` });
   }
   sections.push({ kind: "note", text: `Scoring method: ${SCORECARD_METHODOLOGY_VERSION}.` });
+  for (const section of sections.slice(methodStart)) section.more = true;
   return sections;
 }
 
@@ -471,13 +485,16 @@ function explorerUrl(network: string | null, transactionHash: string): string | 
 
 /** Requires PayPal's own capture or sale reference. An amount alone doesn't prove a payment. */
 function payPalEvidence(payment: Json): PayPalPaymentEvidence | null {
-  if (payment.provider !== "paypal") return null;
+  const provider = text(payment.provider);
+  if (!provider) return null;
+  const label = text(payment.label);
   const captureId = text(payment.captureId);
   const saleId = text(payment.saleId);
   const amount = text(payment.amount);
   if ((!captureId && !saleId) || !amount || payment.currency !== "USD") return null;
   return {
-    provider: "paypal",
+    provider,
+    ...(label ? { label } : {}),
     amount,
     currency: "USD",
     orderId: text(payment.orderId),

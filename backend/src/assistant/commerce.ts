@@ -14,7 +14,9 @@ export const COMPREHENSIVE_REPORT_ID = "comprehensive_report";
 export const MONTHLY_INTELLIGENCE_ID = "monthly_intelligence";
 
 export type PayPalPaymentEvidence = {
-  provider: "paypal";
+  provider: string;
+  /** Set for providers other than PayPal. PayPal's is left out so existing records hash as they always did. */
+  label?: string;
   amount: string;
   currency: "USD";
   orderId: string | null;
@@ -54,14 +56,18 @@ export function getPaymentRails(paypalAvailable = false): PaymentRail[] {
  */
 export type Billing = "once" | "monthly";
 export type PaymentFlow = "wallet_signature" | "hosted_checkout";
-export type PaymentOption = { id: string; label: string; flow: PaymentFlow; note: string };
+/** `label` and `detail` fill the method's row, `shortLabel` its button ("Continue with PayPal"), and `note` shows once it's selected. */
+export type PaymentOption = { id: string; label: string; shortLabel: string; detail: string; flow: PaymentFlow; currency: "USDC" | "USD"; note: string };
 
 export const WALLET_METHOD = "x402_wallet";
 
 export const WALLET_OPTION: PaymentOption = {
   id: WALLET_METHOD,
   label: "Crypto wallet",
+  shortLabel: "wallet",
+  detail: "USDC on Base",
   flow: "wallet_signature",
+  currency: "USDC",
   note: "Nothing is charged until you approve this exact amount in your wallet. Pays in USDC on Base.",
 };
 
@@ -73,6 +79,8 @@ export type CheckoutInput = {
   actionId: string;
   /** Stable for this quote, so a repeated request reuses the same purchase. */
   purchaseKey: string;
+  /** The server's price for a one-time purchase. A subscription uses its plan's. */
+  amount: string;
   billing: Billing;
   screening?: ScreeningSnapshot | null;
 };
@@ -83,7 +91,12 @@ export type CheckoutInput = {
  */
 export type CheckoutProvider = {
   id: string;
+  /** The name on receipts and in messages. */
   label: string;
+  /** What the payment choice shows, when it differs from `label`. */
+  choice?: { label: string; shortLabel: string; detail: string };
+  /** Left off the card below this, for a provider that refuses smaller charges. */
+  minimumUsd?: number;
   note: (billing: Billing) => string;
   start: (input: CheckoutInput) => Promise<{ approveUrl: string; kind: "one_time" | "subscription"; id: string }>;
 };

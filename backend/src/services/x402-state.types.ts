@@ -13,7 +13,8 @@ export type X402ToolProductId =
   | "rebalance"
   | "sce_continuity_mode"
   | "sce_case_relevance"
-  | "sce_risk_evaluate";
+  | "sce_risk_evaluate"
+  | "comprehensive_report";
 
 /**
  * A wallet refund has two steps. `transactionHash` and `toAddress` record USDC recovered to the admin

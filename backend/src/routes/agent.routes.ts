@@ -1,3 +1,4 @@
+import type { PaymentRow } from "../assistant/paypal-commerce.service";
 import { Router, type Request, type Response } from "express";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createFacilitatorConfig } from "@coinbase/x402";
@@ -420,7 +421,7 @@ function isAuthorizedAdminRequest(req: Request): boolean {
   return timingSafeEqual(expectedBuffer, providedBuffer);
 }
 
-function requireAdminRequest(req: Request, res: Response): boolean {
+export function requireAdminRequest(req: Request, res: Response): boolean {
   const expected = getAdminApiToken();
   if (!expected) {
     failure(res, new Error("SELUN_ADMIN_API_TOKEN is not configured."), 503);
@@ -776,6 +777,8 @@ function getX402ToolPriceUsdc(productId: X402ToolProductId): string {
       return formatUsdcAmount(config.x402PolicyEnvelopePriceUsdc);
     case "asset_scorecard":
       return formatUsdcAmount(config.x402AssetScorecardPriceUsdc);
+    case "comprehensive_report":
+      return formatUsdcAmount(config.x402ComprehensiveReportPriceUsdc);
     case "rebalance":
       return formatUsdcAmount(config.x402RebalancePriceUsdc);
     case "sce_continuity_mode":
@@ -956,6 +959,34 @@ function getX402ToolDefinitions(): X402ToolDefinition[] {
             },
           ],
         },
+      },
+    },
+    {
+      productId: "comprehensive_report",
+      routePath: "/agent/x402/comprehensive-report",
+      title: "Selun Comprehensive Intelligence Report",
+      description: "Market conditions, risk limits for a profile, and measured price risk and scores for the assets you choose.",
+      category: "finance:comprehensive-report",
+      tags: ["portfolio", "asset-scoring", "market-regime", "report", "x402"],
+      amountUsdc: () => getX402ToolPriceUsdc("comprehensive_report"),
+      inputSchema: {
+        type: "object",
+        properties: {
+          decisionId: { type: "string" },
+          riskTolerance: { enum: ["Conservative", "Balanced", "Growth", "Aggressive"] },
+          timeframe: { enum: ["<1_year", "1-3_years", "3+_years"] },
+          portfolioSegment: { enum: [...PORTFOLIO_SEGMENTS] },
+          assets: { type: "array", items: { type: "string" }, maxItems: 12 },
+        },
+        required: ["decisionId", "riskTolerance", "timeframe", "assets"],
+      },
+      exampleInput: { decisionId: "report-001", riskTolerance: "Balanced", timeframe: "1-3_years", assets: ["BTC", "ETH"] },
+      exampleOutput: {
+        status: "completed",
+        endpoint: "/agent/x402/comprehensive-report",
+        decisionId: "report-001",
+        productId: "comprehensive_report",
+        result: { marketRegime: {}, policyEnvelope: {}, assetScorecard: {} },
       },
     },
     {
@@ -2056,6 +2087,31 @@ export async function runComprehensiveReport(decisionId: string, input: Record<s
   return { snapshotAt: screening ? marketRegime.snapshotAt : assetScorecard.snapshotAt, marketRegime, policyEnvelope, assetScorecard };
 }
 
+/**
+ * Any paid product, for a provider that has already verified the payment. It runs the same builders as the x402
+ * routes, so nothing here produces analysis of its own.
+ */
+export async function runPaidCapability(decisionId: string, input: Record<string, unknown>, screening?: ScreeningSnapshot | null, capabilityId = "comprehensive_report"): Promise<Record<string, unknown>> {
+  if (capabilityId === "comprehensive_report") return runComprehensiveReport(decisionId, input, screening);
+  if (capabilityId === "sce_continuity_mode") return buildSceWrappedResult(await callSceContinuityMode(normalizeSceInputForContinuityMode(input)), "/v1/sce/continuity-mode");
+  if (capabilityId === "sce_case_relevance") return buildSceWrappedResult(await callSceCaseRelevance(normalizeSceInputForCaseRelevance(input)), "/v1/sce/case-relevance");
+  if (capabilityId === "sce_risk_evaluate") return buildSceWrappedResult(await callSceRiskEvaluate(normalizeSceInputForRiskEvaluate(input)), "/v1/sce/risk/evaluate");
+  const productId = capabilityId as X402ToolProductId;
+  const jobId = buildToolJobId(productId, decisionId);
+  // A locked decision needs no pipeline run.
+  if (!screening) {
+    runPhase1({
+      jobId,
+      executionTimestamp: nowIso(),
+      riskMode: deriveRiskMode(input.riskTolerance as AllocateRiskTolerance),
+      riskTolerance: input.riskTolerance as string,
+      investmentTimeframe: input.timeframe as string,
+      portfolioSegment: input.portfolioSegment as string,
+    });
+  }
+  return executeToolProduct(productId, jobId, input as unknown as X402ToolBaseInput, screening);
+}
+
 async function buildRebalanceResult(jobId: string, input: RebalanceInput): Promise<Record<string, unknown>> {
   const context = await ensurePhase6Outputs(jobId);
   const phase2 = context.phase2.output!;
@@ -2383,6 +2439,24 @@ function adminRefundView(refund: X402RefundRecord | undefined): Pick<AdminPurcha
   };
 }
 
+/** Wallet payments for the fee report. No provider takes a cut, and the gas Selun pays to settle isn't measured here. */
+export function listWalletPaymentRows(): PaymentRow[] {
+  return listAdminPurchases().map((row) => ({
+    provider: "x402_wallet",
+    productId: row.productId,
+    kind: row.kind,
+    paidAt: row.purchasedAt,
+    reference: row.paymentTransactionHash,
+    amount: row.chargedAmountUsdc,
+    currency: "USDC",
+    status: row.refunded ? "refunded" : "captured",
+    fee: "0.00",
+    net: row.chargedAmountUsdc,
+    feeCurrency: "USDC",
+    netKept: row.refunded ? "0.00" : row.chargedAmountUsdc,
+  }));
+}
+
 function listAdminPurchases(): AdminPurchaseRow[] {
   const stateStore = getX402StateStore();
   const purchases = [
@@ -2405,6 +2479,7 @@ function normalizeRefundReferences(value: unknown): AdminRefundReference[] {
       entry.productId === "market_regime" ||
       entry.productId === "policy_envelope" ||
       entry.productId === "asset_scorecard" ||
+      entry.productId === "comprehensive_report" ||
       entry.productId === "rebalance" ||
       entry.productId === "sce_continuity_mode" ||
       entry.productId === "sce_case_relevance" ||
@@ -2861,7 +2936,7 @@ async function handleX402ToolRequest(
   }
 
   // Before any payment is requested or settled. It can wait for a screen, so the record is read again after it.
-  const screening = productId === "asset_scorecard"
+  const screening = productId === "asset_scorecard" || productId === "comprehensive_report"
     ? await decideScreening({ existing: earlierRecord, input: normalizedInput, paying: hasPaymentSignature, preflight: getScorecardPreflight() }).catch(() => ({ snapshot: null, refusal: { deliverable: false, assets: [] } as PreflightResult }))
     : null;
   if (screening?.refusal) return sendScorecardNotOffered(res, screening.refusal);
@@ -4837,6 +4912,30 @@ router.post("/x402/asset-scorecard", async (req: Request, res: Response) => {
   };
   return handleX402ToolRequest(req, res, "asset_scorecard", input, (jobId, screening) =>
     executeToolProduct("asset_scorecard", jobId, input, screening)
+  );
+});
+
+router.post("/x402/comprehensive-report", async (req: Request, res: Response) => {
+  const riskTolerance = normalizeRiskTolerance(req.body?.riskTolerance);
+  const timeframe = normalizeTimeframe(req.body?.timeframe);
+  if (!riskTolerance) return failure(res, new Error("riskTolerance must be one of Conservative | Balanced | Growth | Aggressive."), 400);
+  if (!timeframe) return failure(res, new Error("timeframe must be one of <1_year | 1-3_years | 3+_years."), 400);
+  if (req.body?.portfolioSegment !== undefined && !normalizePortfolioSegment(req.body.portfolioSegment)) {
+    return failure(res, new Error(`portfolioSegment must be one of ${PORTFOLIO_SEGMENTS.join(" | ")}.`), 400);
+  }
+  const input: AssetScorecardInput = {
+    riskTolerance,
+    timeframe,
+    portfolioSegment: normalizePortfolioSegment(req.body?.portfolioSegment) ?? "Bluechips",
+    assets: normalizeStringArray(req.body?.assets, 12),
+  };
+  return handleX402ToolRequest(
+    req,
+    res,
+    "comprehensive_report",
+    input,
+    (jobId, screening) => runComprehensiveReport(jobId, input, screening),
+    { skipPhase1: true },
   );
 });
 

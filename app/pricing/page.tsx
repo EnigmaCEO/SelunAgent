@@ -70,23 +70,23 @@ const PRICING = [
     title: "Comprehensive Intelligence Report",
     price: "$4.99",
     amount: "4.99",
-    kind: "PayPal",
+    kind: "Wallet, PayPal, or card",
     isAsync: false,
     endpoint: "Selun AI chat",
     description:
-      "One report covering market conditions, risk limits for your profile, and measured price risk and scores for the assets you choose. Includes a PDF. Paid with PayPal in the chat.",
-    whenToUse: "When you want one complete report and don't use a crypto wallet.",
+      "One report covering market conditions, risk limits for your profile, and measured price risk and scores for the assets you choose. Includes a PDF. Pay in the chat with a crypto wallet, PayPal, or card.",
+    whenToUse: "When you want one complete report.",
   },
   {
     id: "monthly-intelligence",
     title: "Monthly Intelligence Subscription",
     price: "$9.99/month",
     amount: "9.99",
-    kind: "PayPal",
+    kind: "PayPal or card",
     isAsync: false,
     endpoint: "Selun AI chat",
     description:
-      "One Comprehensive Intelligence Report for the assets you choose, for each paid month. Billed through PayPal. Cancel anytime.",
+      "One Comprehensive Intelligence Report for the assets you choose, for each paid month. Billed monthly through PayPal or card. Cancel anytime.",
     whenToUse: "When you want the same assets reviewed every month.",
   },
   {

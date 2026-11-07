@@ -488,14 +488,14 @@ const REPORT_INPUT = {
 const REPORT_LIMITATIONS = "It describes market conditions and past price behavior when it runs, and it doesn't include live prices or current news. It isn't a recommendation to buy, sell, or hold anything.";
 const REPORT_ASSURANCE = "Selun confirms every asset you name can get an overall score before checkout and locks that decision to your purchase. If the report still can't be delivered after retries, your payment is refunded.";
 
-/** Sold through PayPal only, built from the same services the x402 routes run. */
+/** Built from the same services the x402 routes run. */
 const PAYPAL_SPECS: ToolSpec[] = [
   {
     id: "comprehensive_report",
     dataCoverage: COMPREHENSIVE_COVERAGE,
     title: "Comprehensive Intelligence Report",
     summary: "One report covering current market conditions, risk limits for your profile, and measured price risk and scores for the assets you choose.",
-    whenToUse: "The customer wants a full or complete report, a comprehensive analysis, or to pay with PayPal or a card rather than a crypto wallet. It needs at least one named asset.",
+    whenToUse: "The customer wants a full or complete report, or a comprehensive analysis. It needs at least one named asset.",
     outputType: "comprehensive_report",
     duration: "Can take several minutes",
     limitations: `${REPORT_LIMITATIONS} ${REPORT_ASSURANCE}`,
@@ -505,10 +505,10 @@ const PAYPAL_SPECS: ToolSpec[] = [
     id: "monthly_intelligence",
     dataCoverage: COMPREHENSIVE_COVERAGE,
     title: "Monthly Intelligence Subscription",
-    summary: "One Comprehensive Intelligence Report for the assets you choose, each paid month, emailed to your PayPal address and available here. Cancel anytime.",
+    summary: "One Comprehensive Intelligence Report for the assets you choose, each paid month, emailed to you and available here. Cancel anytime.",
     whenToUse: "The customer wants ongoing, recurring, or monthly reports or a subscription. It needs at least one named asset.",
     outputType: "comprehensive_report_subscription",
-    duration: "The first report starts once PayPal confirms your first payment",
+    duration: "The first report starts once your first payment is confirmed",
     limitations: `${REPORT_LIMITATIONS} ${REPORT_ASSURANCE} That applies to your first report. Each later month is checked when it runs. If an asset no longer qualifies, the report says so and we'll let you know so you can change your assets. If none qualifies, you can choose new ones, or that month is refunded. Each paid month includes one report. Reports already paid for stay available if you cancel.`,
     ...REPORT_INPUT,
   },
@@ -543,13 +543,13 @@ export function getToolSpec(id: string): ToolSpec | undefined {
   return TOOL_SPECS.find((spec) => spec.id === id) ?? PAYPAL_SPECS.find((spec) => spec.id === id);
 }
 
-/** PayPal products are only offered when PayPal is configured. */
+/** These products are only offered when a hosted checkout is configured. */
 export function listToolSpecs(includePayPal = false): readonly ToolSpec[] {
   return includePayPal ? [...TOOL_SPECS, ...PAYPAL_SPECS] : TOOL_SPECS;
 }
 
 /** Joins the static allowlist to the live catalog. Products missing from the catalog are dropped. */
-export function buildRegistry(catalog: CapabilityCatalog, paypal?: PayPalPrices | null, hostedMethods: readonly string[] = ["paypal"]): Capability[] {
+export function buildRegistry(catalog: CapabilityCatalog, paypal?: PayPalPrices | null, hostedMethods: readonly string[] = paypal ? ["paypal"] : []): Capability[] {
   const capabilities: Capability[] = [];
   const priced = (id: string) => catalog.resources.find((resource) => resource.productId === id);
 
@@ -568,7 +568,7 @@ export function buildRegistry(catalog: CapabilityCatalog, paypal?: PayPalPrices 
       endpoint: resource.endpoint,
       priceUsdc: resource.pricing.amountUsdc,
       currency: "USDC",
-      paymentMethods: [WALLET_METHOD],
+      paymentMethods: [WALLET_METHOD, ...hostedMethods],
       billing: "once",
     });
   }
@@ -578,6 +578,8 @@ export function buildRegistry(catalog: CapabilityCatalog, paypal?: PayPalPrices 
     capabilities.push({ ...spec, endpoint: resource.endpoint, priceUsdc: resource.pricing.amountUsdc, currency: "USDC", paymentMethods: [], billing: "once" });
   }
   if (paypal) {
+    const report = priced("comprehensive_report");
+    const walletReport = report && Number(report.pricing.amountUsdc) === Number(paypal.reportUsd) ? report : null;
     for (const spec of PAYPAL_SPECS) {
       const subscription = spec.id === "monthly_intelligence";
       capabilities.push({
@@ -589,10 +591,11 @@ export function buildRegistry(catalog: CapabilityCatalog, paypal?: PayPalPrices 
         duration: spec.duration,
         limitations: spec.limitations,
         execution: "hosted_checkout",
-        endpoint: "",
+        // A wallet can pay the report once at this same price. It has no way to pay every month.
+        endpoint: !subscription && walletReport ? walletReport.endpoint : "",
         priceUsdc: subscription ? paypal.subscriptionUsd : paypal.reportUsd,
         currency: "USD",
-        paymentMethods: [...hostedMethods],
+        paymentMethods: !subscription && walletReport ? [WALLET_METHOD, ...hostedMethods] : [...hostedMethods],
         billing: subscription ? "monthly" : "once",
       });
     }

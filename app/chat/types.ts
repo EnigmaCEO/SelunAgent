@@ -1,6 +1,8 @@
 export type Tone = "positive" | "neutral" | "caution" | "negative";
 
-export type ResultSection =
+export type ResultSection = SectionBody & { more?: boolean };
+
+type SectionBody =
   | { kind: "highlight"; label: string; value: string; tone: Tone; detail?: string }
   | { kind: "metrics"; title?: string; items: { label: string; value: string; tone?: Tone; meter?: number }[] }
   | { kind: "table"; title?: string; columns: { key: string; label: string; numeric?: boolean }[]; rows: Record<string, string>[] }
@@ -26,7 +28,7 @@ export type ResultDocument = {
     transactionHash: string | null;
     network: string | null;
     explorerUrl: string | null;
-    paypal?: { amount: string; currency: string; captureId: string | null; saleId: string | null; environment: "sandbox" | "live" };
+    paypal?: { label?: string; amount: string; currency: string; captureId: string | null; saleId: string | null; environment: "sandbox" | "live" };
   };
 };
 
@@ -34,6 +36,8 @@ export type PayPalPhase = "awaiting_payment" | "payment_pending" | "running" | "
 
 /** Kept with the action in this browser. The token is the only way to read the purchase. */
 export type PayPalState = {
+  /** From the payment provider, to confirm where a one-time report goes. */
+  payerEmail?: string | null;
   /** The hosted checkout holding this purchase. */
   method?: string;
   token: string;
@@ -46,6 +50,7 @@ export type PayPalState = {
 };
 
 export type PayPalStatusView = {
+  payerEmail?: string | null;
   kind: "one_time" | "subscription";
   phase: PayPalPhase;
   message: string | null;
@@ -66,7 +71,7 @@ export type PaymentRail = {
   status: "available" | "coming_soon";
 };
 
-export type PaymentOption = { id: string; label: string; flow: "wallet_signature" | "hosted_checkout"; note: string };
+export type PaymentOption = { id: string; label: string; shortLabel: string; detail: string; flow: "wallet_signature" | "hosted_checkout"; currency: "USDC" | "USD"; note: string };
 export type Billing = "once" | "monthly";
 
 export type ActionState = "awaiting_approval" | "executing" | "completed" | "failed" | "declined";
@@ -88,6 +93,8 @@ export type ActionView = {
   state: ActionState;
   decisionId: string;
   paymentOptions: PaymentOption[];
+  /** Set in the browser when the server no longer holds this quote, so it can't be paid. */
+  expired?: boolean;
   billing: Billing;
   document: ResultDocument | null;
   reportToken?: string | null;

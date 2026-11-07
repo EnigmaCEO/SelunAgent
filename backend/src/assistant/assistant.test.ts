@@ -746,7 +746,7 @@ test("the model is told about a scorecard the server added, including its real p
   assert.ok(toolMessage?.role === "tool");
   const result = JSON.parse(toolMessage.content);
   assert.deepEqual(result.also_quoted.assets, ["BTC"]);
-  assert.equal(result.also_quoted.price_usdc, "0.5");
+  assert.equal(result.also_quoted.price_usd, "0.5");
 });
 
 test("an asset the model resolved counts, even when the message doesn't spell it out", async () => {

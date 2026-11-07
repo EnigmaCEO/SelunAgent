@@ -244,12 +244,13 @@ export async function renderResultPdf(document: ResultDocument, frozenAt: string
   layout.row("Service endpoint", provenance.endpoint, record);
   if (provenance.paypal) {
     const { paypal } = provenance;
+    const provider = paypal.label ?? "PayPal";
     layout.row("Amount paid", `${paypal.amount} ${paypal.currency}`, record);
-    layout.row("Payment provider", paypal.environment === "live" ? "PayPal" : "PayPal (sandbox test payment)", record);
-    layout.row(paypal.saleId ? "PayPal payment" : "PayPal capture", paypal.saleId ?? paypal.captureId ?? "Not reported", record);
-    if (paypal.orderId) layout.row("PayPal order", paypal.orderId, record);
-    if (paypal.subscriptionId) layout.row("PayPal subscription", paypal.subscriptionId, record);
-    layout.row("Paid by", paypal.payerId ? `PayPal payer ${paypal.payerId}` : "Not reported", record);
+    layout.row("Payment provider", paypal.environment === "live" ? provider : `${provider} (sandbox test payment)`, record);
+    layout.row(`${provider} ${paypal.saleId ? "payment" : "capture"}`, paypal.saleId ?? paypal.captureId ?? "Not reported", record);
+    if (paypal.orderId) layout.row(`${provider} order`, paypal.orderId, record);
+    if (paypal.subscriptionId) layout.row(`${provider} subscription`, paypal.subscriptionId, record);
+    layout.row("Paid by", paypal.payerId ? `${provider} payer ${paypal.payerId}` : "Not reported", record);
   } else {
     layout.row("Amount paid", `${provenance.amountUsdc} USDC`, record);
     layout.row("Payment transaction", provenance.transactionHash ?? "Not reported", record);

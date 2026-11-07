@@ -35,6 +35,7 @@ export type SelunBackendConfig = {
   x402MarketRegimePriceUsdc: number;
   x402PolicyEnvelopePriceUsdc: number;
   x402AssetScorecardPriceUsdc: number;
+  x402ComprehensiveReportPriceUsdc: number;
   x402RebalancePriceUsdc: number;
   x402SceContinuityModePriceUsdc: number;
   x402SceCaseRelevancePriceUsdc: number;
@@ -144,6 +145,7 @@ export function getConfig(): SelunBackendConfig {
     x402MarketRegimePriceUsdc: parseNonNegativeFloat(process.env.X402_MARKET_REGIME_PRICE_USDC, 0.25),
     x402PolicyEnvelopePriceUsdc: parseNonNegativeFloat(process.env.X402_POLICY_ENVELOPE_PRICE_USDC, 0.25),
     x402AssetScorecardPriceUsdc: parseNonNegativeFloat(process.env.X402_ASSET_SCORECARD_PRICE_USDC, 0.5),
+    x402ComprehensiveReportPriceUsdc: parseNonNegativeFloat(process.env.X402_COMPREHENSIVE_REPORT_PRICE_USDC, 4.99),
     x402RebalancePriceUsdc: parseNonNegativeFloat(process.env.X402_REBALANCE_PRICE_USDC, 1),
     x402SceContinuityModePriceUsdc: parseNonNegativeFloat(process.env.X402_SCE_CONTINUITY_MODE_PRICE_USDC, 0.01),
     x402SceCaseRelevancePriceUsdc: parseNonNegativeFloat(process.env.X402_SCE_CASE_RELEVANCE_PRICE_USDC, 0.05),

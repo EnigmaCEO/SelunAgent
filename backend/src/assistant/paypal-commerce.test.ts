@@ -13,7 +13,7 @@ import path from "node:path";
 import test from "node:test";
 import express from "express";
 import { issuePurchaseToken, issueReportToken, readPurchaseToken } from "../services/job-access.service";
-import { createAssistantRouter } from "./assistant.routes";
+import { createAssistantRouter, summarizePayments } from "./assistant.routes";
 import { AssistantError, AssistantService } from "./assistant.service";
 import { buildRegistry, getToolSpec } from "./capability-registry";
 import { COMPREHENSIVE_REPORT_ID } from "./commerce";
@@ -252,7 +252,7 @@ test("each product lists its own payment methods, and billing doesn't depend on 
     .map((entry) => [entry.id, entry.paymentMethods, entry.billing]);
   assert.deepEqual(methods(false), [["asset_scorecard", ["x402_wallet"], "once"]]);
   assert.deepEqual(methods(true), [
-    ["asset_scorecard", ["x402_wallet"], "once"],
+    ["asset_scorecard", ["x402_wallet", "paypal"], "once"],
     ["comprehensive_report", ["paypal"], "once"],
     ["monthly_intelligence", ["paypal"], "monthly"],
   ]);
@@ -1226,7 +1226,7 @@ test("PayPal's order shape is read correctly", () => {
     payer: { payer_id: "P1" },
     purchase_units: [{ amount: { value: "4.99", currency_code: "USD" }, payments: { captures: [{ id: "C1", status: "COMPLETED", custom_id: "pp-1", amount: { value: "4.99", currency_code: "USD" } }] } }],
   });
-  assert.deepEqual(order, { orderId: "O1", status: "COMPLETED", customId: "pp-1", amount: "4.99", currency: "USD", payerId: "P1", captureId: "C1", captureStatus: "COMPLETED", captureAmount: "4.99", captureCurrency: "USD" });
+  assert.deepEqual(order, { orderId: "O1", status: "COMPLETED", customId: "pp-1", amount: "4.99", currency: "USD", payerId: "P1", payerEmail: null, processorFee: null, captureId: "C1", captureStatus: "COMPLETED", captureAmount: "4.99", captureCurrency: "USD" });
   assert.equal(parseOrder({}).captureId, null);
 });
 
@@ -1355,6 +1355,45 @@ test("a registered provider appears on the card and starts its own checkout, wit
   }
 });
 
+test("a scorecard offers every method, and a provider's minimum keeps it off a cheaper product", async () => {
+  const provider = (id: string, minimumUsd?: number) => ({ id, label: id, minimumUsd, note: () => "note", start: async () => ({ approveUrl: "https://x.test", kind: "one_time" as const, id: "x" }) });
+  const quote = async (tool: string, args: Record<string, unknown>) => {
+    const script = [
+      { content: null, toolCalls: [{ id: "1", type: "function" as const, function: { name: tool, arguments: JSON.stringify(args) } }] },
+      { content: "Here's the quote.", toolCalls: [] },
+    ];
+    const instance = new AssistantService({
+      checkoutProviders: [provider("newpay", 0.5)],
+      llm: { complete: async () => script.shift() ?? { content: "ok", toolCalls: [] } },
+      gateway: { requestChallenge: async () => { throw new Error("unused"); }, submitPaid: async () => { throw new Error("unused"); } },
+      loadCatalog: async () => ({ resources: [
+        { productId: "asset_scorecard", endpoint: "/x/s", pricing: { amountUsdc: "0.50" } },
+        { productId: "market_regime", endpoint: "/x/m", pricing: { amountUsdc: "0.25" } },
+      ] }) as never,
+      paypal: { prices: { reportUsd: "4.99", subscriptionUsd: "9.99" }, createCheckout: async () => { throw new Error("unused"); }, createSubscription: async () => { throw new Error("unused"); } },
+    });
+    const reply = await instance.chat({ message: "go" });
+    const card = reply.blocks.find((block) => block.type === "action");
+    assert.ok(card?.type === "action");
+    return card.action.paymentOptions.map((option) => option.id);
+  };
+  assert.deepEqual(await quote("propose_asset_scorecard", { assets: ["BTC"] }), ["x402_wallet", "paypal", "newpay"]);
+  assert.deepEqual(await quote("propose_market_regime", {}), ["x402_wallet", "paypal"]);
+});
+
+test("a hosted purchase charges the product's own price and runs that product", async () => {
+  const runs: (string | undefined)[] = [];
+  const h = harness({ runReport: async (_decision, _input, _screening, capabilityId) => { runs.push(capabilityId); return RESULT; } });
+  const { purchaseId } = await h.service.createCheckout({ decisionId: "d-card", amount: "0.50", capabilityId: "asset_scorecard", title: "Scorecard", body: { assets: ["BTC"] }, conversationId: "c", actionId: "a" });
+  assert.equal(h.service.ownsDecision("d-card"), true);
+  assert.equal(h.service.ownsDecision("someone-else"), false);
+  h.api.approve();
+  assert.equal([...h.api.orders.values()][0].amount, "0.50");
+  await h.service.capture(purchaseId);
+  await flush();
+  assert.deepEqual(runs, ["asset_scorecard"]);
+});
+
 test("the full purchase through the routes: quote, checkout, return, result, PDF", async () => {
   const h = await routeHarness();
   try {
@@ -1422,4 +1461,45 @@ test("a forged webhook is refused at the route", async () => {
   } finally {
     await new Promise((resolve) => h.server.close(resolve));
   }
+});
+
+test("the provider's buyer email is read, and stays out of the result", () => {
+  assert.equal(parseOrder({ payer: { email_address: "buyer@example.com" } }).payerEmail, "buyer@example.com");
+  assert.equal(parseOrder({}).payerEmail, null);
+  const response = { status: "completed", endpoint: "paypal:asset_scorecard", decisionId: "d", payment: { verified: true, provider: "paypal", amount: "0.50", currency: "USD", captureId: "C", payerId: "P", environment: "sandbox" }, result: RESULT.assetScorecard };
+  assert.doesNotMatch(JSON.stringify(presentResult("asset_scorecard", "Asset Scorecard", response)), /@example|payerEmail/);
+});
+
+test("a scorecard leads with five measures, and the PDF's record keeps everything", () => {
+  const response = { status: "completed", endpoint: "paypal:asset_scorecard", decisionId: "d", payment: { verified: true, provider: "paypal", amount: "0.50", currency: "USD", captureId: "C", environment: "sandbox" }, result: RESULT.assetScorecard };
+  const document = presentResult("asset_scorecard", "Asset Scorecard", response)!;
+  const lead = document.sections.filter((section) => !section.more);
+  const metrics = lead.find((section) => section.kind === "metrics");
+  assert.ok(metrics?.kind === "metrics");
+  assert.deepEqual(metrics.items.map((item) => item.label), ["Overall score", "Price risk (higher is riskier)", "Market standing", "Annualized volatility", "Largest drawdown"]);
+  assert.ok(lead.some((section) => section.kind === "note" && /Measured from .*don't predict future prices/.test(section.text)));
+  const labels = document.sections.flatMap((section) => section.kind === "metrics" ? section.items.map((item) => item.label) : []);
+  for (const label of ["Now below period high", "Liquidity", "Market structure", "In Selun's model selection"]) assert.ok(labels.includes(label), label);
+  assert.ok(document.sections.some((section) => section.more && section.kind === "note" && section.text.startsWith("Scoring method")));
+});
+
+test("the fee report uses what the provider states, and a refund loses the fee", () => {
+  const breakdown = { seller_receivable_breakdown: { paypal_fee: { value: "0.51", currency_code: "USD" }, net_amount: { value: "-0.01", currency_code: "USD" } } };
+  const order = parseOrder({ purchase_units: [{ payments: { captures: [{ id: "C1", ...breakdown }] } }] });
+  assert.deepEqual(order.processorFee, { fee: "0.51", net: "-0.01", currency: "USD" });
+
+  const h = harness();
+  const paid = (id: string, status: string, processorFee: { fee: string; net: string; currency: string } | null) => ({
+    purchaseId: id, capabilityId: "asset_scorecard", kind: "one_time", amount: "0.50", currency: "USD",
+    payment: { status, orderId: `o-${id}`, captureId: `c-${id}`, saleId: null, payerId: null, payerEmail: "private@example.com", processorFee, capturedAt: "2026-11-07T12:00:00.000Z", refundId: null, checkedAt: null },
+  });
+  const store = (h.service as unknown as { all(): { purchases: Record<string, unknown> } }).all();
+  store.purchases.kept = paid("kept", "captured", { fee: "0.32", net: "0.18", currency: "USD" });
+  store.purchases.back = paid("back", "refunded", { fee: "0.32", net: "0.18", currency: "USD" });
+  store.purchases.none = paid("none", "captured", null);
+  const rows = h.service.paymentRows();
+  assert.deepEqual(rows.map((row) => row.netKept), ["0.18", "-0.32", null]);
+  assert.doesNotMatch(JSON.stringify(rows), /private@example/);
+  const [summary] = summarizePayments(rows);
+  assert.deepEqual([summary.payments, summary.gross, summary.fees, summary.netKept, summary.missingFee], [3, "1.50", "0.64", "-0.14", 1]);
 });

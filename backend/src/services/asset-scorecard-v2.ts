@@ -153,8 +153,9 @@ export function measurePriceHistory(rows: DailyClose[], source: PriceHistorySour
     status: window.length >= FULL_WINDOW_CLOSES ? "measured" : "partial",
     source,
     closes: window.length,
-    windowStart: isoDate(window[0].timestamp),
-    windowEnd: isoDate(last.timestamp),
+    // A close stamped 00:00 UTC ends the day before, and that's the day these name.
+    windowStart: isoDate(window[0].timestamp - DAY_MS),
+    windowEnd: isoDate(last.timestamp - DAY_MS),
     annualizedVolatilityPct: round(Math.sqrt(variance * 365) * 100, 1),
     maxDrawdownPct: round(maxDrawdown * 100, 1),
     currentDrawdownPct: round((1 - last.close / peak) * 100, 1),

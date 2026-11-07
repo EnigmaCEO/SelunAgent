@@ -384,3 +384,9 @@ test("a purchase locked to a screening decision fails rather than delivering a c
   const lenient = await applyScorecardMethodology([card], [], thin as never, { requireEveryAsset: true });
   assert.equal(lenient.scorecards[0].overallScore, null);
 });
+
+test("the window names the days its closes ended, not the stamps on them", () => {
+  const history = measurePriceHistory(series(Array(365).fill(100)), "coingecko", NOW) as { windowStart: string; windowEnd: string };
+  assert.equal(history.windowEnd, new Date(TODAY - DAY).toISOString().slice(0, 10));
+  assert.equal(history.windowStart, new Date(TODAY - 365 * DAY).toISOString().slice(0, 10));
+});
