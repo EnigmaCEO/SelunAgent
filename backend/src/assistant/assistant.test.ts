@@ -887,8 +887,10 @@ const answer = (text = "A stablecoin is a token designed to hold a steady price.
 
 test("a guest gets five substantive answers, and questions about Selun's services never count", async () => {
   const { llm, service } = creditedService([answer(), answer("Selun's services are listed on the card."), answer(), answer(), answer(), answer(), answer("Each analysis adds questions.")]);
+  assert.equal(service.creditView(null)?.remaining, 5, "a new visitor sees the allowance their first question opens");
   const first = await service.chat({ message: "What is a stablecoin?", clientKey: "c1" });
   assert.deepEqual([first.credits?.remaining, first.credits?.free], [4, 4]);
+  assert.equal(service.creditView(first.guestToken)?.remaining, 4);
   const token = first.guestToken!;
   const priced = await service.chat({ message: "How much does the Asset Scorecard cost?", guestToken: token, clientKey: "c1" });
   assert.equal(priced.credits?.remaining, 4, "a price question is free");

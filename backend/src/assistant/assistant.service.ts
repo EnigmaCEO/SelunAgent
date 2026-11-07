@@ -551,7 +551,10 @@ export class AssistantService {
   creditView(guestToken: string | null | undefined) {
     const credits = this.deps.credits;
     if (!credits) return null;
-    return { ...credits.view(credits.find(guestToken)), purchaseGrant: credits.config.purchaseGrant };
+    const account = credits.find(guestToken);
+    // Someone who hasn't asked yet is shown the allowance their first question opens.
+    const view = account ? credits.view(account) : { remaining: credits.config.guestQuestions, free: credits.config.guestQuestions, earned: 0, guestQuestions: credits.config.guestQuestions };
+    return { ...view, purchaseGrant: credits.config.purchaseGrant };
   }
 
   creditSummary() {
