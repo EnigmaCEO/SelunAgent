@@ -251,11 +251,27 @@ function matchCards(screen: ScreenResult, query: string): ScreenCard[] {
   return screen.cards.filter((card) => card.asset.toUpperCase() === symbol);
 }
 
+/**
+ * The screen can list one asset twice when a provider fallback gives it another ID, such as coinlore-90
+ * beside bitcoin. A customer buys one score per asset, so this keeps one card, preferring a real CoinGecko
+ * ID because price history is looked up by it.
+ */
+export function uniqueCards<T extends { asset: string; coingeckoId: string; compositeScore: number }>(cards: T[]): T[] {
+  const best = new Map<string, T>();
+  const isFallbackId = (card: T) => card.coingeckoId.startsWith("coinlore-");
+  for (const card of cards) {
+    const key = card.asset.toUpperCase();
+    const held = best.get(key);
+    const better = !held || (isFallbackId(held) && !isFallbackId(card)) || (isFallbackId(held) === isFallbackId(card) && card.compositeScore > held.compositeScore);
+    if (better) best.set(key, card);
+  }
+  return [...best.values()];
+}
+
 /** Highest screen score first, capped as the paid analysis caps it. Naming nothing means the top assets. */
 export function selectScreenCards<T extends { asset: string; coingeckoId: string; compositeScore: number; qualityScore: number }>(cards: T[], assets: string[]): T[] {
   const wanted = new Set(assets.map((asset) => asset.toUpperCase()));
-  return cards
-    .filter((card) => wanted.size === 0 || wanted.has(card.asset.toUpperCase()) || wanted.has(card.coingeckoId.toUpperCase()))
+  return uniqueCards(cards.filter((card) => wanted.size === 0 || wanted.has(card.asset.toUpperCase()) || wanted.has(card.coingeckoId.toUpperCase())))
     .sort((left, right) => right.compositeScore - left.compositeScore || right.qualityScore - left.qualityScore)
     .slice(0, wanted.size > 0 ? MAX_NAMED_CARDS : MAX_UNNAMED_CARDS);
 }

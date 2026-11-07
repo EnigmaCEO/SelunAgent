@@ -1,4 +1,4 @@
-import type { ScreenCard, ScreenProfile, ScreenResult } from "../assistant/scorecard-preflight";
+import { uniqueCards, type ScreenCard, type ScreenProfile, type ScreenResult } from "../assistant/scorecard-preflight";
 import { getExecutionStatus, runPhase1, runPhase3, runPhase4, runPhase5 } from "./phase1-execution.service";
 
 const POLL_MS = 500;
@@ -86,6 +86,6 @@ export async function runScorecardScreen(profile: ScreenProfile): Promise<Screen
       qualified: output.evaluation.qualified_candidates_count,
       selected: output.evaluation.selected_candidates_count,
     },
-    cards: output.evaluation.tokens.map(toScreenCard),
+    cards: uniqueCards(output.evaluation.tokens.map(toScreenCard)),
   };
 }

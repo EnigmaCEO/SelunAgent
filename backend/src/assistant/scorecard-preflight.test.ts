@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { AssistantError, AssistantService } from "./assistant.service";
-import { ScorecardPreflight, decideScreening, snapshotProblem, type ScreenCard, type ScreenProfile, type ScreenResult, type ScreeningSnapshot } from "./scorecard-preflight";
+import { ScorecardPreflight, decideScreening, selectScreenCards, snapshotProblem, type ScreenCard, type ScreenProfile, type ScreenResult, type ScreeningSnapshot } from "./scorecard-preflight";
 
 const BTC = "BTC";
 const DOGE = "DOGE";
@@ -173,6 +173,17 @@ test("a deliverable check is bound to exactly what was asked, and holds only tho
   assert.deepEqual(snapshot?.profile, PROFILE);
   assert.equal(snapshot?.methodologyVersion, "asset-scorecard-v2");
   assert.equal(snapshot?.screenedAt, "2026-11-07T12:00:00.000Z");
+});
+
+test("an asset the screen lists twice under a fallback ID gets one card, on its real ID", () => {
+  const fallback = { ...cardOf("BTC"), coingeckoId: "coinlore-90", compositeScore: 0.9 };
+  const real = { ...cardOf("BTC"), compositeScore: 0.8 };
+  for (const cards of [[fallback, real], [real, fallback]]) {
+    assert.deepEqual(selectScreenCards(cards, ["BTC"]).map((card) => card.coingeckoId), ["bitcoin"]);
+    assert.deepEqual(selectScreenCards(cards, []).map((card) => card.coingeckoId), ["bitcoin"]);
+  }
+  const onlyFallback = { ...cardOf("XYZ"), coingeckoId: "coinlore-5" };
+  assert.deepEqual(selectScreenCards([onlyFallback], ["XYZ"]).map((card) => card.coingeckoId), ["coinlore-5"]);
 });
 
 test("every asset in a request must qualify, and one that doesn't produces no snapshot", async () => {
