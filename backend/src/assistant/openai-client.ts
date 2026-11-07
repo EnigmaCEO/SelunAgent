@@ -25,9 +25,12 @@ export type LlmRequest = {
   deadlineMs?: number;
 };
 
+export type LlmUsage = { inputTokens: number; cachedTokens: number; outputTokens: number };
+
 export type LlmResponse = {
   content: string | null;
   toolCalls: ChatToolCall[];
+  usage?: LlmUsage;
 };
 
 export interface LlmClient {
@@ -127,8 +130,18 @@ export class OpenAiClient implements LlmClient {
         ? message.refusal
         : null;
     if (!content && toolCalls.length === 0) throw new LlmError("empty", "The language model returned an empty message.");
-    return { content, toolCalls };
+    return { content, toolCalls, usage: readUsage(payload) };
   }
+}
+
+function readUsage(payload: unknown): LlmUsage | undefined {
+  const usage = (payload as { usage?: { prompt_tokens?: unknown; completion_tokens?: unknown; prompt_tokens_details?: { cached_tokens?: unknown } } })?.usage;
+  if (typeof usage?.prompt_tokens !== "number") return undefined;
+  return {
+    inputTokens: usage.prompt_tokens,
+    cachedTokens: typeof usage.prompt_tokens_details?.cached_tokens === "number" ? usage.prompt_tokens_details.cached_tokens : 0,
+    outputTokens: typeof usage.completion_tokens === "number" ? usage.completion_tokens : 0,
+  };
 }
 
 function isToolCall(value: unknown): value is ChatToolCall {

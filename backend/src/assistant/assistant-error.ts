@@ -1,4 +1,6 @@
 export type AssistantErrorCode =
+  | "scorecard_unavailable"
+  | "quote_expired"
   | "assistant_not_configured"
   | "assistant_busy"
   | "assistant_unavailable"

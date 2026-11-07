@@ -9,6 +9,8 @@ import { OpenAiClient, readOpenAiConfig } from "./openai-client";
 import { PayPalClient, readPayPalConfig } from "./paypal-client";
 import { PayPalCommerceService, type Purchase, type PurchaseView, type SubscriptionView } from "./paypal-commerce.service";
 import { ReportService, type ReportDeps } from "./report.service";
+import { SITES_REFRESH_CHECK_MS, getSiteKnowledge } from "./sagitta-sites.runtime";
+import { DEFAULT_SCREEN_PROFILE, SCREEN_WARM_MS, getScorecardPreflight } from "./scorecard-preflight.runtime";
 import { HttpX402Gateway } from "./x402-gateway";
 
 const CONVERSATION_HEADER = "x-selun-conversation";
@@ -79,6 +81,8 @@ function createDefaultDeps(paypal: PayPalCommerceService | null, prices: { repor
       return { resources: data.resources };
     },
     limits: readAssistantLimits(),
+    sites: getSiteKnowledge(),
+    preflight: getScorecardPreflight(),
     paypal: paypal && prices
       ? {
         prices,
@@ -167,6 +171,23 @@ export function createAssistantRouter(injected?: AssistantDeps, injectedReports?
     const config = injected ? null : readPayPalConfig();
     return (service = new AssistantService(injected ?? createDefaultDeps(current, config ? { reportUsd: config.reportPriceUsd, subscriptionUsd: config.subscriptionPriceUsd } : null)));
   };
+
+  if (!injected && !injectedPayPal && process.env.SELUN_SITES_REFRESH !== "0") {
+    // Keeps what Selun knows about Sagitta in step with the live websites.
+    const refreshSites = () => {
+      const knowledge = getSiteKnowledge();
+      if (knowledge.isStale) void knowledge.refresh();
+    };
+    setTimeout(refreshSites, 60_000).unref();
+    setInterval(refreshSites, SITES_REFRESH_CHECK_MS).unref();
+  }
+
+  if (!injected && !injectedPayPal && process.env.SELUN_SCREEN_WARM !== "0") {
+    // Most customers take the default profile, so they shouldn't wait for its screen.
+    const warm = () => void getScorecardPreflight().warm(DEFAULT_SCREEN_PROFILE).catch((error) => console.warn("Market screen warm-up failed:", error instanceof Error ? error.message : error));
+    setTimeout(warm, 30_000).unref();
+    setInterval(warm, SCREEN_WARM_MS).unref();
+  }
 
   if (!injected && !injectedPayPal) {
     // Picks up paid purchases interrupted by a restart, then catches anything webhooks missed.

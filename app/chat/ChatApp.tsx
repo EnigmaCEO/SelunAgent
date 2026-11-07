@@ -484,7 +484,7 @@ export default function ChatApp() {
         maxLength={maxChars}
         onChange={(event) => setDraft(event.target.value)}
         onKeyDown={onComposerKey}
-        placeholder={offline ? "Selun AI is offline right now" : "Ask Selun anything about crypto markets"}
+        placeholder={offline ? "Selun AI is offline right now" : "Ask about crypto markets or Sagitta"}
         disabled={offline}
       />
       <button type="submit" className={styles.sendButton} disabled={!draft.trim() || thinking || offline} aria-label="Send message">

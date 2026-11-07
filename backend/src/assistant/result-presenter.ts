@@ -262,7 +262,10 @@ function presentScorecardV2(result: Json): ResultSection[] {
   const qualified = number(result.qualifiedCandidatesCount);
   const screened = number(result.screenedCandidatesCount);
   if (qualified !== null && screened !== null) {
-    sections.push({ kind: "note", text: `${qualified} of ${screened} screened assets qualified in this run.` });
+    sections.push({ kind: "note", text: `${qualified} of ${screened} screened assets qualified ${isRecordValue(result.screening) ? "in the screen" : "in this run"}.` });
+  }
+  if (isRecordValue(result.screening) && text(result.screening.screenedAt)) {
+    sections.push({ kind: "note", text: `Eligibility and market standing come from the screen of ${String(text(result.screening.screenedAt)).slice(0, 16).replace("T", " ")} UTC, locked to this purchase. Price history was measured when the analysis ran.` });
   }
   sections.push({ kind: "note", text: `Scoring method: ${SCORECARD_METHODOLOGY_VERSION}.` });
   return sections;
@@ -445,6 +448,8 @@ function presentComprehensive(result: Json): ResultSection[] {
     ...presentScorecard(record(result.assetScorecard)),
   ];
 }
+
+const isRecordValue = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 
 const PRESENTERS: Record<string, (result: Json) => ResultSection[]> = {
   comprehensive_report: presentComprehensive,

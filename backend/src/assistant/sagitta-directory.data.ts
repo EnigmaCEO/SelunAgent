@@ -82,10 +82,6 @@ export const SAGITTA_SYSTEMS = [
       {
         "label": "Defense Review service",
         "href": "https://defense.sagitta.systems"
-      },
-      {
-        "label": "Sagitta Labs security posture",
-        "href": "https://www.sagittalabs.com/security"
       }
     ],
     "connections": [],

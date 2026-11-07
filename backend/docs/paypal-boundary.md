@@ -1,6 +1,6 @@
 # PayPal integration
 
-Status: working in PayPal's sandbox on the `selunagent-staging` Fly app, with real webhooks. It isn't in production. The code is in `backend/src/assistant/paypal-commerce.service.ts` and `paypal-client.ts`. See "Before going live" for what's left.
+Status: validated in PayPal's sandbox on the `selunagent-staging` Fly app, with real webhooks. It isn't ready for live payments. The code is in `backend/src/assistant/paypal-commerce.service.ts` and `paypal-client.ts`. See "Before going live" for what's left.
 
 ## What's sold
 
@@ -119,11 +119,14 @@ Tested on 2026-11-06.
 | `PAYMENT.SALE.COMPLETED` | Real, from PayPal | One report for that payment |
 | `BILLING.SUBSCRIPTION.CANCELLED` | Real, from PayPal | No report created. The paid report stayed available |
 | `PAYMENT.SALE.REFUNDED` | Real, from a sandbox refund | That month's report revoked |
-| `CUSTOMER.DISPUTE.CREATED`, `RESOLVED` | PayPal's simulator | Signature verified, then `unmatched` because the data is PayPal's sample |
+| `CUSTOMER.DISPUTE.CREATED`, `UPDATED` | Real, from a sandbox buyer's dispute | Report held, 403. The event arrived about 3 minutes after filing |
+| `CUSTOMER.DISPUTE.RESOLVED`, buyer wins | Real, after the merchant accepted the claim | `RESOLVED_BUYER_FAVOUR` with `SELLER_ISSUED_REFUND`. Access stayed revoked and the result was kept |
+| Purchase logged in as a PayPal buyer | Real | Captured and fulfilled |
+| `CUSTOMER.DISPUTE.RESOLVED`, merchant wins | PayPal's simulator and automated tests | Not reached on a real purchase. See "Before going live" |
 | `PAYMENT.CAPTURE.REVERSED`, `DENIED` | PayPal's simulator | Same |
 | `BILLING.SUBSCRIPTION.PAYMENT.FAILED`, `PAYMENT.SALE.REVERSED` | PayPal's simulator | Same |
 | Forged requests | Real requests to the endpoint | 401, nothing stored |
-| Their effect on a real purchase: disputes, reversals, denied captures, failed subscription payments | Automated tests with a fake PayPal only | Passing |
+| Their effect on a real purchase: merchant wins, reversals, denied captures, failed subscription payments | Automated tests with a fake PayPal only | Passing |
 | A second billing cycle | Automated tests with a fake PayPal only | Passing |
 
 Simulator events pass signature verification, but they can't reference a real purchase. A signed simulator event can't change a record, because every event is matched to a local purchase or re-read from PayPal.
@@ -134,12 +137,14 @@ Restart recovery on staging:
 - A redeploy kept all records, and the PDF stayed byte-identical.
 - A refund made while the Machine was stopping woke it when PayPal delivered the event, and access was revoked.
 
+A sandbox buyer's dispute moves through `INQUIRY` and `CHARGEBACK` as `CUSTOMER.DISPUTE.UPDATED` events. Access stays restricted throughout. When a merchant accepts a claim, `PAYMENT.CAPTURE.REFUNDED` arrives before `CUSTOMER.DISPUTE.RESOLVED`, so access is revoked first and the resolved event confirms it.
+
 ## Before going live
 
-1. **Real lifecycle events:** a real dispute needs a sandbox buyer account, so disputes and reversals haven't run against a real purchase. Test them with a sandbox personal account and confirm the codes in `applyDisputeOutcome`.
+1. **Remaining real lifecycle events:** a merchant win hasn't happened on a real purchase. PayPal's sandbox `adjudicate` call returned `ACTION_NOT_ALLOWED_IN_CURRENT_DISPUTE_STATE` at `INQUIRY` and `CHARGEBACK`, and a 422 evidence-type error after test evidence was submitted. Sandbox dispute `PP-R-UDN-10196723` is still under review, and its report is correctly held. Also unobserved: `PAYMENT.CAPTURE.REVERSED`, denied captures, and failed subscription payments. Of the codes in `applyDisputeOutcome`, only `RESOLVED_BUYER_FAVOUR` is confirmed against PayPal.
 2. **Account recovery:** purchases are found through a token in the browser that started them, so a customer on another device has no way back in. Planned: passwordless access through a verified email, linked to PayPal purchase records.
 3. **Durable shared storage:** `paypal-commerce.json` only supports one Machine. Its purchases, subscriptions, plans, and events each map to one Postgres table, with unique keys on capture ID, sale ID, order ID, and event ID. Move it before scaling out.
-4. **Production deployment:** production has none of this yet, and `selunagent.fly.dev/assistant/status` returns 404. It needs a deploy, its own webhook, live credentials, `PAYPAL_RETURN_BASE_URL`, and `PAYPAL_ENV=live`.
+4. **Production configuration:** as of 2026-11-06, production (v107) serves Selun AI with `PAYPAL_ENV=sandbox`, and has no `PAYPAL_RETURN_BASE_URL` or `PAYPAL_WEBHOOK_ID`. The return URL therefore falls back to `http://localhost:3000`, and its webhook endpoint returns 503. Before PayPal is offered there, either remove the PayPal secrets, which stops offering it, or set live credentials, the return URL, and a registered webhook.
 5. **Admin visibility:** PayPal purchases aren't in the admin panel or usage emails. Failures do alert the admin.
 6. **Event retention:** stored events are never pruned. Add a retention rule before volume grows, keeping at least PayPal's three-day retry window.
 7. **Privacy and terms:** the subscriber's PayPal email is stored in plain text for delivery. Update the privacy policy and terms, including refund and subscription terms.

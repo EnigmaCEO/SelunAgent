@@ -270,7 +270,7 @@ const TOOL_SPECS: ToolSpec[] = [
     whenToUse: "Any request about specific named tokens, up to 12 at once, such as 'tell me about BTC', 'Bitcoin update', 'analyze the risks of Ethereum', or 'compare SOL and ADA'. It returns scores and measured price history, not live prices or news.",
     outputType: "asset_scores",
     duration: "Can take several minutes",
-    limitations: "Volatility and drawdown describe the past year, not the future. Liquidity and market standing top out for the largest assets, so those can match. An asset with less than 180 days of price history gets no overall score. Only assets in the universe screened for the chosen segment receive a score. An asset outside it gets price measurements but no overall score, an asset Selun can't identify gets neither, and the fee still applies.",
+    limitations: "Volatility and drawdown describe the past year, not the future. Liquidity and market standing top out for the largest assets, so those can match. An asset with less than 180 days of price history, or outside the group screened for the chosen segment, can't get an overall score. Selun confirms both before offering this analysis and locks that decision to your purchase. If a price feed fails during the run, you can retry without paying again.",
     parameters: {
       type: "object",
       properties: {
@@ -482,6 +482,7 @@ const REPORT_INPUT = {
 };
 
 const REPORT_LIMITATIONS = "It describes market conditions and past price behavior when it runs, and it doesn't include live prices or current news. It isn't a recommendation to buy, sell, or hold anything.";
+const REPORT_ASSURANCE = "Selun confirms every asset you name can get an overall score before checkout and locks that decision to your purchase. If the report still can't be delivered after retries, your payment is refunded.";
 
 /** Sold through PayPal only, built from the same services the x402 routes run. */
 const PAYPAL_SPECS: ToolSpec[] = [
@@ -493,7 +494,7 @@ const PAYPAL_SPECS: ToolSpec[] = [
     whenToUse: "The customer wants a full or complete report, a comprehensive analysis, or to pay with PayPal or a card rather than a crypto wallet. It needs at least one named asset.",
     outputType: "comprehensive_report",
     duration: "Can take several minutes",
-    limitations: REPORT_LIMITATIONS,
+    limitations: `${REPORT_LIMITATIONS} ${REPORT_ASSURANCE}`,
     ...REPORT_INPUT,
   },
   {
@@ -504,7 +505,7 @@ const PAYPAL_SPECS: ToolSpec[] = [
     whenToUse: "The customer wants ongoing, recurring, or monthly reports or a subscription. It needs at least one named asset.",
     outputType: "comprehensive_report_subscription",
     duration: "The first report starts once PayPal confirms your first payment",
-    limitations: `${REPORT_LIMITATIONS} Each paid month includes one report. Reports already paid for stay available if you cancel.`,
+    limitations: `${REPORT_LIMITATIONS} ${REPORT_ASSURANCE} That applies to your first report. Each later month is checked when it runs, so an asset that no longer qualifies then would show price measurements without an overall score. Each paid month includes one report. Reports already paid for stay available if you cancel.`,
     ...REPORT_INPUT,
   },
 ];

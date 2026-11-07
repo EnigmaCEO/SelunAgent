@@ -366,3 +366,21 @@ test("the quote discloses the price history before anyone pays", () => {
   assert.ok(spec.limitations?.includes("less than 180 days"));
   assert.ok(!spec.summary.toLowerCase().includes("structural stability"));
 });
+
+test("when the paid scorecard requires every asset, one feed outage is a failed run with a free retry", async () => {
+  const eth = { asset: "ETH", coingeckoId: "ethereum", marketCapRank: 2, qualityScore: 0.5 };
+  const up = { measure: async () => ({ status: "insufficient" as const, source: "coingecko" as const, closes: 10, reason: "short" }) };
+  const mixed = { measure: async (asset: { symbol: string }) => (asset.symbol === "ETH" ? { status: "unavailable" as const, reason: "down" } : up.measure()) };
+  await assert.rejects(() => applyScorecardMethodology([eth, { ...eth, asset: "BTC", coingeckoId: "bitcoin" }], [], mixed, { requireEveryAsset: true }), /temporarily unavailable/);
+  const lenient = await applyScorecardMethodology([eth, { ...eth, asset: "BTC", coingeckoId: "bitcoin" }], [], mixed);
+  assert.equal(lenient.scorecards.length, 2, "the comprehensive report's behavior is unchanged");
+});
+
+test("a purchase locked to a screening decision fails rather than delivering a card with no score", async () => {
+  const card = { asset: "BTC", name: "Bitcoin", coingeckoId: "bitcoin", marketCapRank: 1, qualityScore: 0.9 };
+  const thin = { measure: async () => ({ status: "insufficient" as const, source: "coingecko" as const, closes: 90, reason: "Too few." }) };
+  await assert.rejects(() => applyScorecardMethodology([card], [], thin as never, { requireEveryAsset: true, requireOverallScore: true }), /no longer supports/);
+  await assert.rejects(() => applyScorecardMethodology([], [], thin as never, { requireOverallScore: true }), /no longer supports/);
+  const lenient = await applyScorecardMethodology([card], [], thin as never, { requireEveryAsset: true });
+  assert.equal(lenient.scorecards[0].overallScore, null);
+});

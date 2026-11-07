@@ -608,6 +608,57 @@
   overflow-wrap: anywhere;
 }
 
+.actionEyebrow {
+  margin: 0 0 3px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.includes {
+  display: grid;
+  gap: 5px;
+  margin: 14px 0 0;
+  padding: 12px 0 0 18px;
+  border-top: 1px solid var(--line);
+  list-style: disc;
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.cardNote {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.moreInfo {
+  margin: 10px 0 0;
+  font-size: 13px;
+}
+
+.moreInfo summary {
+  color: var(--ink);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.defaultSettings {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 12px;
+  margin: 12px 0 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.defaultSettings p {
+  margin: 0;
+}
+
 .assumptions,
 .limitation,
 .approvalNote {
@@ -1291,6 +1342,8 @@
 .systemStatus,
 .systemStatusLive {
   flex: none;
+  align-self: flex-start;
+  white-space: nowrap;
   padding: 2px 9px;
   border-radius: 999px;
   background: #fff4e0;
@@ -1309,6 +1362,15 @@
   font-size: 0.84rem;
 }
 
+.systemLink {
+  margin-top: auto;
+  padding-top: 4px;
+  color: var(--brand-deep);
+  font: 600 13.5px var(--font-body), sans-serif;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .systemFooter {
   display: flex;
   flex-wrap: wrap;
@@ -1316,4 +1378,31 @@
   justify-content: space-between;
   color: #5b6b80;
   font-size: 0.8rem;
+}
+
+.sources {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.84rem;
+}
+
+.sources ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.sources a {
+  color: var(--brand-deep);
+  text-underline-offset: 2px;
+}
+
+.sourcesLabel {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.sourcesRead {
+  color: var(--muted);
+  font-size: 0.78rem;
 }

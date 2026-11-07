@@ -254,6 +254,7 @@ function normalizeToolRecord(key: string, value: unknown): X402ToolRecord | null
     ...(payment ? { payment } : {}),
     ...(failure ? { failure } : {}),
     ...(refund ? { refund } : {}),
+    ...(isObject(value.screeningSnapshot) ? { screeningSnapshot: value.screeningSnapshot as X402ToolRecord["screeningSnapshot"] } : {}),
   };
 }
 

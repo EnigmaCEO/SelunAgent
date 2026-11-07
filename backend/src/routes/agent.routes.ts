@@ -35,7 +35,10 @@ import {
   verifyJobAccessToken,
 } from "../services/job-access.service";
 import { resolveAsset } from "../assistant/asset-resolver";
-import { PriceHistoryService, SCORECARD_METHODOLOGY, applyScorecardMethodology, findUnscreenedAssets } from "../services/asset-scorecard-v2";
+import { SCORECARD_METHODOLOGY, applyScorecardMethodology, findUnscreenedAssets, scorecardPriceHistory } from "../services/asset-scorecard-v2";
+import { toScreenCard } from "../services/scorecard-screen";
+import { decideScreening, purchaseOf, selectScreenCards, snapshotProblem, type PreflightResult, type ScreeningSnapshot } from "../assistant/scorecard-preflight";
+import { getScorecardPreflight } from "../assistant/scorecard-preflight.runtime";
 import { createLegacyCooldown } from "../services/legacy-cooldown";
 import { settleWithRetry } from "../services/x402-settlement-retry";
 import { getX402StateStore } from "../services/x402-state.service";
@@ -232,7 +235,6 @@ type AdminRefundReference = {
 
 const ALLOCATE_PHASE_POLL_INTERVAL_MS = 2_000;
 const ALLOCATE_PHASE_TIMEOUT_MS = 20 * 60 * 1_000;
-const scorecardPriceHistory = new PriceHistoryService();
 const runningAllocateOrchestration = new Set<string>();
 const x402IpBurstState = new Map<string, number[]>();
 let x402SellerServer: x402ResourceServer | null = null;
@@ -787,7 +789,7 @@ const X402_PUBLIC_DESCRIPTIONS = {
   policyEnvelope:
     "Risk policy engine. Call this when portfolio constraints and segment filters must be computed for a supplied risk tolerance, timeframe, and optional portfolio segment. Returns exposure caps, stablecoin floor, risk budget, authorization constraints, and segment-aware universe guidance.",
   assetScorecard:
-    "Asset scoring engine. Call this before asset selection or allocation. Returns measured volatility and drawdown from daily price history, a price risk score, an overall score, liquidity, market structure, and role classification for candidate assets, shaped by the requested portfolio segment.",
+    "Asset scoring engine. Call this before asset selection or allocation. Returns measured volatility and drawdown from daily price history, a price risk score, an overall score, liquidity, market structure, and role classification for candidate assets, shaped by the requested portfolio segment. Named assets are checked before any payment is requested or settled: if one can't get an overall score, the call returns 409 with the reason for each asset and nothing is charged. That eligibility decision is locked to the decisionId, and price history is measured when the analysis runs.",
   rebalance:
     "Portfolio rebalance engine. Call this after allocation or on a monitoring schedule with current holdings. Returns target-vs-current drift and the adjustments required to rebalance within policy constraints for the requested portfolio segment.",
 } as const;
@@ -1980,31 +1982,31 @@ async function buildPolicyEnvelopeResult(jobId: string): Promise<Record<string, 
   };
 }
 
-async function buildAssetScorecardResult(jobId: string, input: AssetScorecardInput): Promise<Record<string, unknown>> {
+/**
+ * A paid analysis on its locked screening decision: no new screen, so eligibility can't change after the
+ * quote. Price history is still measured now, under its own data rules, so these aren't old prices.
+ */
+async function buildScorecardFromSnapshot(input: AssetScorecardInput, snapshot: ScreeningSnapshot): Promise<Record<string, unknown>> {
+  const problem = snapshotProblem(snapshot, purchaseOf(input));
+  if (problem) throw new Error(`The screening decision for this purchase can't be used: ${problem}.`);
+  return {
+    snapshotAt: snapshot.screenedAt,
+    portfolioSegment: snapshot.profile.portfolioSegment,
+    screenedCandidatesCount: snapshot.counts.screened,
+    qualifiedCandidatesCount: snapshot.counts.qualified,
+    selectedCandidatesCount: snapshot.counts.selected,
+    assetsRequested: input.assets,
+    scoringMethodology: SCORECARD_METHODOLOGY,
+    screening: { snapshotId: snapshot.id, screenedAt: snapshot.screenedAt, methodologyVersion: snapshot.methodologyVersion, lockedToPurchase: true },
+    ...(await applyScorecardMethodology(snapshot.cards, [], scorecardPriceHistory(), { requireEveryAsset: true, requireOverallScore: true })),
+  };
+}
+
+async function buildAssetScorecardResult(jobId: string, input: AssetScorecardInput, options: { requireEveryAsset?: boolean; screening?: ScreeningSnapshot | null } = {}): Promise<Record<string, unknown>> {
+  if (options.screening) return buildScorecardFromSnapshot(input, options.screening);
   const context = await ensurePhase5Outputs(jobId);
   const phase5 = context.phase5.output!;
-  const filterAssets = new Set(input.assets.map((asset) => asset.toUpperCase()));
-  const scored = phase5.evaluation.tokens
-    .filter((token) => filterAssets.size === 0 || filterAssets.has(token.symbol.toUpperCase()) || filterAssets.has(token.coingecko_id.toUpperCase()))
-    .sort((left, right) => right.composite_score - left.composite_score || right.quality_score - left.quality_score)
-    .slice(0, filterAssets.size > 0 ? 12 : 8)
-    .map((token) => ({
-      asset: token.symbol,
-      name: token.name,
-      coingeckoId: token.coingecko_id,
-      marketCapRank: token.market_cap_rank,
-      tokenCategory: token.token_category,
-      role: token.role,
-      riskClass: token.risk_class,
-      selectionBucket: token.selection_bucket,
-      selected: token.selected,
-      qualityScore: token.quality_score,
-      riskScore: token.risk_score,
-      liquidityScore: token.liquidity_score,
-      structuralScore: token.structural_score,
-      compositeScore: token.composite_score,
-      selectionReasons: token.selection_reasons,
-    }));
+  const scored = selectScreenCards(phase5.evaluation.tokens.map(toScreenCard), input.assets);
 
   const unscreened = findUnscreenedAssets(input.assets, scored, resolveAsset);
 
@@ -2016,7 +2018,7 @@ async function buildAssetScorecardResult(jobId: string, input: AssetScorecardInp
     selectedCandidatesCount: phase5.evaluation.selected_candidates_count,
     assetsRequested: input.assets,
     scoringMethodology: SCORECARD_METHODOLOGY,
-    ...(await applyScorecardMethodology(scored, unscreened, scorecardPriceHistory)),
+    ...(await applyScorecardMethodology(scored, unscreened, scorecardPriceHistory(), options)),
   };
 }
 
@@ -2025,7 +2027,7 @@ async function buildAssetScorecardResult(jobId: string, input: AssetScorecardInp
  * x402 services, so nothing here produces analysis of its own. The caller must already
  * hold a verified payment.
  */
-export async function runComprehensiveReport(decisionId: string, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+export async function runComprehensiveReport(decisionId: string, input: Record<string, unknown>, screening?: ScreeningSnapshot | null): Promise<Record<string, unknown>> {
   const riskTolerance = input.riskTolerance as AllocateRiskTolerance;
   const jobId = `selun-comprehensive-${decisionId}-${Date.now()}`.replace(/[^a-zA-Z0-9-_]/g, "-");
   runPhase1({
@@ -2036,9 +2038,10 @@ export async function runComprehensiveReport(decisionId: string, input: Record<s
     investmentTimeframe: input.timeframe as string,
     portfolioSegment: input.portfolioSegment as string,
   });
-  const assetScorecard = await buildAssetScorecardResult(jobId, input as AssetScorecardInput);
+  const assetScorecard = await buildAssetScorecardResult(jobId, input as AssetScorecardInput, { screening });
   const [marketRegime, policyEnvelope] = await Promise.all([buildMarketRegimeResult(jobId), buildPolicyEnvelopeResult(jobId)]);
-  return { snapshotAt: assetScorecard.snapshotAt, marketRegime, policyEnvelope, assetScorecard };
+  // A locked screen is older than this run, and the report's date is when it ran.
+  return { snapshotAt: screening ? marketRegime.snapshotAt : assetScorecard.snapshotAt, marketRegime, policyEnvelope, assetScorecard };
 }
 
 async function buildRebalanceResult(jobId: string, input: RebalanceInput): Promise<Record<string, unknown>> {
@@ -2576,8 +2579,10 @@ export type PaidToolExecution = {
   normalizedInput: Record<string, unknown>;
   inputFingerprint: string;
   decisionId: string;
-  execute: (jobId: string) => Promise<Record<string, unknown>>;
+  execute: (jobId: string, screening?: ScreeningSnapshot | null) => Promise<Record<string, unknown>>;
   skipPhase1?: boolean;
+  /** The locked screening decision, carried on the record so a retry uses the same one. */
+  screeningSnapshot?: ScreeningSnapshot | null;
   payer: string;
   transactionHash: string;
   network: string | null;
@@ -2596,7 +2601,9 @@ export async function runAndRecordPaidTool(params: PaidToolExecution) {
   const stateStore = getX402StateStore();
   const definition = getX402ToolDefinition(params.productId);
   const jobId = buildToolJobId(params.productId, params.decisionId);
-  if (!params.skipPhase1) {
+  const lockedScreening = params.screeningSnapshot ? { screeningSnapshot: params.screeningSnapshot } : {};
+  // A locked decision needs no pipeline run.
+  if (!params.skipPhase1 && !params.screeningSnapshot) {
     runPhase1({
       jobId,
       executionTimestamp: nowIso(),
@@ -2610,10 +2617,11 @@ export async function runAndRecordPaidTool(params: PaidToolExecution) {
 
   let result: Awaited<ReturnType<typeof params.execute>>;
   try {
-    result = await params.execute(jobId);
+    result = await params.execute(jobId, params.screeningSnapshot);
   } catch (executeErr) {
     const failedAt = nowIso();
     stateStore.setToolRecord(params.productId, params.decisionId, {
+      ...lockedScreening,
       decisionId: params.decisionId,
       productId: params.productId,
       inputFingerprint: params.inputFingerprint,
@@ -2661,6 +2669,7 @@ export async function runAndRecordPaidTool(params: PaidToolExecution) {
     result,
   );
   const record: X402ToolRecord = {
+    ...lockedScreening,
     decisionId: params.decisionId,
     productId: params.productId,
     inputFingerprint: params.inputFingerprint,
@@ -2691,7 +2700,8 @@ async function executePaidToolRequest(params: {
   normalizedInput: Record<string, unknown>;
   inputFingerprint: string;
   decisionId: string;
-  execute: (jobId: string) => Promise<Record<string, unknown>>;
+  execute: (jobId: string, screening?: ScreeningSnapshot | null) => Promise<Record<string, unknown>>;
+  screeningSnapshot?: ScreeningSnapshot | null;
   options?: X402ToolRequestOptions;
   payer: string;
   transactionHash: string;
@@ -2709,6 +2719,7 @@ async function executePaidToolRequest(params: {
     inputFingerprint: params.inputFingerprint,
     decisionId: params.decisionId,
     execute: params.execute,
+    screeningSnapshot: params.screeningSnapshot,
     skipPhase1: params.options?.skipPhase1,
     payer: params.payer,
     transactionHash: params.transactionHash,
@@ -2769,7 +2780,7 @@ async function executePaidToolRequest(params: {
   });
 }
 
-async function executeToolProduct(productId: X402ToolProductId, jobId: string, input: X402ToolBaseInput | AssetScorecardInput | RebalanceInput): Promise<Record<string, unknown>> {
+async function executeToolProduct(productId: X402ToolProductId, jobId: string, input: X402ToolBaseInput | AssetScorecardInput | RebalanceInput, screening?: ScreeningSnapshot | null): Promise<Record<string, unknown>> {
   if (productId === "market_regime") {
     return buildMarketRegimeResult(jobId);
   }
@@ -2777,9 +2788,24 @@ async function executeToolProduct(productId: X402ToolProductId, jobId: string, i
     return buildPolicyEnvelopeResult(jobId);
   }
   if (productId === "asset_scorecard") {
-    return buildAssetScorecardResult(jobId, input as AssetScorecardInput);
+    // A feed outage for any one asset is a failed run with a free retry, not a finished purchase missing a score.
+    return buildAssetScorecardResult(jobId, input as AssetScorecardInput, { requireEveryAsset: true, screening });
   }
   return buildRebalanceResult(jobId, input as RebalanceInput);
+}
+
+/** 409 tells the assistant's gateway no funds moved, which is true: this runs before settlement. */
+function sendScorecardNotOffered(res: Response, refusal: PreflightResult) {
+  const unavailable = refusal.assets.length === 0 || refusal.assets.some((asset) => asset.outcome === "check_unavailable");
+  if (unavailable) res.setHeader("Retry-After", "30");
+  return failure(
+    res,
+    new Error(unavailable
+      ? "Selun couldn't confirm an overall score for this request right now, so no payment was taken. Please try again shortly."
+      : "Selun can't deliver an overall score for every asset in this request, so no payment was taken. Adjust the assets or portfolioSegment and try again."),
+    409,
+    { code: "scorecard_not_offered", charged: false, assets: refusal.assets },
+  );
 }
 
 type X402ToolRequestOptions = {
@@ -2792,7 +2818,7 @@ async function handleX402ToolRequest(
   res: Response,
   productId: X402ToolProductId,
   normalizedInput: Record<string, unknown>,
-  execute: (jobId: string) => Promise<Record<string, unknown>>,
+  execute: (jobId: string, screening?: ScreeningSnapshot | null) => Promise<Record<string, unknown>>,
   options?: X402ToolRequestOptions,
 ) {
   const burst = enforceIpBurstLimit(req);
@@ -2815,10 +2841,18 @@ async function handleX402ToolRequest(
 
   const inputFingerprint = computeToolInputFingerprint(normalizedInput);
   const stateStore = getX402StateStore();
-  const existingRecord = decisionId ? stateStore.getToolRecord(productId, decisionId) : undefined;
-  if (existingRecord && existingRecord.inputFingerprint !== inputFingerprint) {
+  const earlierRecord = decisionId ? stateStore.getToolRecord(productId, decisionId) : undefined;
+  if (earlierRecord && earlierRecord.inputFingerprint !== inputFingerprint) {
     return sendToolConflict(res, definition, decisionId as string);
   }
+
+  // Before any payment is requested or settled. It can wait for a screen, so the record is read again after it.
+  const screening = productId === "asset_scorecard"
+    ? await decideScreening({ existing: earlierRecord, input: normalizedInput, paying: hasPaymentSignature, preflight: getScorecardPreflight() }).catch(() => ({ snapshot: null, refusal: { deliverable: false, assets: [] } as PreflightResult }))
+    : null;
+  if (screening?.refusal) return sendScorecardNotOffered(res, screening.refusal);
+
+  const existingRecord = decisionId ? stateStore.getToolRecord(productId, decisionId) : undefined;
 
   if (runningAllocateOrchestration.size >= getX402GlobalConcurrencyCap()) {
     return sendRateLimited(res, "global_concurrency_cap", 10);
@@ -2854,6 +2888,7 @@ async function handleX402ToolRequest(
 
     if (decisionId && (!existingRecord || existingRecord.state === "quoted")) {
       stateStore.setToolRecord(productId, decisionId, {
+        ...(screening?.snapshot ? { screeningSnapshot: screening.snapshot } : {}),
         decisionId,
         productId,
         inputFingerprint,
@@ -2923,6 +2958,7 @@ async function handleX402ToolRequest(
         inputFingerprint,
         decisionId,
         execute,
+        screeningSnapshot: existingRecord.screeningSnapshot,
         options,
         payer: existingRecord.payment.fromAddress,
         transactionHash: existingRecord.payment.transactionHash,
@@ -3022,6 +3058,7 @@ async function handleX402ToolRequest(
       inputFingerprint,
       decisionId: confirmedDecisionId,
       execute,
+      screeningSnapshot: screening?.snapshot,
       options,
       payer,
       transactionHash,
@@ -4750,8 +4787,8 @@ router.post("/x402/asset-scorecard", async (req: Request, res: Response) => {
     portfolioSegment,
     assets: normalizeStringArray(req.body?.assets, 12),
   };
-  return handleX402ToolRequest(req, res, "asset_scorecard", input, (jobId) =>
-    executeToolProduct("asset_scorecard", jobId, input)
+  return handleX402ToolRequest(req, res, "asset_scorecard", input, (jobId, screening) =>
+    executeToolProduct("asset_scorecard", jobId, input, screening)
   );
 });
 

@@ -10,11 +10,13 @@ import path from "node:path";
 import dotenv from "dotenv";
 import { AssistantService, type Block } from "../src/assistant/assistant.service";
 import { OpenAiClient, readOpenAiConfig } from "../src/assistant/openai-client";
+import { getSiteKnowledge } from "../src/assistant/sagitta-sites.runtime";
+import { getScorecardPreflight } from "../src/assistant/scorecard-preflight.runtime";
 
 dotenv.config({ quiet: true });
 dotenv.config({ path: path.join("backend", ".env"), override: true, quiet: true });
 
-type Outcome = "capabilities" | "handoff" | "asset_choice" | "sagitta_directory" | "sagitta_system" | string;
+type Outcome = "capabilities" | "handoff" | "asset_choice" | "sagitta_directory" | "sagitta_system" | "sagitta_sources" | string;
 type Case = { say: string; must?: Outcome[]; may?: Outcome[] };
 
 const SCORECARD = "asset_scorecard";
@@ -47,15 +49,20 @@ const CASES: Case[] = [
   { say: "What is the price of Bitcoin right now?", may: [SCORECARD, REGIME] },
   { say: "Buy me 1 BTC", may: [SCORECARD, REGIME] },
   // Questions about Sagitta are free and never sell anything.
-  { say: "What is Sagitta Radar?", must: ["sagitta_system"] },
-  { say: "Tell me about the Sagitta Continuity Engine", must: ["sagitta_system"] },
-  { say: "What's the difference between AAA and Selun?", must: ["sagitta_system"] },
-  { say: "What does Sagitta Systems do?", must: ["sagitta_directory"] },
-  { say: "What products does Sagitta have?", may: ["sagitta_directory", "capabilities"] },
-  { say: "Is Sagitta Wallet available yet?", must: ["sagitta_system"] },
-  { say: "Can I use Sagitta Banking today?", must: ["sagitta_system"] },
-  { say: "How much does Radar cost?", must: ["sagitta_system"] },
-  { say: "Who invests in Sagitta and what's its revenue?", may: ["sagitta_directory"] },
+  { say: "What is Sagitta Radar?", must: ["sagitta_system"], may: ["sagitta_sources"] },
+  { say: "Tell me about the Sagitta Continuity Engine", must: ["sagitta_system"], may: ["sagitta_sources"] },
+  { say: "What's the difference between AAA and Selun?", must: ["sagitta_sources"], may: ["sagitta_system"] },
+  { say: "What does Sagitta Systems do?", may: ["sagitta_directory", "sagitta_sources"] },
+  { say: "What products does Sagitta have?", may: ["sagitta_directory", "sagitta_sources", "capabilities"] },
+  { say: "Is Sagitta Wallet available yet?", must: ["sagitta_system"], may: ["sagitta_sources"] },
+  { say: "Can I use Sagitta Banking today?", must: ["sagitta_system"], may: ["sagitta_sources"] },
+  { say: "How much does Radar cost?", must: ["sagitta_sources"], may: ["sagitta_system"] },
+  { say: "Who invests in Sagitta and what's its revenue?", may: ["sagitta_sources", "sagitta_directory"] },
+  { say: "Who is the developer of Sagitta?", must: ["sagitta_sources"], may: ["sagitta_system", "sagitta_directory"] },
+  { say: "Who founded Sagitta?", must: ["sagitta_sources"], may: ["sagitta_directory"] },
+  { say: "What's on Sagitta's roadmap?", must: ["sagitta_sources"], may: ["sagitta_directory"] },
+  { say: "Is Sagitta hiring?", must: ["sagitta_sources"], may: ["sagitta_directory"] },
+  { say: "What does the Sagitta whitepaper say about the Reserve?", must: ["sagitta_sources"], may: ["sagitta_system"] },
   // Sold through PayPal only.
   { say: "I want a comprehensive report on Bitcoin", must: [COMPREHENSIVE] },
   { say: "Can I get a full report on ETH and SOL? I'd rather pay with PayPal", must: [COMPREHENSIVE] },
@@ -98,6 +105,8 @@ async function main() {
   const service = new AssistantService({
     llm: new OpenAiClient(config),
     gateway: { requestChallenge: refuse, submitPaid: refuse },
+    sites: getSiteKnowledge(),
+    preflight: getScorecardPreflight(),
     paypal: { prices: { reportUsd: "4.99", subscriptionUsd: "9.99" }, createCheckout: refuse, createSubscription: refuse },
     loadCatalog: async () => ({
       resources: Object.entries(prices).map(([productId, amountUsdc]) => ({

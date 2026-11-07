@@ -266,7 +266,7 @@ test("the model has no tool that can run or pay for a service", () => {
     const names = llm.requests[0].tools?.map((tool) => tool.function.name) ?? [];
     assert.ok(names.length > 0);
     for (const name of names) {
-      assert.ok(name === "list_capabilities" || name === "resolve_asset" || name === "lookup_sagitta" || name === "open_portfolio_plan" || name.startsWith("propose_"), name);
+      assert.ok(name === "list_capabilities" || name === "resolve_asset" || name === "lookup_sagitta" || name === "search_sagitta_sites" || name === "open_portfolio_plan" || name.startsWith("propose_"), name);
     }
   });
 });

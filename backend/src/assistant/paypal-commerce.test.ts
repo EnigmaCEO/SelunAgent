@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { ScorecardPreflight, type ScreeningSnapshot } from "./scorecard-preflight";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { createServer, type Server } from "node:http";
@@ -182,6 +184,128 @@ async function deliver(h: ReturnType<typeof harness>, body: string) {
   await flush();
   return result;
 }
+
+const SNAPSHOT_AT = Date.parse("2026-11-07T12:00:00.000Z");
+
+async function lockedSnapshot(assets = ["BTC"]) {
+  const card = { asset: "BTC", name: "Bitcoin", coingeckoId: "bitcoin", marketCapRank: 1, tokenCategory: "core", role: "core", riskClass: "large_cap_crypto", selectionBucket: "core", selected: true, qualityScore: 0.9, riskScore: 0.1, liquidityScore: 1, structuralScore: 0.9, compositeScore: 0.9, selectionReasons: [] };
+  const preflight = new ScorecardPreflight({
+    runScreen: async () => ({ screenedAt: "2026-11-07T11:30:00.000Z", counts: { screened: 60, qualified: 40, selected: 10 }, cards: [card] }),
+    measure: async () => ({ status: "measured" }) as never,
+    segments: ["Bluechips"],
+    now: () => SNAPSHOT_AT,
+    snapshotValidMs: 60_000,
+  });
+  return (await preflight.check(assets, { riskTolerance: "Balanced", timeframe: "1-3_years", portfolioSegment: "Bluechips" })).snapshot!;
+}
+
+const ACCEPTED_AT = new Date(SNAPSHOT_AT + 30_000);
+const LATE = new Date(SNAPSHOT_AT + 61_000);
+const lockedCheckout = (h: ReturnType<typeof harness>, screening: ScreeningSnapshot) => h.service.createCheckout({ decisionId: DECISION, capabilityId: COMPREHENSIVE_REPORT_ID, title: "T", body: INPUT, conversationId: null, actionId: null, screening });
+
+test("every run of a paid report uses the snapshot it was bought with, even after the quote window", async () => {
+  const screening = await lockedSnapshot();
+  const seen: unknown[] = [];
+  let attempts = 0;
+  let clock = ACCEPTED_AT;
+  const h = harness({
+    now: () => clock,
+    runReport: async (_decisionId, _input, locked) => {
+      seen.push(locked);
+      if ((attempts += 1) === 1) throw new Error("Price history is temporarily unavailable.");
+      return RESULT;
+    },
+  });
+  const { purchaseId } = await lockedCheckout(h, screening);
+  h.api.approve();
+  await h.service.capture(purchaseId);
+  clock = LATE;
+  await flush();
+  assert.deepEqual(seen, [screening, screening]);
+  assert.equal((await h.service.status(purchaseId)).phase, "completed");
+  assert.equal(h.api.refunds.length, 0);
+});
+
+test("a paid report that can't be delivered refunds", async () => {
+  const screening = await lockedSnapshot();
+  const h = harness({ now: () => ACCEPTED_AT, runReport: async () => { throw new Error("Price history no longer supports an overall score for every purchased asset."); } });
+  const { purchaseId } = await lockedCheckout(h, screening);
+  h.api.approve();
+  await h.service.capture(purchaseId);
+  await flush();
+  assert.equal((await h.service.status(purchaseId)).phase, "refunded");
+  assert.equal(h.api.refunds.length, 1);
+});
+
+test("PayPal isn't captured on an expired quote, and a fresh quote recovers the same order", async () => {
+  const screening = await lockedSnapshot();
+  let clock = LATE;
+  const h = harness({ now: () => clock });
+  const { purchaseId } = await lockedCheckout(h, screening);
+  h.api.approve();
+  await assert.rejects(() => h.service.capture(purchaseId), (error: AssistantError) => error.code === "quote_expired" && /nothing was charged/.test(error.message));
+  assert.equal(h.api.captureCalls.length, 0);
+  assert.equal(h.runs.length, 0);
+
+  const { id: _id, ...content } = { ...screening, validUntil: new Date(LATE.getTime() + 60_000).toISOString() };
+  const rebound = { ...content, id: createHash("sha256").update(JSON.stringify(content)).digest("hex") };
+  await lockedCheckout(h, rebound);
+  clock = new Date(LATE.getTime() + 1000);
+  await h.service.capture(purchaseId);
+  await flush();
+  assert.equal(h.api.captureCalls.length, 1);
+  assert.equal(h.runs.length, 1);
+});
+
+test("PayPal isn't captured on a quote made for different assets", async () => {
+  const screening = await lockedSnapshot(["BTC", "bitcoin"]);
+  const h = harness({ now: () => ACCEPTED_AT });
+  const { purchaseId } = await lockedCheckout(h, screening);
+  h.api.approve();
+  await assert.rejects(() => h.service.capture(purchaseId), (error: AssistantError) => error.code === "quote_expired");
+  assert.equal(h.api.captureCalls.length, 0);
+});
+
+test("a webhook doesn't capture on an expired quote, and doesn't keep retrying it", async () => {
+  const screening = await lockedSnapshot();
+  const h = harness({ now: () => LATE });
+  await lockedCheckout(h, screening);
+  h.api.approve();
+  await deliver(h, webhook("EV-expired", "CHECKOUT.ORDER.APPROVED", { id: "ORDER-1" }));
+  assert.equal(h.api.captureCalls.length, 0);
+  assert.equal(h.runs.length, 0);
+  assert.equal(h.alerts.length, 0);
+});
+
+test("a saved snapshot survives a restart", async () => {
+  const screening = await lockedSnapshot();
+  const file = stateFile();
+  const seen: unknown[] = [];
+  const first = harness({ file, now: () => ACCEPTED_AT, runReport: () => new Promise(() => undefined) });
+  const { purchaseId } = await lockedCheckout(first, screening);
+  first.api.approve();
+  await first.service.capture(purchaseId);
+  await flush();
+  const second = harness({ file, now: () => LATE, runReport: async (_decisionId, _input, locked) => { seen.push(locked); return RESULT; } });
+  second.service.resume();
+  await flush();
+  assert.deepEqual(seen, [screening]);
+});
+
+test("a subscription's first month uses the checked snapshot, and later months screen when they run", async () => {
+  const screening = await lockedSnapshot();
+  const seen: unknown[] = [];
+  const h = harness({ now: () => ACCEPTED_AT, runReport: async (_decisionId, _input, locked) => { seen.push(locked); return RESULT; } });
+  const { subscriptionLocalId } = await h.service.createSubscription({ actionKey: "k", capabilityId: COMPREHENSIVE_REPORT_ID, title: "T", body: INPUT, conversationId: null, actionId: null, screening });
+  h.api.activate("I-1");
+  h.api.sales.push({ id: "SALE-1", status: "COMPLETED", amount: "9.99", currency: "USD", time: "2026-11-07T12:00:00Z" });
+  await h.service.syncSubscription(subscriptionLocalId);
+  await flush();
+  h.api.sales.push({ id: "SALE-2", status: "COMPLETED", amount: "9.99", currency: "USD", time: "2026-11-07T12:00:00Z" });
+  await h.service.syncSubscription(subscriptionLocalId);
+  await flush();
+  assert.deepEqual(seen, [screening, null]);
+});
 
 test("nothing runs until PayPal itself reports a completed capture", async () => {
   const h = harness();

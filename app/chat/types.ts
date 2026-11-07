@@ -85,6 +85,10 @@ export type ActionView = {
   rails: PaymentRail[];
   document: ResultDocument | null;
   reportToken?: string | null;
+  /** Whether a paid result can offer a PDF here. */
+  reportAvailable?: boolean;
+  /** Selun confirmed before quoting that this analysis can deliver its overall score. */
+  eligibilityChecked?: boolean;
   explanation: string | null;
   explanationStatus: "none" | "pending" | "ready" | "unavailable";
   failure: { message: string; retryable: boolean; mayHaveCharged: boolean } | null;
@@ -105,7 +109,10 @@ export type PublicCapability = {
 export type SystemSummary = { slug: string; name: string; status: string; summary: string; url: string | null };
 export type SystemDetail = SystemSummary & { parent: string | null; availableToday: string[]; lastVerifiedAt: string | null };
 
+export type SiteSource = { title: string; url: string; site: string };
+
 export type Block =
+  | { type: "sagitta_sources"; sources: SiteSource[]; readAt: string }
   | { type: "sagitta_directory"; systems: SystemSummary[] }
   | { type: "sagitta_system"; system: SystemDetail }
   | { type: "action"; action: ActionView }

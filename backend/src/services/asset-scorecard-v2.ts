@@ -193,6 +193,10 @@ const RATE_LIMIT_BACKOFF_MS = [8_000, 16_000];
 const RATE_LIMIT_COOLDOWN_MS = 60_000;
 
 /** Fetches one asset at a time, because free feeds rate limit, and keeps results for the UTC day so reruns agree. */
+/** Shared so the check before purchase and the paid run use one cache and one provider rate limit. */
+export const scorecardPriceHistory = (): PriceHistoryService => (sharedPriceHistory ??= new PriceHistoryService());
+let sharedPriceHistory: PriceHistoryService | undefined;
+
 export class PriceHistoryService {
   private readonly fetchJson: (url: string) => Promise<unknown>;
   private readonly sleep: (ms: number) => Promise<void>;
@@ -295,6 +299,7 @@ export async function applyScorecardMethodology<T extends BaseCard>(
   cards: T[],
   unscreened: UnscreenedAsset[],
   history: Pick<PriceHistoryService, "measure">,
+  options: { requireEveryAsset?: boolean; requireOverallScore?: boolean } = {},
 ) {
   const measures = await Promise.all(
     cards.map((card) => history.measure({ coingeckoId: card.coingeckoId, symbol: card.asset, marketCapRank: card.marketCapRank })),
@@ -304,7 +309,8 @@ export async function applyScorecardMethodology<T extends BaseCard>(
     unscreened.map((asset) => history.measure({ coingeckoId: asset.coingeckoId, symbol: asset.asset, marketCapRank: null })),
   );
   const all = [...measures, ...unscreenedMeasures];
-  if (all.length > 0 && all.every((measure) => measure.status === "unavailable")) {
+  const failed = options.requireEveryAsset ? all.some((measure) => measure.status === "unavailable") : all.every((measure) => measure.status === "unavailable");
+  if (all.length > 0 && failed) {
     throw new Error("Price history is temporarily unavailable.");
   }
   const scorecards = cards
@@ -314,6 +320,10 @@ export async function applyScorecardMethodology<T extends BaseCard>(
       return { ...card, overallScore: overallScore(card.qualityScore, priceRisk), priceRiskScore: priceRisk, priceHistory: measure };
     })
     .sort((left, right) => (right.overallScore ?? -1) - (left.overallScore ?? -1));
+  // A purchase locked to a screening decision was sold a score, so a card without one is a failed run, not a result.
+  if (options.requireOverallScore && (scorecards.length === 0 || scorecards.some((card) => card.overallScore === null))) {
+    throw new Error("Price history no longer supports an overall score for every purchased asset.");
+  }
   return {
     scorecards,
     unscreenedAssets: unscreened.map((asset, index) => ({

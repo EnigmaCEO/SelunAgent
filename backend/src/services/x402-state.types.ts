@@ -1,5 +1,6 @@
 export type { PortfolioSegment } from "./portfolio-segments";
 import type { PortfolioSegment } from "./portfolio-segments";
+import type { ScreeningSnapshot } from "../assistant/scorecard-preflight";
 
 export type AllocateRiskTolerance = "Conservative" | "Balanced" | "Growth" | "Aggressive";
 
@@ -60,6 +61,8 @@ export type X402AllocateRecord = {
 export type X402ToolRecordState = "quoted" | "accepted" | "failed_post_settlement";
 
 export type X402ToolRecord = {
+  /** The screening decision this purchase is locked to. Kept for every run and retry of it. */
+  screeningSnapshot?: ScreeningSnapshot;
   decisionId: string;
   productId: X402ToolProductId;
   inputFingerprint: string;

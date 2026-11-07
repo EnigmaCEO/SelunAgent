@@ -227,7 +227,7 @@ Adding a service: add a spec to `backend/src/assistant/capability-registry.ts` a
 
 PayPal sells the Comprehensive Intelligence Report and the monthly subscription through the chat, using the same pipeline and report path as x402. See `backend/docs/paypal-boundary.md`.
 
-Selun AI also answers questions about Sagitta's other systems, for free and with no commerce. It reads a snapshot of the public record in `Systems/src/content/systems.ts`. After that content changes, run `npx tsx backend/scripts/sync-sagitta-directory.ts` and commit the result.
+Selun AI also answers questions about Sagitta, for free and with no commerce, from Sagitta's own websites. It re-reads them daily and starts from the snapshot written by `npx tsx backend/scripts/sync-sagitta-sites.ts`. System cards come from `Systems/src/content/systems.ts`, the source behind sagitta.systems: after that changes, run `npx tsx backend/scripts/sync-sagitta-directory.ts`.
 
 Routing check: `npm run assistant:routing-eval -- --runs=3` sends those requests to the configured model and reports any that reach the wrong service. It uses model tokens, but nothing is paid for or run. If a customer names a token and the model quotes only Market Regime, the server adds that token's Asset Scorecard quote.
 

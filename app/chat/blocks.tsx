@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { Fragment, useState, type FormEvent, type ReactNode } from "react";
 import { ApiError, downloadReport, emailReport } from "./api";
-import type { ActionView, Block, CoverageItem, PublicCapability, ResultDocument, ResultSection, SystemDetail, SystemSummary, Tone } from "./types";
+import type { ActionView, Block, CoverageItem, PublicCapability, ResultDocument, ResultSection, SiteSource, SystemDetail, SystemSummary, Tone } from "./types";
 import styles from "./chat.module.css";
 
 export function formatUsdc(amount: string): string {
@@ -235,6 +235,54 @@ const PHASE_LABEL: Record<ApprovalPhase, string> = {
   submitting: "Sending approval…",
 };
 
+type SimpleCard = { title: string; eyebrow: string; lead: string; includes: string[]; note: string; assurance?: string; moreLabel: string };
+
+/** "Bitcoin (BTC), Ethereum (ETH)" as the card's own details state it. */
+function namedAssets(action: ActionView): { name: string; symbol: string }[] {
+  const value = action.details.find((detail) => detail.label === "Assets")?.value ?? "";
+  return [...value.matchAll(/([^,(]+?)\s*\(([^)]+)\)/g)].map((match) => ({ name: match[1].trim(), symbol: match[2].trim() }));
+}
+
+/** What a customer buying a one-off analysis needs in order to decide. The full terms stay one click away. */
+function simpleCard(action: ActionView): SimpleCard | null {
+  const pdf = action.reportAvailable === false ? [] : ["PDF report"];
+  if (action.capabilityId === "asset_scorecard") {
+    const assets = namedAssets(action);
+    if (assets.length === 0) return null;
+    const one = assets.length === 1 ? assets[0] : null;
+    const symbols = assets.map((asset) => asset.symbol).join(", ");
+    return {
+      title: one ? `${one.name} Risk Analysis` : `Risk Analysis: ${symbols}`,
+      eyebrow: `Asset Scorecard · ${symbols}`,
+      lead: `Understand ${one ? `${one.name}'s` : "each asset's"} historical volatility, major price declines, and market standing through a clear risk assessment.`,
+      includes: ["Up to 1 year of price history", "Risk and market-standing scores", ...pdf],
+      note: "Based on historical data through the last completed UTC day. Live prices and current news are not included.",
+      assurance: action.eligibilityChecked
+        ? `Selun confirmed ${one ? one.name : "these assets"} can get an overall score and locked that decision to this purchase. If a price feed fails during the run, you can retry without paying again.`
+        : undefined,
+      moreLabel: "What's included and how scores work",
+    };
+  }
+  if (action.capabilityId === "market_regime") {
+    return {
+      title: "Crypto Market Conditions",
+      eyebrow: "Market Regime · Whole market",
+      lead: "Get a snapshot of overall crypto market conditions across volatility, liquidity, and sentiment.",
+      includes: ["Overall market classification", "Volatility, liquidity, and sentiment readings", ...pdf],
+      note: "A snapshot from when the analysis runs. Live prices and current news are not included.",
+      moreLabel: "What's included and how it works",
+    };
+  }
+  return null;
+}
+
+/** Which detail each default stands for, so only settings the customer chose are shown up front. */
+const DEFAULTED_DETAIL: Record<string, string> = {
+  "Balanced risk profile": "Risk profile",
+  "1 to 3 year horizon": "Horizon",
+  "Bluechips segment": "Segment",
+};
+
 function ActionCard(props: {
   action: ActionView;
   phase: ApprovalPhase;
@@ -242,10 +290,10 @@ function ActionCard(props: {
   onApprove: (action: ActionView) => void;
   onDecline: (action: ActionView) => void;
   onCancelSubscription: (action: ActionView) => void;
+  onAsk: (text: string) => void;
 }) {
-  const { action, phase, error, onApprove, onDecline, onCancelSubscription } = props;
+  const { action, phase, error, onApprove, onDecline, onCancelSubscription, onAsk } = props;
   const busy = phase !== "idle";
-  const comingSoon = action.rails.filter((rail) => rail.status === "coming_soon");
   const usesPayPal = action.execution === "paypal_checkout" || action.execution === "paypal_subscription";
   const monthly = action.execution === "paypal_subscription";
   const subscription = action.paypal?.kind === "subscription" ? action.paypal : null;
@@ -316,12 +364,21 @@ function ActionCard(props: {
   }
 
   const failed = action.state === "failed";
+  const simple = simpleCard(action);
+  const defaulted = new Set(action.assumptions.map((assumption) => DEFAULTED_DETAIL[assumption]));
+  const defaults = simple ? action.details.filter((detail) => defaulted.has(detail.label)) : [];
+  // The simple card's heading already names the assets, and defaults wait in the section below.
+  const shownDetails = simple ? action.details.filter((detail) => detail.label !== "Assets" && !defaulted.has(detail.label)) : action.details;
+  // A subscription's or report's terms are part of the decision, so they stay in view.
+  const limitationUpFront = usesPayPal && action.limitations;
+  const hasMore = Boolean(action.limitations && !limitationUpFront) || (action.coverage?.length ?? 0) > 0 || defaults.length > 0;
   return (
-    <article className={styles.actionCard} aria-label={`${action.title} quote`}>
+    <article className={styles.actionCard} aria-label={`${simple?.title ?? action.title} quote`}>
       <header className={styles.actionHeader}>
         <div>
-          <h3>{action.title}</h3>
-          <p>{action.summary}</p>
+          {simple && <p className={styles.actionEyebrow}>{simple.eyebrow}</p>}
+          <h3>{simple?.title ?? action.title}</h3>
+          <p>{simple?.lead ?? action.summary}</p>
         </div>
         <div className={styles.price}>
           <strong>{formatUsdc(action.priceUsdc)}</strong>
@@ -329,16 +386,36 @@ function ActionCard(props: {
         </div>
       </header>
 
-      {action.details.length > 0 && (
+      {simple && (
+        <ul className={styles.includes} aria-label="What you get">
+          {simple.includes.map((item) => <li key={item}>{item}</li>)}
+        </ul>
+      )}
+      {shownDetails.length > 0 && (
         <dl className={styles.details}>
-          {action.details.map((detail) => (
+          {shownDetails.map((detail) => (
             <div key={detail.label}><dt>{detail.label}</dt><dd>{detail.value}</dd></div>
           ))}
         </dl>
       )}
-      {action.assumptions.length > 0 && <p className={styles.assumptions}>Selun chose these defaults for you. Just say so if you&apos;d like something different.</p>}
-      {action.limitations && <p className={styles.limitation}>{action.limitations}</p>}
-      <CoverageList items={action.coverage} />
+      {!simple && action.assumptions.length > 0 && <p className={styles.assumptions}>Selun chose these defaults for you. Just say so if you&apos;d like something different.</p>}
+      {simple?.assurance && <p className={styles.cardNote}>{simple.assurance}</p>}
+      {simple && <p className={styles.cardNote}>{simple.note}</p>}
+      {limitationUpFront && <p className={styles.limitation}>{action.limitations}</p>}
+      {hasMore && (
+        <details className={styles.moreInfo}>
+          <summary>{simple?.moreLabel ?? "What's included"}</summary>
+          <p className={styles.assumptions}>{action.duration}.</p>
+          {action.limitations && !limitationUpFront && <p className={styles.limitation}>{action.limitations}</p>}
+          <CoverageList items={action.coverage} />
+          {defaults.length > 0 && (
+            <div className={styles.defaultSettings}>
+              <p>Settings Selun chose for you: {defaults.map((detail) => `${detail.label}: ${detail.value}`).join(" · ")}.</p>
+              <button type="button" className={styles.textButton} disabled={busy} onClick={() => onAsk(`I'd like to change the settings for the ${simple?.title ?? action.title}`)}>Customize</button>
+            </div>
+          )}
+        </details>
+      )}
 
       {failed && action.failure && (
         <div className={styles.inlineError} role="alert">
@@ -369,7 +446,6 @@ function ActionCard(props: {
             ? "You'll go to PayPal to approve. PayPal charges this amount each month until you cancel, and you can cancel here or in PayPal at any time."
             : "You'll go to PayPal to approve this exact amount. Nothing is charged until you do."
           : "Nothing is charged until you approve this exact amount in your wallet. Pays in USDC on Base."}
-        {!usesPayPal && comingSoon.length > 0 && <> <span className={styles.soon}>PayPal and subscriptions coming soon.</span></>}
       </p>
     </article>
   );
@@ -380,7 +456,8 @@ function sagittaLink(url: string | null): string | null {
   if (!url) return null;
   try {
     const parsed = new URL(url);
-    return parsed.protocol === "https:" && (parsed.hostname === "sagitta.systems" || parsed.hostname.endsWith(".sagitta.systems")) ? url : null;
+    const own = parsed.hostname === "sagitta.systems" || parsed.hostname.endsWith(".sagitta.systems") || parsed.hostname === "sagitta-protocol.gitbook.io";
+    return parsed.protocol === "https:" && own ? url : null;
   } catch {
     return null;
   }
@@ -407,10 +484,26 @@ function SystemCard({ system }: { system: SystemDetail }) {
         </>
       )}
       <footer className={styles.systemFooter}>
-        {href && <a href={href} target="_blank" rel="noopener noreferrer">Visit {system.name}<span className={styles.srOnly}> (opens in a new tab)</span></a>}
+        {href && <a className={styles.systemLink} href={href} target="_blank" rel="noopener noreferrer">Visit {system.name}<span className={styles.srOnly}> (opens in a new tab)</span></a>}
         {system.lastVerifiedAt && <span>From Sagitta&apos;s public record, checked {system.lastVerifiedAt}</span>}
       </footer>
     </article>
+  );
+}
+
+function SourcesCard({ sources, readAt }: { sources: SiteSource[]; readAt: string }) {
+  const read = formatDate(readAt);
+  return (
+    <div className={styles.sources}>
+      <span className={styles.sourcesLabel}>From Sagitta&apos;s websites</span>
+      <ul>
+        {sources.map((source) => {
+          const href = sagittaLink(source.url);
+          return <li key={source.url}>{href ? <a href={href} target="_blank" rel="noopener noreferrer">{source.title}<span className={styles.srOnly}> (opens in a new tab)</span></a> : source.title}</li>;
+        })}
+      </ul>
+      {read && <span className={styles.sourcesRead}>Read {read}</span>}
+    </div>
   );
 }
 
@@ -426,7 +519,7 @@ function DirectoryCard({ systems }: { systems: SystemSummary[] }) {
               <StatusBadge status={system.status} />
             </div>
             <p>{system.summary}</p>
-            {href && <a href={href} target="_blank" rel="noopener noreferrer">Visit<span className={styles.srOnly}> {system.name} (opens in a new tab)</span></a>}
+            {href && <a className={styles.systemLink} href={href} target="_blank" rel="noopener noreferrer">Visit site<span className={styles.srOnly}>: {system.name} (opens in a new tab)</span></a>}
           </li>
         );
       })}
@@ -465,7 +558,9 @@ export function BlockView(props: {
   const { block } = props;
   switch (block.type) {
     case "action":
-      return <ActionCard action={block.action} phase={props.phase} error={props.actionError} onApprove={props.onApprove} onDecline={props.onDecline} onCancelSubscription={props.onCancelSubscription} />;
+      return <ActionCard action={block.action} phase={props.phase} error={props.actionError} onApprove={props.onApprove} onDecline={props.onDecline} onCancelSubscription={props.onCancelSubscription} onAsk={props.onAsk} />;
+    case "sagitta_sources":
+      return <SourcesCard sources={block.sources} readAt={block.readAt} />;
     case "sagitta_system":
       return <SystemCard system={block.system} />;
     case "sagitta_directory":

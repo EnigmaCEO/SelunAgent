@@ -121,6 +121,15 @@ test("the scorecard says why the largest assets can score the same", () => {
 
 test("a reply may only state dollar amounts from a tool or the customer", () => {
   assert.deepEqual(replyIssues("The scorecard costs $0.50.", '{"price_usdc":"0.5"}'), []);
+  // What the Protocol's sources don't support, even where the whitepaper's shorthand invites it.
+  assert.ok(replyIssues("The Treasury converts Vault deposits into allocation batches.", "").length > 0);
+  assert.ok(replyIssues("The Treasury turns those deposits into batches.", "").length > 0);
+  assert.deepEqual(replyIssues("The Treasury doesn't convert deposits. It allocates a matching amount of Stability Units and routes that capital through the Escrow.", ""), []);
+  assert.deepEqual(replyIssues("Aave uses deposits to fund loans.", ""), []);
+  assert.ok(replyIssues("The Sagitta Protocol is governed by protocol law, not by a banking regulator.", "").length > 0);
+  assert.ok(replyIssues("So the Sagitta Protocol isn't regulated.", "").length > 0);
+  assert.deepEqual(replyIssues("The whitepaper and sites don't name a regulator for the Sagitta Protocol.", ""), []);
+  assert.deepEqual(replyIssues("USDT isn't regulated in that sense.", ""), []);
   assert.deepEqual(replyIssues("You hold $4,000 of BTC.", "I hold $4000 of BTC"), []);
   assert.ok(replyIssues("Bitcoin is trading at $68,000.", '{"price_usdc":"0.5"}').length > 0);
   assert.ok(replyIssues("That is about 68000 USD.", "").length > 0);

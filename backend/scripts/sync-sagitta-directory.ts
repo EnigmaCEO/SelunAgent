@@ -17,8 +17,10 @@ const source = path.resolve(process.argv[2] ?? path.resolve(__dirname, "../../..
 
 type Link = { label: string; href: string };
 
+const EXCLUDED = /sagitta\s*labs|sagittalabs/i;
+
 function httpsOnly(links: Link[] | undefined): Link[] {
-  return (links ?? []).filter((link) => link.href.startsWith("https://")).map(({ label, href }) => ({ label, href }));
+  return (links ?? []).filter((link) => link.href.startsWith("https://") && !EXCLUDED.test(`${link.label} ${link.href}`)).map(({ label, href }) => ({ label, href }));
 }
 
 (async () => {

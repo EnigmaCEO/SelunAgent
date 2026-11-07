@@ -8,6 +8,7 @@ import { getToolSpec } from "./capability-registry";
 import { COMPREHENSIVE_REPORT_ID, type PayPalPaymentEvidence } from "./commerce";
 import { PayPalApiError, type PayPalApi, type PayPalConfig, type PayPalSaleTransaction, type WebhookHeaders } from "./paypal-client";
 import { presentResult, type ResultDocument } from "./result-presenter";
+import { purchaseOf, snapshotProblem, type ScreeningSnapshot } from "./scorecard-preflight";
 
 /**
  * PayPal purchases and subscriptions.
@@ -51,6 +52,11 @@ export type Purchase = {
   dispute: { id: string; status: string; outcome: string | null } | null;
   /** The stored result the report is built from. Never overwritten once complete. */
   responseData: Record<string, unknown> | null;
+  /**
+   * The screening decision this payment bought, used for every run and retry. Null for later
+   * subscription months, which are new analyses screened when they run.
+   */
+  screening?: ScreeningSnapshot | null;
   audit: { at: string; event: string; detail?: string }[];
   createdAt: string;
   updatedAt: string;
@@ -74,6 +80,8 @@ export type LocalSubscription = {
   nextBillingTime: string | null;
   conversationId: string | null;
   actionId: string | null;
+  /** Applies to the first paid month only. */
+  screening?: ScreeningSnapshot | null;
   /** PayPal sale ID to purchase ID. One entry per paid billing cycle. */
   cycles: Record<string, string>;
   audit: { at: string; event: string; detail?: string }[];
@@ -128,7 +136,7 @@ export type PayPalCommerceDeps = {
   api: PayPalApi;
   config: Pick<PayPalConfig, "env" | "returnBaseUrl" | "reportPriceUsd" | "subscriptionPriceUsd" | "webhookId">;
   /** The same pipeline as the x402 services. Takes a decision and an input, returns the result. */
-  runReport: (decisionId: string, input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  runReport: (decisionId: string, input: Record<string, unknown>, screening?: ScreeningSnapshot | null) => Promise<Record<string, unknown>>;
   /** Delivers a subscription cycle's report to the subscriber, through the report service. */
   deliverReport?: (reportToken: string, email: string) => Promise<void>;
   /** Told about any purchase that has reached an end state, so a live conversation can update. */
@@ -151,6 +159,7 @@ function defaultStateFile(): string {
   return path.resolve(process.cwd(), process.cwd().endsWith("backend") ? "data" : "backend/data", "paypal-commerce.json");
 }
 
+const QUOTE_EXPIRED_MESSAGE = "This quote expired before PayPal confirmed it, so nothing was charged. Please ask Selun for a new quote.";
 const REFUND_NOTE = "Selun could not deliver your report, so this payment has been refunded in full.";
 const REFUNDED_MESSAGE = "We couldn't complete your report, so your payment has been refunded in full. It can take a few days to appear.";
 const REFUND_FAILED_MESSAGE = "We couldn't complete your report, and the automatic refund didn't go through. Our team has been alerted and will refund you. Please contact support with the request ID below.";
@@ -282,6 +291,7 @@ export class PayPalCommerceService {
     body: Record<string, unknown>;
     conversationId: string | null;
     actionId: string | null;
+    screening?: ScreeningSnapshot | null;
   }): Promise<{ purchaseId: string; approveUrl: string }> {
     const purchaseId = purchaseIdFor(input.decisionId);
     return this.withLock(purchaseId, async () => {
@@ -289,6 +299,11 @@ export class PayPalCommerceService {
       if (existing) {
         if (existing.payment.status !== "created" || !existing.approveUrl) {
           throw new AssistantError("action_not_payable", 409, "This purchase has already been paid for.");
+        }
+        // Nothing is paid yet, so a re-checked quote replaces the one the order started with.
+        if (input.screening && input.screening.id !== existing.screening?.id) {
+          existing.screening = input.screening;
+          this.stamp(existing, "screening_rebound", input.screening.id);
         }
         return { purchaseId, approveUrl: existing.approveUrl };
       }
@@ -319,6 +334,7 @@ export class PayPalCommerceService {
         access: "active",
         dispute: null,
         responseData: null,
+        screening: input.screening ?? null,
         audit: [{ at, event: "order_created", detail: orderId }],
         createdAt: at,
         updatedAt: at,
@@ -363,6 +379,11 @@ export class PayPalCommerceService {
     if (order.status !== "COMPLETED") {
       if (order.status !== "APPROVED") {
         throw new AssistantError("payment_not_approved", 409, "PayPal hasn't confirmed your approval yet, so nothing has been charged. Please try checkout again.");
+      }
+      // The last moment nothing has been charged. Once captured, the purchase keeps this decision.
+      if (purchase.screening && snapshotProblem(purchase.screening, purchaseOf(purchase.input), this.now().getTime())) {
+        this.stamp(purchase, "capture_refused_quote_expired", purchase.screening.id);
+        throw new AssistantError("quote_expired", 409, QUOTE_EXPIRED_MESSAGE);
       }
       order = await this.api.captureOrder(orderId, `selun-capture-${purchase.purchaseId}`);
     }
@@ -486,7 +507,7 @@ export class PayPalCommerceService {
       let failure: string | null = null;
       await this.takeRunSlot();
       try {
-        const result = await this.deps.runReport(purchase.decisionId, purchase.input);
+        const result = await this.deps.runReport(purchase.decisionId, purchase.input, purchase.screening ?? null);
         const response = this.buildResponse(purchase, result);
         const spec = getToolSpec(purchase.capabilityId);
         // A result that can't become a report isn't a delivered one.
@@ -676,6 +697,7 @@ export class PayPalCommerceService {
     body: Record<string, unknown>;
     conversationId: string | null;
     actionId: string | null;
+    screening?: ScreeningSnapshot | null;
   }): Promise<{ subscriptionLocalId: string; approveUrl: string }> {
     const localId = `ps-${createHash("sha256").update(input.actionKey).digest("hex").slice(0, 24)}`;
     return this.withLock(localId, async () => {
@@ -683,6 +705,10 @@ export class PayPalCommerceService {
       if (existing) {
         if (existing.status !== "created" || !existing.approveUrl) {
           throw new AssistantError("action_not_payable", 409, "This subscription has already been started.");
+        }
+        if (input.screening && input.screening.id !== existing.screening?.id) {
+          existing.screening = input.screening;
+          this.stamp(existing, "screening_rebound", input.screening.id);
         }
         return { subscriptionLocalId: localId, approveUrl: existing.approveUrl };
       }
@@ -710,6 +736,7 @@ export class PayPalCommerceService {
         nextBillingTime: null,
         conversationId: input.conversationId,
         actionId: input.actionId,
+        screening: input.screening ?? null,
         cycles: {},
         audit: [{ at, event: "subscription_created", detail: subscriptionId }],
         createdAt: at,
@@ -796,6 +823,7 @@ export class PayPalCommerceService {
       access: "active",
       dispute: null,
       responseData: null,
+      screening: Object.keys(subscription.cycles).length === 0 ? subscription.screening ?? null : null,
       audit: [{ at, event: "cycle_paid", detail: sale.id }],
       createdAt: at,
       updatedAt: at,
@@ -1006,7 +1034,13 @@ export class PayPalCommerceService {
     if (!purchase) return false;
     await this.withLock(purchase.purchaseId, async () => {
       if (purchase.payment.status === "created") {
-        await this.captureOrder(purchase);
+        try {
+          await this.captureOrder(purchase);
+        } catch (error) {
+          // Retrying can't change an expired quote. The customer is told when they return, and isn't charged.
+          if (error instanceof AssistantError && error.code === "quote_expired") return;
+          throw error;
+        }
         this.stamp(purchase, "captured_from_webhook");
       }
       this.startFulfillment(purchase);
