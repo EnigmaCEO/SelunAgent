@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import test from "node:test";
 import { PayPalApiError } from "./paypal-client";
 import { readStripeConfig, StripeClient } from "./stripe-client";
@@ -57,8 +58,12 @@ test("an unpaid session has no capture, and a paid one reports Stripe's own amou
 test("refunds and disputes read back as a lost payment", async () => {
   const refunded = await client([{ status: "succeeded", amount_received: 50, currency: "usd", latest_charge: { refunded: true } }]).api.getCapture("pi_1");
   assert.equal(refunded.status, "REFUNDED");
-  const disputed = await client([{ status: "succeeded", amount_received: 50, currency: "usd", latest_charge: { disputed: true } }]).api.getCapture("pi_1");
+  const disputed = await client([{ status: "succeeded", amount_received: 50, currency: "usd", latest_charge: { disputed: true, dispute: { status: "lost" } } }]).api.getCapture("pi_1");
   assert.equal(disputed.status, "REVERSED");
+  for (const status of ["won", "needs_response"]) {
+    const standing = await client([{ status: "succeeded", amount_received: 50, currency: "usd", latest_charge: { disputed: true, dispute: { status } } }]).api.getCapture("pi_1");
+    assert.equal(standing.status, "COMPLETED", `${status} leaves the payment standing`);
+  }
   const partial = await client([{ status: "succeeded", amount_received: 50, currency: "usd", latest_charge: { amount_refunded: 10 } }]).api.getCapture("pi_1");
   assert.equal(partial.status, "PARTIALLY_REFUNDED");
 });
@@ -101,4 +106,45 @@ test("Stripe's error text never leaves the client", async () => {
     assert.doesNotMatch(error.message, /secret detail/);
     return true;
   });
+});
+
+const SECRET = "whsec_test";
+const NOW_MS = Date.parse("2026-11-07T12:00:00.000Z");
+const signed = (body: string, at = NOW_MS / 1000, secret = SECRET) => `t=${at},v1=${createHmac("sha256", secret).update(`${at}.${body}`).digest("hex")}`;
+const headers = (stripeSignature: string) => ({ authAlgo: "", certUrl: "", transmissionId: "", transmissionSig: "", transmissionTime: "", stripeSignature });
+
+test("only Stripe's fresh signature over the exact bytes is accepted", async () => {
+  const api = new StripeClient({ secretKey: "sk_test_x" }, fetch, () => NOW_MS);
+  const body = JSON.stringify({ id: "evt_1" });
+  assert.equal(await api.verifyWebhook(headers(signed(body)), body, SECRET), true);
+  assert.equal(await api.verifyWebhook(headers(`${signed(body)},v1=stale`), body, SECRET), true, "extra signatures during a secret rotation are fine");
+  assert.equal(await api.verifyWebhook(headers(signed(body)), `${body} `, SECRET), false, "changed body");
+  assert.equal(await api.verifyWebhook(headers(signed(body, NOW_MS / 1000, "whsec_other")), body, SECRET), false, "wrong secret");
+  assert.equal(await api.verifyWebhook(headers(signed(body, NOW_MS / 1000 - 301)), body, SECRET), false, "replayed later");
+  assert.equal(await api.verifyWebhook(headers(""), body, SECRET), false, "unsigned");
+  assert.equal(await api.verifyWebhook(headers("t=abc,v1=x"), body, SECRET), false, "malformed");
+});
+
+test("Stripe's events are restated in the terms the purchase service handles", () => {
+  const api = new StripeClient({ secretKey: "sk_test_x" });
+  const read = (type: string, object: Record<string, unknown>) => api.translateEvent({ id: "evt", type, data: { object } });
+  assert.deepEqual(read("checkout.session.completed", { id: "cs_1", mode: "payment" }), { id: "evt", type: "CHECKOUT.ORDER.APPROVED", resource: { id: "cs_1" } });
+  assert.equal(read("checkout.session.completed", { id: "cs_1", mode: "subscription" }).type, "BILLING.SUBSCRIPTION.ACTIVATED");
+  assert.deepEqual(read("charge.refunded", { id: "ch_1", payment_intent: "pi_1" }).resource, { id: "pi_1" });
+  assert.deepEqual(read("charge.refunded", { id: "ch_1", invoice: "in_1" }), { id: "evt", type: "PAYMENT.SALE.REFUNDED", resource: { sale_id: "ch_1" } });
+  const opened = read("charge.dispute.created", { id: "dp_1", status: "needs_response", charge: "ch_1", payment_intent: "pi_1" });
+  assert.equal(opened.type, "CUSTOMER.DISPUTE.UPDATED");
+  assert.equal((opened.resource.dispute_outcome as { outcome_code: unknown }).outcome_code, null);
+  const outcome = (status: string) => (read("charge.dispute.closed", { id: "dp_1", status }).resource.dispute_outcome as { outcome_code: string }).outcome_code;
+  assert.equal(outcome("won"), "RESOLVED_SELLER_FAVOUR");
+  assert.equal(outcome("lost"), "RESOLVED_BUYER_FAVOUR");
+  assert.equal(outcome("something_new"), "something_new", "an unknown outcome stays on hold for a person");
+  assert.deepEqual(read("invoice.paid", { charge: "ch_2", subscription_details: { metadata: { selun_subscription: "sub-1" } } }), { id: "evt", type: "PAYMENT.SALE.COMPLETED", resource: { id: "ch_2", custom_id: "sub-1" } });
+  assert.equal(read("customer.subscription.deleted", { metadata: { selun_subscription: "sub-1" } }).resource.custom_id, "sub-1");
+  assert.equal(read("payout.paid", {}).type, "payout.paid");
+});
+
+test("the signing secret comes from the environment", () => {
+  assert.equal(readStripeConfig({ STRIPE_SECRET_KEY: "sk_test_x" })?.webhookId, null);
+  assert.equal(readStripeConfig({ STRIPE_SECRET_KEY: "sk_test_x", STRIPE_WEBHOOK_SECRET: "whsec_1" })?.webhookId, "whsec_1");
 });

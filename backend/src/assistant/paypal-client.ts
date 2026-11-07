@@ -89,6 +89,8 @@ export type WebhookHeaders = {
   transmissionId: string;
   transmissionSig: string;
   transmissionTime: string;
+  /** Stripe's signature header. PayPal uses the fields above. */
+  stripeSignature?: string;
 };
 
 /** Everything the commerce service needs from PayPal. Tests supply a fake. */
@@ -106,6 +108,8 @@ export interface PayPalApi {
   refundSale(saleId: string, requestId: string): Promise<{ refundId: string; status: string }>;
   getDispute(disputeId: string): Promise<PayPalDispute>;
   verifyWebhook(headers: WebhookHeaders, rawBody: string, webhookId: string): Promise<boolean>;
+  /** Restates a provider's own event in the terms the purchase service handles. PayPal's need no change. */
+  translateEvent?(event: Record<string, unknown>): { id: string; type: string; resource: Record<string, unknown> };
 }
 
 type Json = Record<string, unknown>;

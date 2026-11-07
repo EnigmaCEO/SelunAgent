@@ -1,4 +1,5 @@
-import { PayPalApiError, type PayPalApi, type PayPalCapture, type PayPalConfig, type PayPalDispute, type PayPalOrder, type PayPalSaleTransaction, type PayPalSubscription, type ProcessorFee } from "./paypal-client";
+import { createHmac, timingSafeEqual } from "node:crypto";
+import { PayPalApiError, type PayPalApi, type PayPalCapture, type PayPalConfig, type PayPalDispute, type PayPalOrder, type PayPalSaleTransaction, type PayPalSubscription, type ProcessorFee, type WebhookHeaders } from "./paypal-client";
 
 /**
  * Stripe behind the same interface as PayPal, so the durable purchase service works unchanged. Nothing from the
@@ -28,7 +29,8 @@ export function readStripeConfig(env: NodeJS.ProcessEnv = process.env): StripeCo
   return {
     env: test ? "sandbox" : "live",
     secretKey,
-    webhookId: null,
+    // Stripe's signing secret. Each webhook endpoint has its own.
+    webhookId: env.STRIPE_WEBHOOK_SECRET?.trim() || null,
     returnBaseUrl: (env.STRIPE_RETURN_BASE_URL?.trim() || env.PAYPAL_RETURN_BASE_URL?.trim() || "http://localhost:3000").replace(/\/+$/, ""),
     reportPriceUsd: readPrice(env.PAYPAL_REPORT_PRICE_USD, "4.99"),
     subscriptionPriceUsd: readPrice(env.PAYPAL_SUBSCRIPTION_PRICE_USD, "9.99"),
@@ -63,14 +65,30 @@ function chargeFee(charge: Json): ProcessorFee | null {
 }
 
 function chargeStatus(charge: Json, fallback: string): string {
-  if (charge.disputed === true) return "REVERSED";
+  // `disputed` stays true after a dispute is won, so only a lost one means the money went back.
+  // An open one is restricted by its webhook, which can restore access if it's won.
+  if (record(charge.dispute).status === "lost") return "REVERSED";
   if (charge.refunded === true) return "REFUNDED";
   if (typeof charge.amount_refunded === "number" && charge.amount_refunded > 0) return "PARTIALLY_REFUNDED";
   return fallback;
 }
 
+const SIGNATURE_TOLERANCE_SECONDS = 300;
+
+/** Stripe's closing status, in the outcome terms the purchase service acts on. */
+const DISPUTE_OUTCOME: Record<string, string> = {
+  won: "RESOLVED_SELLER_FAVOUR",
+  warning_closed: "RESOLVED_SELLER_FAVOUR",
+  lost: "RESOLVED_BUYER_FAVOUR",
+  charge_refunded: "RESOLVED_BUYER_FAVOUR",
+};
+
 export class StripeClient implements PayPalApi {
-  constructor(private readonly config: Pick<StripeConfig, "secretKey">, private readonly fetchImpl: typeof fetch = fetch) {}
+  constructor(
+    private readonly config: Pick<StripeConfig, "secretKey">,
+    private readonly fetchImpl: typeof fetch = fetch,
+    private readonly now: () => number = Date.now,
+  ) {}
 
   private async call(method: "GET" | "POST" | "DELETE", path: string, body?: Record<string, string | number>, idempotencyKey?: string): Promise<Json> {
     const response = await this.fetchImpl(`https://api.stripe.com/v1/${path}`, {
@@ -93,7 +111,7 @@ export class StripeClient implements PayPalApi {
   }
 
   private session(id: string): Promise<Json> {
-    return this.call("GET", `checkout/sessions/${encodeURIComponent(id)}?expand[]=payment_intent.latest_charge.balance_transaction&expand[]=subscription.latest_invoice`);
+    return this.call("GET", `checkout/sessions/${encodeURIComponent(id)}?expand[]=payment_intent.latest_charge.balance_transaction&expand[]=payment_intent.latest_charge.dispute&expand[]=subscription.latest_invoice`);
   }
 
   private expiry(): number {
@@ -148,7 +166,7 @@ export class StripeClient implements PayPalApi {
   }
 
   async getCapture(captureId: string): Promise<PayPalCapture> {
-    const intent = await this.call("GET", `payment_intents/${encodeURIComponent(captureId)}?expand[]=latest_charge.balance_transaction`);
+    const intent = await this.call("GET", `payment_intents/${encodeURIComponent(captureId)}?expand[]=latest_charge.balance_transaction&expand[]=latest_charge.dispute`);
     return {
       captureId,
       status: chargeStatus(record(intent.latest_charge), paymentIntentStatus(text(intent.status))),
@@ -192,6 +210,8 @@ export class StripeClient implements PayPalApi {
       "payment_method_types[0]": "card",
       "line_items[0][quantity]": 1,
       "line_items[0][price]": input.planId,
+      // Renewal events name the subscription, not this session, so this ties them back.
+      "subscription_data[metadata][selun_subscription]": input.customId,
     });
     const subscriptionId = text(session.id);
     const approveUrl = text(session.url);
@@ -225,7 +245,7 @@ export class StripeClient implements PayPalApi {
     const session = await this.session(subscriptionId);
     const remote = idOf(session.subscription);
     if (!remote) return [];
-    const query = `invoices?subscription=${encodeURIComponent(remote)}&status=paid&limit=100&expand[]=data.charge.balance_transaction&created[gte]=${Math.floor(Date.parse(start) / 1000)}&created[lte]=${Math.ceil(Date.parse(end) / 1000)}`;
+    const query = `invoices?subscription=${encodeURIComponent(remote)}&status=paid&limit=100&expand[]=data.charge.balance_transaction&expand[]=data.charge.dispute&created[gte]=${Math.floor(Date.parse(start) / 1000)}&created[lte]=${Math.ceil(Date.parse(end) / 1000)}`;
     const invoices = await this.call("GET", query);
     const list = Array.isArray(invoices.data) ? invoices.data.map(record) : [];
     return list.flatMap((invoice): PayPalSaleTransaction[] => {
@@ -257,12 +277,62 @@ export class StripeClient implements PayPalApi {
     return this.refundResult(refund);
   }
 
-  /** Dispute events aren't wired up for Stripe yet. `getCapture` reports a disputed charge. */
+  /** The signed dispute event already says everything needed, so there's nothing further to read. */
   async getDispute(disputeId: string): Promise<PayPalDispute> {
     throw new PayPalApiError(404, "not_supported", `Stripe dispute ${disputeId} isn't read here.`);
   }
 
-  async verifyWebhook(): Promise<boolean> {
-    return false;
+  /** Checks Stripe's signature over the exact bytes it sent, and refuses an old one so a captured event can't be replayed. */
+  async verifyWebhook(headers: WebhookHeaders, rawBody: string, secret: string): Promise<boolean> {
+    const parts = (headers.stripeSignature ?? "").split(",").map((part) => part.trim().split("="));
+    const timestamp = Number(parts.find(([key]) => key === "t")?.[1]);
+    const signatures = parts.filter(([key]) => key === "v1").map(([, value]) => value ?? "");
+    if (!Number.isFinite(timestamp) || signatures.length === 0) return false;
+    if (Math.abs(this.now() / 1000 - timestamp) > SIGNATURE_TOLERANCE_SECONDS) return false;
+    const expected = Buffer.from(createHmac("sha256", secret).update(`${timestamp}.${rawBody}`).digest("hex"));
+    return signatures.some((signature) => {
+      const given = Buffer.from(signature);
+      return given.length === expected.length && timingSafeEqual(given, expected);
+    });
+  }
+
+  /** Each result is only a prompt: the purchase service re-reads Stripe before changing anything. */
+  translateEvent(event: Json): { id: string; type: string; resource: Json } {
+    const id = text(event.id) ?? "";
+    const object = record(record(event.data).object);
+    const stripeType = text(event.type) ?? "UNKNOWN";
+    const to = (type: string, resource: Json) => ({ id, type, resource });
+    const subscriptionKey = text(record(record(object.subscription_details).metadata).selun_subscription) ?? text(record(object.metadata).selun_subscription);
+    switch (stripeType) {
+      case "checkout.session.completed":
+        return to(object.mode === "subscription" ? "BILLING.SUBSCRIPTION.ACTIVATED" : "CHECKOUT.ORDER.APPROVED", { id: text(object.id) });
+      case "charge.refunded":
+        return object.invoice
+          ? to("PAYMENT.SALE.REFUNDED", { sale_id: text(object.id) })
+          : to("PAYMENT.CAPTURE.REFUNDED", { id: idOf(object.payment_intent) });
+      case "charge.dispute.created":
+      case "charge.dispute.updated":
+      case "charge.dispute.funds_withdrawn":
+      case "charge.dispute.funds_reinstated":
+      case "charge.dispute.closed": {
+        const closed = stripeType === "charge.dispute.closed";
+        return to(closed ? "CUSTOMER.DISPUTE.RESOLVED" : "CUSTOMER.DISPUTE.UPDATED", {
+          dispute_id: text(object.id),
+          status: closed ? "RESOLVED" : "OPEN",
+          dispute_outcome: { outcome_code: closed ? DISPUTE_OUTCOME[String(object.status)] ?? String(object.status) : null },
+          // A one-time purchase is held by its payment intent, and a monthly one by its charge.
+          disputed_transactions: [{ seller_transaction_id: idOf(object.payment_intent) }, { seller_transaction_id: idOf(object.charge) }],
+        });
+      }
+      case "invoice.paid":
+        return to("PAYMENT.SALE.COMPLETED", { id: idOf(object.charge), custom_id: subscriptionKey });
+      case "invoice.payment_failed":
+        return to("BILLING.SUBSCRIPTION.PAYMENT.FAILED", { custom_id: subscriptionKey });
+      case "customer.subscription.updated":
+      case "customer.subscription.deleted":
+        return to("BILLING.SUBSCRIPTION.UPDATED", { custom_id: subscriptionKey });
+      default:
+        return to(stripeType, {});
+    }
   }
 }

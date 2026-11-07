@@ -471,6 +471,21 @@ export function createAssistantRouter(injected?: AssistantDeps, injectedReports?
     }
   });
 
+  // Called by Stripe directly. Its signature is checked over the exact bytes before anything is read.
+  router.post("/stripe/webhook", async (req, res) => {
+    try {
+      const rawBody = (req as Request & { rawBody?: string }).rawBody;
+      if (!rawBody) throw new AssistantError("invalid_request", 400, "Empty webhook.");
+      const result = await requireProvider("stripe").handleWebhook(
+        { authAlgo: "", certUrl: "", transmissionId: "", transmissionSig: "", transmissionTime: "", stripeSignature: req.get("stripe-signature") ?? "" },
+        rawBody,
+      );
+      res.json({ success: true, ...result });
+    } catch (error) {
+      sendError(res, error);
+    }
+  });
+
   // The token in the body is the only input: no report content is accepted from the browser.
   router.post("/report/download", limited(actionLimiter), async (req, res) => {
     try {

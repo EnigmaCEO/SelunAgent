@@ -22,6 +22,7 @@ import { PayPalCommerceService, purchaseIdFor, type CoverageNotice, type PayPalC
 import { renderResultPdf, resultRecordHash } from "./result-report";
 import { presentResult } from "./result-presenter";
 import { ReportService } from "./report.service";
+import { StripeClient } from "./stripe-client";
 
 process.env.SELUN_REFERRAL_INTERNAL_TOKEN = "test-paypal-secret";
 
@@ -64,6 +65,7 @@ class FakePayPal implements PayPalApi {
   sales: PayPalSaleTransaction[] = [];
   cancelled: string[] = [];
   getCaptureFails = false;
+  translateEvent?: PayPalApi["translateEvent"];
   private next = 0;
 
   async createOrder(input: { purchaseId: string; amount: string }) {
@@ -1502,4 +1504,43 @@ test("the fee report uses what the provider states, and a refund loses the fee",
   assert.doesNotMatch(JSON.stringify(rows), /private@example/);
   const [summary] = summarizePayments(rows);
   assert.deepEqual([summary.payments, summary.gross, summary.fees, summary.netKept, summary.missingFee], [3, "1.50", "0.64", "-0.14", 1]);
+});
+
+test("a Stripe payment is fulfilled from its webhook alone, once, however often it's delivered", async () => {
+  const h = harness();
+  const events = new StripeClient({ secretKey: "sk_test_x" });
+  h.api.translateEvent = (event) => events.translateEvent(event);
+  const { purchaseId } = await h.service.createCheckout({ decisionId: DECISION, capabilityId: COMPREHENSIVE_REPORT_ID, title: "Comprehensive Intelligence Report", body: INPUT, conversationId: "c", actionId: "a" });
+  h.api.approve();
+  const completed = (id: string) => JSON.stringify({ id, type: "checkout.session.completed", data: { object: { id: "ORDER-1", mode: "payment" } } });
+
+  const first = await deliver(h, completed("evt_1"));
+  assert.deepEqual(first, { accepted: true });
+  assert.equal((await h.service.status(purchaseId)).phase, "completed", "with no browser involved");
+  assert.equal(h.runs.length, 1);
+
+  assert.equal((await deliver(h, completed("evt_1"))).duplicate, true, "the same event is recognized");
+  await deliver(h, completed("evt_2"));
+  await h.service.capture(purchaseId);
+  await flush();
+  assert.equal(h.runs.length, 1, "a second event and the customer's return don't run it again");
+  assert.equal(h.api.captureCalls.length, 1, "or charge again");
+});
+
+test("a Stripe refund or a lost dispute takes access away, and a won dispute restores it", async () => {
+  const h = harness();
+  const events = new StripeClient({ secretKey: "sk_test_x" });
+  h.api.translateEvent = (event) => events.translateEvent(event);
+  const { purchaseId } = await paidPurchase(h);
+  const send = (id: string, type: string, object: Record<string, unknown>) => deliver(h, JSON.stringify({ id, type, data: { object } }));
+  const access = () => (h.service as unknown as { all(): { purchases: Record<string, { access: string }> } }).all().purchases[purchaseId].access;
+
+  await send("evt_open", "charge.dispute.created", { id: "dp_1", status: "needs_response", payment_intent: CAPTURE, charge: "ch_1" });
+  assert.equal(access(), "restricted");
+  await send("evt_won", "charge.dispute.closed", { id: "dp_1", status: "won", payment_intent: CAPTURE, charge: "ch_1" });
+  assert.equal(access(), "active");
+
+  await send("evt_open2", "charge.dispute.created", { id: "dp_2", status: "needs_response", payment_intent: CAPTURE, charge: "ch_1" });
+  await send("evt_lost", "charge.dispute.closed", { id: "dp_2", status: "lost", payment_intent: CAPTURE, charge: "ch_1" });
+  assert.equal(access(), "revoked");
 });

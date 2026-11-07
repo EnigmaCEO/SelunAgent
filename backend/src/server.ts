@@ -235,9 +235,9 @@ app.set("trust proxy", resolveTrustProxySetting(process.env.TRUST_PROXY));
 
 app.use(express.json({
   limit: "1mb",
-  // PayPal signs the exact bytes it sent, so its webhook keeps them.
+  // PayPal and Stripe sign the exact bytes they sent, so their webhooks keep them.
   verify: (req, _res, buffer) => {
-    if (req.url?.endsWith("/paypal/webhook")) (req as typeof req & { rawBody?: string }).rawBody = buffer.toString("utf8");
+    if (req.url?.endsWith("/paypal/webhook") || req.url?.endsWith("/stripe/webhook")) (req as typeof req & { rawBody?: string }).rawBody = buffer.toString("utf8");
   },
 }));
 

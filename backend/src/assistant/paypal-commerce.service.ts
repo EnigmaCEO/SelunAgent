@@ -1134,28 +1134,29 @@ export class PayPalCommerceService {
       throw new AssistantError("service_unavailable", 503, "Couldn't verify the webhook. Please retry.");
     }
     if (!verified) {
-      console.warn("[paypal-webhook] rejected: signature failed");
+      console.warn(`[${this.providerId}-webhook] rejected: signature failed`);
       throw new AssistantError("report_not_authorized", 401, "Webhook signature rejected.");
     }
 
-    let event: { id?: unknown; event_type?: unknown; resource?: unknown };
+    let raw: Record<string, unknown>;
     try {
-      event = JSON.parse(rawBody) as typeof event;
+      raw = JSON.parse(rawBody) as typeof raw;
     } catch {
       throw new AssistantError("invalid_request", 400, "The webhook body wasn't valid JSON.");
     }
+    const event = this.api.translateEvent?.(raw) ?? { id: raw.id, type: raw.event_type, resource: raw.resource };
     const eventId = typeof event.id === "string" ? event.id : "";
     if (!eventId) throw new AssistantError("invalid_request", 400, "The webhook had no event ID.");
 
     const store = this.all();
     if (store.webhookEvents[eventId]) {
-      console.log(`[paypal-webhook] duplicate ${eventId} ${store.webhookEvents[eventId].type}`);
+      console.log(`[${this.providerId}-webhook] duplicate ${eventId} ${store.webhookEvents[eventId].type}`);
       return { accepted: true, duplicate: true };
     }
     const at = this.now().toISOString();
     store.webhookEvents[eventId] = {
       id: eventId,
-      type: typeof event.event_type === "string" ? event.event_type : "UNKNOWN",
+      type: typeof event.type === "string" ? event.type : "UNKNOWN",
       resource: event.resource && typeof event.resource === "object" ? (event.resource as Record<string, unknown>) : {},
       receivedAt: at,
       status: "pending",
@@ -1165,7 +1166,7 @@ export class PayPalCommerceService {
       processedAt: null,
     };
     this.save();
-    console.log(`[paypal-webhook] accepted ${eventId} ${store.webhookEvents[eventId].type}`);
+    console.log(`[${this.providerId}-webhook] accepted ${eventId} ${store.webhookEvents[eventId].type}`);
     this.scheduleDrain(0);
     return { accepted: true };
   }
@@ -1203,7 +1204,7 @@ export class PayPalCommerceService {
         event.status = handled ? "processed" : "unmatched";
         event.processedAt = this.now().toISOString();
         event.lastError = null;
-        console.log(`[paypal-webhook] ${event.status} ${event.id} ${event.type} attempt ${event.attempts}`);
+        console.log(`[${this.providerId}-webhook] ${event.status} ${event.id} ${event.type} attempt ${event.attempts}`);
       } catch (error) {
         event.lastError = error instanceof Error ? error.message : String(error);
         if (event.attempts >= this.maxEventAttempts) {
@@ -1213,7 +1214,7 @@ export class PayPalCommerceService {
           const delay = Math.min(this.eventRetryMs * 2 ** (event.attempts - 1), 60 * 60_000);
           event.nextAttemptAt = new Date(this.now().getTime() + delay).toISOString();
         }
-        console.warn(`[paypal-webhook] retry ${event.id} ${event.type} attempt ${event.attempts}: ${event.lastError}`);
+        console.warn(`[${this.providerId}-webhook] retry ${event.id} ${event.type} attempt ${event.attempts}: ${event.lastError}`);
       }
       this.save();
     }
@@ -1298,7 +1299,7 @@ export class PayPalCommerceService {
   }
 
   private async applySubscriptionEvent(type: string, resource: Record<string, unknown>): Promise<boolean> {
-    const subscription = this.subscriptionFor(String(resource.id ?? ""));
+    const subscription = this.subscriptionFor(String(resource.id ?? "")) ?? this.all().subscriptions[String(resource.custom_id ?? "")];
     if (!subscription) return false;
     await this.withLock(subscription.localId, async () => {
       if (type === "BILLING.SUBSCRIPTION.PAYMENT.FAILED") this.stamp(subscription, "subscription_payment_failed");
@@ -1316,6 +1317,7 @@ export class PayPalCommerceService {
     const saleId = String((type === "PAYMENT.SALE.REFUNDED" ? resource.sale_id : resource.id) ?? "");
     const knownPurchase = saleId ? this.findPurchase((entry) => entry.payment.saleId === saleId) : undefined;
     const subscription = this.subscriptionFor(String(resource.billing_agreement_id ?? ""))
+      ?? this.all().subscriptions[String(resource.custom_id ?? "")]
       ?? (knownPurchase?.subscriptionLocalId ? this.all().subscriptions[knownPurchase.subscriptionLocalId] : undefined);
     if (!subscription) return false;
     await this.withLock(subscription.localId, async () => {
@@ -1338,7 +1340,7 @@ export class PayPalCommerceService {
       if (disputeId) return await this.api.getDispute(disputeId);
     } catch (error) {
       if (!(error instanceof PayPalApiError) || ![401, 403, 404].includes(error.status)) throw error;
-      console.warn(`[paypal-webhook] dispute ${disputeId} unreadable (${error.status}), using the signed event`);
+      console.warn(`[${this.providerId}-webhook] dispute ${disputeId} unreadable (${error.status}), using the signed event`);
     }
     const transactions = Array.isArray(resource.disputed_transactions) ? (resource.disputed_transactions as { seller_transaction_id?: string }[]) : [];
     return {
