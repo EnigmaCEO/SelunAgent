@@ -86,6 +86,11 @@ function isQuoteGone(error: unknown): boolean {
 
 type PendingPayPal = { method?: string; label?: string; token: string; kind: "one_time" | "subscription"; conversationId: string; actionId: string };
 
+/** The same service for the same assets counts as the same analysis. */
+function purchaseKey(action: ActionView): string {
+  return `${action.capabilityId}|${action.details.find((detail) => detail.label === "Assets")?.value ?? ""}`;
+}
+
 function readPendingPayPal(): PendingPayPal | null {
   try {
     const raw = window.localStorage.getItem(PAYPAL_PENDING_KEY);
@@ -194,6 +199,37 @@ export default function ChatApp() {
   }, [conversations, hydrated]);
 
   const active = useMemo(() => conversations.find((entry) => entry.id === activeId) ?? null, [conversations, activeId]);
+
+  // Results this browser holds, by service and assets, so a repeat quote can offer the one already bought.
+  const purchased = useMemo(() => {
+    const found = new Map<string, { conversationId: string; actionId: string; at: string | null }>();
+    for (const conversation of conversations) {
+      for (const item of conversation.items) {
+        if (item.role !== "assistant") continue;
+        for (const block of item.blocks) {
+          if (block.type !== "action" || block.action.state !== "completed" || !block.action.document) continue;
+          const key = purchaseKey(block.action);
+          const at = block.action.document.snapshotAt;
+          const known = found.get(key);
+          if (!known || (at ?? "") > (known.at ?? "")) found.set(key, { conversationId: conversation.id, actionId: block.action.id, at });
+        }
+      }
+    }
+    return found;
+  }, [conversations]);
+
+  const previousFor = useCallback((action: ActionView) => {
+    if (action.state !== "awaiting_approval" || action.expired) return null;
+    const earlier = purchased.get(purchaseKey(action));
+    if (!earlier || earlier.actionId === action.id) return null;
+    return {
+      at: earlier.at,
+      onReview: () => {
+        setActiveId(earlier.conversationId);
+        window.setTimeout(() => document.getElementById(`result-${earlier.actionId}`)?.scrollIntoView({ behavior: "smooth", block: "start" }), 80);
+      },
+    };
+  }, [purchased]);
   const history = useMemo(
     () => conversations.filter((entry) => entry.items.length > 0).sort((left, right) => right.updatedAt - left.updatedAt),
     [conversations],
@@ -397,7 +433,7 @@ export default function ChatApp() {
           ...conversation,
           items: [
             ...conversation.items,
-            { id: newId(), role: "assistant", text: "", blocks: [{ type: "notice", tone: "info", text: "This conversation was idle for a while, so I no longer remember what we discussed. Your earlier results are still shown above." }] },
+            { id: newId(), role: "assistant", text: "", blocks: [{ type: "notice", tone: "info", text: "Your previous conversation is still available above. We can continue with a fresh request. Selun no longer sees the earlier messages, so include anything it needs to know. Your purchased reports stay available." }] },
           ],
         }));
         await attempt(null);
@@ -722,6 +758,7 @@ export default function ChatApp() {
                             referralHref={referralHref}
                             onCheckQuote={handleCheckQuote}
                             onNewQuote={handleNewQuote}
+                            previousFor={previousFor}
                             onApprove={handleApprove}
                             onDecline={handleDecline}
                             onCancelSubscription={handleCancelSubscription}

@@ -362,6 +362,37 @@
   margin: 0 0 8px;
 }
 
+.expiredLine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 8px 12px;
+  border: 1px dashed #c6d4e4;
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 13.5px;
+}
+
+.expiredLine strong {
+  color: var(--ink, inherit);
+  font-weight: 600;
+}
+
+.previousPurchase {
+  display: grid;
+  gap: 4px;
+  justify-items: start;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #f1f6fc;
+  font-size: 14px;
+}
+
+.previousPurchase p {
+  margin: 0;
+}
+
 .creditPanel {
   margin: 0 0 8px;
   padding: 10px 14px;

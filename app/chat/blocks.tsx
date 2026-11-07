@@ -295,6 +295,9 @@ const DEFAULTED_DETAIL: Record<string, string> = {
   "Bluechips segment": "Segment",
 };
 
+/** A result for the same service and assets that this browser already holds. */
+export type PreviousPurchase = { at: string | null; onReview: () => void };
+
 function ActionCard(props: {
   action: ActionView;
   phase: ApprovalPhase;
@@ -306,8 +309,9 @@ function ActionCard(props: {
   onCancelSubscription: (action: ActionView) => void;
   onUpdateAssets: (action: ActionView, assets: string[]) => void;
   onAsk: (text: string) => void;
+  previous?: PreviousPurchase | null;
 }) {
-  const { action, phase, error, onCheckQuote, onNewQuote, onApprove, onDecline, onCancelSubscription, onUpdateAssets, onAsk } = props;
+  const { previous, action, phase, error, onCheckQuote, onNewQuote, onApprove, onDecline, onCancelSubscription, onUpdateAssets, onAsk } = props;
   const busy = phase !== "idle";
   const options = action.paymentOptions ?? [];
   const retryOption = options.find((option) => option.flow === "wallet_signature");
@@ -379,7 +383,7 @@ function ActionCard(props: {
 
   if (action.state === "completed" && action.document) {
     return (
-      <div className={styles.stack}>
+      <div className={styles.stack} id={`result-${action.id}`}>
         {subscriptionRow}
         <ResultCard document={action.document} reportToken={action.reportToken} monthly={Boolean(subscription)} suggestedEmail={action.paypal?.payerEmail ?? null}>
         {action.explanationStatus === "pending" && <p className={styles.quietStatus} role="status"><span className={styles.spinner} aria-hidden />Writing a plain-language summary…</p>}
@@ -397,12 +401,9 @@ function ActionCard(props: {
 
   if (action.expired) {
     return (
-      <div className={styles.actionCard} role="status">
-        <p className={styles.actionRunningTitle}>{action.title}</p>
-        <p>This quote has expired, and nothing was charged.</p>
-        <div className={styles.actionButtons}>
-          <button type="button" className={styles.approveButton} onClick={() => onNewQuote(action)}>Get a new quote</button>
-        </div>
+      <div className={styles.expiredLine} role="status">
+        <span><strong>{simpleCard(action)?.title ?? action.title}</strong> · Previous quote expired. Nothing was charged.</span>
+        <button type="button" className={styles.textButton} onClick={() => onNewQuote(action)}>Refresh</button>
       </div>
     );
   }
@@ -511,6 +512,15 @@ function ActionCard(props: {
         )
       ) : options.length === 0 ? null : (
         <>
+          {previous && (
+            <div className={styles.previousPurchase}>
+              <p>
+                You already have a {simple?.title ?? action.title}{formatDate(previous.at) ? ` from ${formatDate(previous.at)}` : ""}.
+                Would you like to review it, or buy an updated analysis below?
+              </p>
+              <button type="button" className={styles.textButton} onClick={previous.onReview}>Review your previous analysis</button>
+            </div>
+          )}
           <fieldset className={styles.paymentChoice} disabled={checking}>
             <legend>Payment method</legend>
             {options.map((option) => (
@@ -642,12 +652,13 @@ export function BlockView(props: {
   onCancelSubscription: (action: ActionView) => void;
   onUpdateAssets: (action: ActionView, assets: string[]) => void;
   onAsk: (text: string) => void;
+  previousFor?: (action: ActionView) => PreviousPurchase | null;
   disabled: boolean;
 }) {
   const { block } = props;
   switch (block.type) {
     case "action":
-      return <ActionCard action={block.action} phase={props.phase} error={props.actionError} onUpdateAssets={props.onUpdateAssets} onCheckQuote={props.onCheckQuote} onNewQuote={props.onNewQuote} onApprove={props.onApprove} onDecline={props.onDecline} onCancelSubscription={props.onCancelSubscription} onAsk={props.onAsk} />;
+      return <ActionCard action={block.action} phase={props.phase} error={props.actionError} onUpdateAssets={props.onUpdateAssets} onCheckQuote={props.onCheckQuote} onNewQuote={props.onNewQuote} previous={props.previousFor?.(block.action) ?? null} onApprove={props.onApprove} onDecline={props.onDecline} onCancelSubscription={props.onCancelSubscription} onAsk={props.onAsk} />;
     case "sagitta_sources":
       return <SourcesCard sources={block.sources} readAt={block.readAt} />;
     case "sagitta_system":
