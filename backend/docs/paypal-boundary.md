@@ -36,8 +36,9 @@ If the buyer never returns, `CHECKOUT.ORDER.APPROVED` does step 3 instead.
 | Event | What happens |
 |---|---|
 | Repeat capture, double click, webhook repeat | One capture and one run. Order, capture, and refund requests use stable `PayPal-Request-Id` values, and webhook IDs are recorded |
-| Run fails | Up to 3 attempts on the original payment |
-| Still failing, or the result can't become a report | Full refund. If the refund fails, the admin is alerted and the customer is told |
+| A provider fails during the run | Retried on the original payment for 24 hours, with the schedule saved so a restart keeps it. The customer is told it's delayed |
+| A locked asset can't score | 3 tries over a few minutes on the original payment |
+| Still failing at the end of that, or the result can't ever become a report | Full refund. If the refund fails, the admin is alerted and the customer is told |
 | Restart mid-run | Paid purchases resume on startup without another capture |
 | Refund or reversal | That purchase's access is revoked and pending work stops. Other purchases aren't affected |
 | Partial refund | Access stays, since part of the payment stands |

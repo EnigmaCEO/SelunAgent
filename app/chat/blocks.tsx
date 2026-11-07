@@ -290,9 +290,10 @@ function ActionCard(props: {
   onApprove: (action: ActionView) => void;
   onDecline: (action: ActionView) => void;
   onCancelSubscription: (action: ActionView) => void;
+  onUpdateAssets: (action: ActionView, assets: string[]) => void;
   onAsk: (text: string) => void;
 }) {
-  const { action, phase, error, onApprove, onDecline, onCancelSubscription, onAsk } = props;
+  const { action, phase, error, onApprove, onDecline, onCancelSubscription, onUpdateAssets, onAsk } = props;
   const busy = phase !== "idle";
   const usesPayPal = action.execution === "paypal_checkout" || action.execution === "paypal_subscription";
   const monthly = action.execution === "paypal_subscription";
@@ -307,7 +308,24 @@ function ActionCard(props: {
             : `Your subscription is ${subscription.subscriptionStatus}.`}
       </p>
       {subscription.subscriptionStatus === "active" && (
-        <button type="button" className={styles.ghostButton} onClick={() => onCancelSubscription(action)}>Cancel subscription</button>
+        <>
+          <form
+            className={styles.assetForm}
+            onSubmit={(event) => {
+              event.preventDefault();
+              const field = event.currentTarget.elements.namedItem("assets") as HTMLInputElement;
+              const assets = field.value.split(",").map((entry) => entry.trim()).filter(Boolean);
+              if (assets.length > 0) onUpdateAssets(action, assets);
+            }}
+          >
+            <label htmlFor={`assets-${action.id}`}>Change the assets in your reports</label>
+            <div className={styles.assetFormRow}>
+              <input id={`assets-${action.id}`} name="assets" className={styles.assetInput} placeholder="Bitcoin, Ethereum" autoComplete="off" />
+              <button type="submit" className={styles.ghostButton}>Update</button>
+            </div>
+          </form>
+          <button type="button" className={styles.ghostButton} onClick={() => onCancelSubscription(action)}>Cancel subscription</button>
+        </>
       )}
       {error && <p className={styles.inlineError} role="alert">{error}</p>}
     </div>
@@ -354,7 +372,15 @@ function ActionCard(props: {
         <div className={styles.runningRow}>
           <span className={styles.spinner} aria-hidden />
           <div>
-            <p className={styles.actionRunningTitle}>{action.paypal?.phase === "payment_pending" ? `Waiting for PayPal: ${action.title}` : `Running ${action.title}`}</p>
+            <p className={styles.actionRunningTitle}>
+              {action.paypal?.phase === "payment_pending"
+                ? `Waiting for PayPal: ${action.title}`
+                : action.paypal?.phase === "delayed"
+                  ? `Delayed: ${action.title}`
+                  : action.paypal?.phase === "needs_selection"
+                    ? `Choose assets: ${action.title}`
+                    : `Running ${action.title}`}
+            </p>
             <p className={styles.actionRunningHint}>{action.paypal?.message ?? `${action.duration}. You can keep chatting, and this will update here when it's done.`}</p>
           </div>
         </div>
@@ -552,13 +578,14 @@ export function BlockView(props: {
   onApprove: (action: ActionView) => void;
   onDecline: (action: ActionView) => void;
   onCancelSubscription: (action: ActionView) => void;
+  onUpdateAssets: (action: ActionView, assets: string[]) => void;
   onAsk: (text: string) => void;
   disabled: boolean;
 }) {
   const { block } = props;
   switch (block.type) {
     case "action":
-      return <ActionCard action={block.action} phase={props.phase} error={props.actionError} onApprove={props.onApprove} onDecline={props.onDecline} onCancelSubscription={props.onCancelSubscription} onAsk={props.onAsk} />;
+      return <ActionCard action={block.action} phase={props.phase} error={props.actionError} onUpdateAssets={props.onUpdateAssets} onApprove={props.onApprove} onDecline={props.onDecline} onCancelSubscription={props.onCancelSubscription} onAsk={props.onAsk} />;
     case "sagitta_sources":
       return <SourcesCard sources={block.sources} readAt={block.readAt} />;
     case "sagitta_system":

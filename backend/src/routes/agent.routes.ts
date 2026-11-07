@@ -37,6 +37,7 @@ import {
 import { resolveAsset } from "../assistant/asset-resolver";
 import { SCORECARD_METHODOLOGY, applyScorecardMethodology, findUnscreenedAssets, scorecardPriceHistory } from "../services/asset-scorecard-v2";
 import { toScreenCard } from "../services/scorecard-screen";
+import { ScoreUnavailableError, UndeliverableError } from "../services/fulfillment-errors";
 import { decideScreening, purchaseOf, selectScreenCards, snapshotProblem, type PreflightResult, type ScreeningSnapshot } from "../assistant/scorecard-preflight";
 import { getScorecardPreflight } from "../assistant/scorecard-preflight.runtime";
 import { createLegacyCooldown } from "../services/legacy-cooldown";
@@ -95,6 +96,7 @@ import type {
   X402ToolRecord,
   X402ToolProductId,
 } from "../services/x402-state.types";
+import { completeRefund, isRefundCompleted, type X402RefundRecord } from "../services/x402-state.types";
 
 const router = Router();
 const WIZARD_PAYMENT_CLOCK_SKEW_MS = 2 * 60_000;
@@ -208,13 +210,19 @@ type AdminPurchaseRow = {
   paymentTransactionHash: string;
   paymentNetwork: string | null;
   purchasedAt: string;
+  /** The payer has their money back. */
   refunded: boolean;
+  /** USDC was recovered to the admin wallet, and the payer hasn't been paid yet. */
+  refundPending: boolean;
   refund: {
     refundedAt: string;
     transactionHash: string;
     toAddress: string;
     amountUsdc: string;
     note: string | null;
+    status: "refund_pending" | "refunded";
+    customerTransactionHash: string | null;
+    completedAt: string | null;
   } | null;
 };
 
@@ -1988,7 +1996,7 @@ async function buildPolicyEnvelopeResult(jobId: string): Promise<Record<string, 
  */
 async function buildScorecardFromSnapshot(input: AssetScorecardInput, snapshot: ScreeningSnapshot): Promise<Record<string, unknown>> {
   const problem = snapshotProblem(snapshot, purchaseOf(input));
-  if (problem) throw new Error(`The screening decision for this purchase can't be used: ${problem}.`);
+  if (problem) throw new UndeliverableError(`The screening decision for this purchase can't be used: ${problem}.`);
   return {
     snapshotAt: snapshot.screenedAt,
     portfolioSegment: snapshot.profile.portfolioSegment,
@@ -2038,7 +2046,11 @@ export async function runComprehensiveReport(decisionId: string, input: Record<s
     investmentTimeframe: input.timeframe as string,
     portfolioSegment: input.portfolioSegment as string,
   });
-  const assetScorecard = await buildAssetScorecardResult(jobId, input as AssetScorecardInput, { screening });
+  // A feed failure for any asset is a failed run that's retried, not a missing score.
+  const assetScorecard = await buildAssetScorecardResult(jobId, input as AssetScorecardInput, { screening, requireEveryAsset: true });
+  // A later subscription month screens afresh, so it can lose an asset, but a report scoring none isn't worth delivering.
+  const scored = (assetScorecard.scorecards as { overallScore: number | null }[]).some((card) => card.overallScore !== null);
+  if (!scored) throw new ScoreUnavailableError("None of the requested assets can get an overall score.");
   const [marketRegime, policyEnvelope] = await Promise.all([buildMarketRegimeResult(jobId), buildPolicyEnvelopeResult(jobId)]);
   // A locked screen is older than this run, and the report's date is when it ran.
   return { snapshotAt: screening ? marketRegime.snapshotAt : assetScorecard.snapshotAt, marketRegime, policyEnvelope, assetScorecard };
@@ -2322,16 +2334,7 @@ function buildAllocatePurchaseRow(record: X402AllocateRecord): AdminPurchaseRow 
     paymentTransactionHash: record.payment.transactionHash,
     paymentNetwork: record.payment.network ?? null,
     purchasedAt: record.payment.verifiedAt,
-    refunded: Boolean(record.refund),
-    refund: record.refund
-      ? {
-        refundedAt: record.refund.refundedAt,
-        transactionHash: record.refund.transactionHash,
-        toAddress: record.refund.toAddress,
-        amountUsdc: record.refund.amountUsdc,
-        note: record.refund.note ?? null,
-      }
-      : null,
+    ...adminRefundView(record.refund),
   };
 }
 
@@ -2356,16 +2359,27 @@ function buildToolPurchaseRow(record: X402ToolRecord): AdminPurchaseRow | null {
     paymentTransactionHash: record.payment.transactionHash,
     paymentNetwork: record.payment.network ?? null,
     purchasedAt: record.payment.verifiedAt,
-    refunded: Boolean(record.refund),
-    refund: record.refund
-      ? {
-        refundedAt: record.refund.refundedAt,
-        transactionHash: record.refund.transactionHash,
-        toAddress: record.refund.toAddress,
-        amountUsdc: record.refund.amountUsdc,
-        note: record.refund.note ?? null,
-      }
-      : null,
+    ...adminRefundView(record.refund),
+  };
+}
+
+/** Moving USDC to the admin wallet isn't a refund. A purchase is refunded once the payer has their money. */
+function adminRefundView(refund: X402RefundRecord | undefined): Pick<AdminPurchaseRow, "refunded" | "refundPending" | "refund"> {
+  if (!refund) return { refunded: false, refundPending: false, refund: null };
+  const refunded = isRefundCompleted(refund);
+  return {
+    refunded,
+    refundPending: !refunded,
+    refund: {
+      refundedAt: refund.refundedAt,
+      transactionHash: refund.transactionHash,
+      toAddress: refund.toAddress,
+      amountUsdc: refund.amountUsdc,
+      note: refund.note ?? null,
+      status: refunded ? "refunded" : "refund_pending",
+      customerTransactionHash: refund.customerTransactionHash ?? null,
+      completedAt: refund.completedAt ?? null,
+    },
   };
 }
 
@@ -3672,8 +3686,8 @@ router.post("/admin/refund", async (req: Request, res: Response) => {
       return failure(res, new Error("One or more selected purchases could not be found."), 404);
     }
 
-    if (selectedPurchases.some((purchase) => purchase.refunded)) {
-      return failure(res, new Error("One or more selected purchases were already refunded."), 409);
+    if (selectedPurchases.some((purchase) => purchase.refunded || purchase.refundPending)) {
+      return failure(res, new Error("One or more selected purchases were already recovered or refunded."), 409);
     }
 
     let amountUsdc: string;
@@ -3759,11 +3773,12 @@ router.post("/admin/refund", async (req: Request, res: Response) => {
     if (selectedPurchases.length > 0) {
       const stateStore = getX402StateStore();
       for (const purchase of selectedPurchases) {
-        const refund = {
+        const refund: X402RefundRecord = {
           refundedAt: nowIso(),
           transactionHash: transfer.transactionHash,
           toAddress: adminRefundAddress,
           amountUsdc: purchase.chargedAmountUsdc,
+          status: "refund_pending",
           ...(note ? { note } : {}),
         };
 
@@ -3778,13 +3793,46 @@ router.post("/admin/refund", async (req: Request, res: Response) => {
     return success(res, {
       ...(nativeTopUp ? { nativeTopUp } : {}),
       transfer,
-      refundedPurchases: selectedPurchases.map((purchase) => ({
+      // The USDC is now in the admin wallet. Send it to each payer, then record that at /admin/refund/complete.
+      refundPendingPurchases: selectedPurchases.map((purchase) => ({
         purchaseKey: purchase.purchaseKey,
+        payToAddress: purchase.fromAddress,
         decisionId: purchase.decisionId,
         productId: purchase.productId,
         chargedAmountUsdc: purchase.chargedAmountUsdc,
       })),
     });
+  } catch (error) {
+    return failure(res, error, 400);
+  }
+});
+
+/**
+ * Records that the payer received their USDC. It moves no money: staff send the funds and supply the
+ * transaction, and only then does a purchase count as refunded.
+ */
+router.post("/admin/refund/complete", async (req: Request, res: Response) => {
+  if (!requireAdminRequest(req, res)) return;
+  try {
+    const purchaseKey = typeof req.body?.purchaseKey === "string" ? req.body.purchaseKey : "";
+    const customerTransactionHash = typeof req.body?.customerTransactionHash === "string" ? req.body.customerTransactionHash.trim() : "";
+    if (!/^0x[a-fA-F0-9]{64}$/.test(customerTransactionHash)) {
+      return failure(res, new Error("customerTransactionHash must be the transaction that paid the customer."), 400);
+    }
+    const purchase = listAdminPurchases().find((entry) => entry.purchaseKey === purchaseKey);
+    if (!purchase) return failure(res, new Error("That purchase could not be found."), 404);
+    if (!purchase.refundPending || !purchase.refund) return failure(res, new Error("That purchase has no refund pending."), 409);
+    if (customerTransactionHash.toLowerCase() === purchase.refund.transactionHash.toLowerCase()) {
+      return failure(res, new Error("That transaction moved funds to the admin wallet, not to the customer."), 400);
+    }
+    const stateStore = getX402StateStore();
+    const refund = (purchase.kind === "allocate"
+      ? stateStore.getAllocateRecord(purchase.decisionId)?.refund
+      : stateStore.getToolRecord(purchase.productId as X402ToolProductId, purchase.decisionId)?.refund) as X402RefundRecord;
+    const completed = completeRefund(refund, customerTransactionHash, nowIso());
+    if (purchase.kind === "allocate") stateStore.markAllocateRefund(purchase.decisionId, completed);
+    else stateStore.markToolRefund(purchase.productId as X402ToolProductId, purchase.decisionId, completed);
+    return success(res, { purchaseKey, ...adminRefundView(completed) });
   } catch (error) {
     return failure(res, error, 400);
   }

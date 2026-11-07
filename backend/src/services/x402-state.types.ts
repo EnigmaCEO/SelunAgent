@@ -15,13 +15,29 @@ export type X402ToolProductId =
   | "sce_case_relevance"
   | "sce_risk_evaluate";
 
+/**
+ * A wallet refund has two steps. `transactionHash` and `toAddress` record USDC recovered to the admin
+ * wallet, which is `refund_pending`: the customer has nothing yet. It's `refunded` only once
+ * `customerTransactionHash` records the payment to them. A record with no status predates this, and is pending.
+ */
 export type X402RefundRecord = {
   refundedAt: string;
   transactionHash: string;
   toAddress: string;
   amountUsdc: string;
   note?: string;
+  status?: "refund_pending" | "refunded";
+  customerTransactionHash?: string;
+  completedAt?: string;
 };
+
+export function isRefundCompleted(refund: X402RefundRecord): boolean {
+  return refund.status === "refunded" && Boolean(refund.customerTransactionHash);
+}
+
+export function completeRefund(refund: X402RefundRecord, customerTransactionHash: string, completedAt: string): X402RefundRecord {
+  return { ...refund, status: "refunded", customerTransactionHash, completedAt };
+}
 
 export type X402PostSettlementFailureRecord = {
   failedAt: string;

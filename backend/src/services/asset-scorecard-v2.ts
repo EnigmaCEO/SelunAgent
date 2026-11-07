@@ -1,3 +1,4 @@
+import { ScoreUnavailableError } from "./fulfillment-errors";
 /**
  * Asset Scorecard methodology v2: measured price history on top of the portfolio
  * model's market-structure scores.
@@ -322,7 +323,7 @@ export async function applyScorecardMethodology<T extends BaseCard>(
     .sort((left, right) => (right.overallScore ?? -1) - (left.overallScore ?? -1));
   // A purchase locked to a screening decision was sold a score, so a card without one is a failed run, not a result.
   if (options.requireOverallScore && (scorecards.length === 0 || scorecards.some((card) => card.overallScore === null))) {
-    throw new Error("Price history no longer supports an overall score for every purchased asset.");
+    throw new ScoreUnavailableError();
   }
   return {
     scorecards,

@@ -75,12 +75,16 @@ type AdminPurchase = {
   paymentNetwork: string | null;
   purchasedAt: string;
   refunded: boolean;
+  refundPending: boolean;
   refund: {
     refundedAt: string;
     transactionHash: string;
     toAddress: string;
     amountUsdc: string;
     note: string | null;
+    status: "refund_pending" | "refunded";
+    customerTransactionHash: string | null;
+    completedAt: string | null;
   } | null;
 };
 
@@ -768,7 +772,12 @@ export default function AdminPage() {
                             {purchase.refunded ? (
                               <div className={styles.refunded}>
                                 Refunded
-                                <span>{purchase.refund ? shortHash(purchase.refund.transactionHash) : ""}</span>
+                                <span>{purchase.refund?.customerTransactionHash ? shortHash(purchase.refund.customerTransactionHash) : ""}</span>
+                              </div>
+                            ) : purchase.refundPending ? (
+                              <div className={styles.pending} title="Funds were recovered to the admin wallet. The customer hasn't been paid.">
+                                Refund pending
+                                <span>{purchase.refund ? ` ${shortHash(purchase.refund.transactionHash)}` : ""}</span>
                               </div>
                             ) : (
                               <span className={styles.pending}>Available</span>

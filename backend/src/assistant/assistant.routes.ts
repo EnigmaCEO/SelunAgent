@@ -1,3 +1,5 @@
+import { resolveAsset } from "./asset-resolver";
+import { sendCoverageNoticeEmail } from "../services/email.service";
 import { createHash } from "node:crypto";
 import { Router, type NextFunction, type Request, type RequestHandler, type Response } from "express";
 import { getPaidToolResponse, getX402CapabilitiesData, runComprehensiveReport } from "../routes/agent.routes";
@@ -156,6 +158,11 @@ export function createAssistantRouter(injected?: AssistantDeps, injectedReports?
         api: new PayPalClient(config),
         config,
         runReport: runComprehensiveReport,
+        notifyCoverage: async (email, notice) => {
+          const sent = await sendCoverageNoticeEmail({ toEmail: email, ...notice });
+          if (sent.status === "failed") throw new Error(sent.error ?? "The notice couldn't be sent.");
+        },
+        checkAssets: (assets, profile) => getScorecardPreflight().check(assets, profile),
         onPurchaseUpdate,
         deliverReport: async (reportToken, email) => {
           await getReports().email(reportToken, { email, approved: true });
@@ -341,6 +348,28 @@ export function createAssistantRouter(injected?: AssistantDeps, injectedReports?
       const current = requirePayPal();
       res.set("Cache-Control", "no-store");
       res.json({ success: true, ...withSummary(await current.cancelSubscription(claim.id), current.conversationOf(claim)) });
+    } catch (error) {
+      sendError(res, error);
+    }
+  });
+
+  router.post("/paypal/subscription/assets", limited(actionLimiter), async (req, res) => {
+    try {
+      const claim = purchaseClaim(req.body?.purchaseToken);
+      if (claim.kind !== "subscription") throw new AssistantError("invalid_request", 400, "Only a subscription can change its assets.");
+      const queries: unknown[] = Array.isArray(req.body?.assets) ? req.body.assets : [];
+      const resolved = queries.flatMap((query) => {
+        const found = typeof query === "string" ? resolveAsset(query) : null;
+        return found?.status === "resolved" ? [found.asset.symbol] : [];
+      });
+      const assets = [...new Set(resolved)];
+      if (assets.length === 0 || assets.length > 12 || resolved.length !== queries.length) {
+        throw new AssistantError("invalid_request", 400, "Name between 1 and 12 assets Selun recognizes, by name or symbol.");
+      }
+      const current = requirePayPal();
+      const view = await current.updateSubscriptionAssets(claim.id, assets);
+      res.set("Cache-Control", "no-store");
+      res.json({ success: true, ...withSummary(view, current.conversationOf(claim)) });
     } catch (error) {
       sendError(res, error);
     }

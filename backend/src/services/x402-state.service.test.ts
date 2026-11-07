@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { completeRefund, isRefundCompleted } from "./x402-state.types";
 import test from "node:test";
 import { X402StateStore } from "./x402-state.service";
 import type { X402AllocateRecord, X402ToolRecord } from "./x402-state.types";
@@ -220,4 +221,15 @@ test("failed post-settlement tool records persist and keep payment receipt", () 
     assert.equal(restored?.failure?.message, "sce_upstream_error");
     assert.equal(restarted.getTransactionOwner(txHash), "sce_risk_evaluate:decision-tool-failed");
   });
+});
+
+test("recovering USDC to the admin wallet isn't a refund until the customer's payment is recorded", () => {
+  const recovered = { refundedAt: "2026-11-07T00:00:00.000Z", transactionHash: "0xadmin", toAddress: "0xadminwallet", amountUsdc: "0.5", status: "refund_pending" as const };
+  assert.equal(isRefundCompleted(recovered), false);
+  const older = { refundedAt: recovered.refundedAt, transactionHash: "0xadmin", toAddress: "0xadminwallet", amountUsdc: "0.5" };
+  assert.equal(isRefundCompleted(older), false, "a record from before this distinction doesn't count as paid");
+  assert.equal(isRefundCompleted({ ...recovered, status: "refunded" }), false, "a status alone doesn't count");
+  const paid = completeRefund(recovered, "0xcustomer", "2026-11-08T00:00:00.000Z");
+  assert.equal(isRefundCompleted(paid), true);
+  assert.equal(paid.transactionHash, "0xadmin", "the recovery stays on record");
 });

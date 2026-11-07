@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { appendReferralParam } from "@/app/lib/referral";
 import { useReferralCapture } from "@/app/lib/use-referral-capture";
-import { ApiError, cancelPayPalSubscription, capturePayPal, declineAction, executeAction, fetchAction, fetchPayPalStatus, fetchStatus, requestChallenge, sendChat, startPayPalCheckout } from "./api";
+import { ApiError, cancelPayPalSubscription, capturePayPal, declineAction, executeAction, fetchAction, fetchPayPalStatus, fetchStatus, requestChallenge, sendChat, startPayPalCheckout, updateSubscriptionAssets } from "./api";
 import { BlockView, RichText, type ApprovalPhase } from "./blocks";
 import type { ActionView, AssistantStatus, Block, ChatItem, Conversation, PayPalStatusView } from "./types";
 import { assertWalletAvailable, signX402Challenge, toBaseUnits, WalletError } from "./wallet";
@@ -75,7 +75,7 @@ function hasOpenWork(action: ActionView): boolean {
 function hasOpenPayPalWork(action: ActionView): boolean {
   const paypal = action.paypal;
   if (!paypal) return false;
-  if (paypal.phase === "running" || paypal.phase === "payment_pending") return true;
+  if (paypal.phase === "running" || paypal.phase === "payment_pending" || paypal.phase === "delayed" || paypal.phase === "needs_selection") return true;
   return action.state === "completed" && action.explanationStatus === "pending";
 }
 
@@ -92,7 +92,7 @@ function readPendingPayPal(): PendingPayPal | null {
 
 /** What the card should show. The server's document replaces whatever was on screen, so a revoked report disappears. */
 function applyPayPalView(action: ActionView, token: string, view: PayPalStatusView): ActionView {
-  const running = view.phase === "running" || view.phase === "payment_pending";
+  const running = view.phase === "running" || view.phase === "payment_pending" || view.phase === "delayed" || view.phase === "needs_selection";
   return {
     ...action,
     state: view.phase === "completed" && view.document
@@ -420,6 +420,17 @@ export default function ChatApp() {
     }
   }, [applyActionView]);
 
+  const handleUpdateAssets = useCallback(async (action: ActionView, assets: string[]) => {
+    const token = action.paypal?.token;
+    if (!token) return;
+    setActionErrors((previous) => ({ ...previous, [action.id]: null }));
+    try {
+      applyActionView(applyPayPalView(action, token, await updateSubscriptionAssets(token, assets)));
+    } catch (error) {
+      setActionErrors((previous) => ({ ...previous, [action.id]: error instanceof ApiError ? error.message : "We couldn't change your assets. Please try again." }));
+    }
+  }, [applyActionView]);
+
   const handleDecline = useCallback(async (action: ActionView) => {
     if (!active?.serverId) return;
     try {
@@ -609,6 +620,7 @@ export default function ChatApp() {
                             onApprove={handleApprove}
                             onDecline={handleDecline}
                             onCancelSubscription={handleCancelSubscription}
+                            onUpdateAssets={handleUpdateAssets}
                             onAsk={(text) => void send(text)}
                             disabled={thinking}
                           />

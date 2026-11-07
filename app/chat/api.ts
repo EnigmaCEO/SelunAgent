@@ -92,6 +92,10 @@ export function cancelPayPalSubscription(purchaseToken: string) {
   return request<PayPalStatusView>("paypal/cancel", { method: "POST", body: { purchaseToken } });
 }
 
+export function updateSubscriptionAssets(purchaseToken: string, assets: string[]) {
+  return request<PayPalStatusView>("paypal/subscription/assets", { method: "POST", body: { purchaseToken, assets } });
+}
+
 export function declineAction(conversationId: string, actionId: string) {
   return request<{ action: ActionView }>(`actions/${actionId}/decline`, {
     method: "POST",

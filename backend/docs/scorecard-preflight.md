@@ -39,8 +39,10 @@ A direct API call that names assets gets its answer before paying: 402 if it qua
 
 | What happens | Wallet | PayPal |
 | --- | --- | --- |
-| A price feed fails, or an asset's price data no longer supports a score | The run fails and isn't presented as finished. The customer retries with the same request ID without paying again, on the same snapshot | Retried automatically, up to 3 runs, on the same snapshot |
-| It still can't be delivered | The admin team is emailed about each failed run. Staff decide on a refund | Refunded in full automatically. If that refund fails, staff are alerted and the customer is told |
+| A market data provider fails | The run fails and isn't presented as finished. The customer retries with the same request ID without paying again, on the same snapshot | The customer sees it's delayed and that they won't be charged again. Selun retries on the same snapshot for 24 hours from payment, waiting 1 minute at first and up to an hour between tries. A restart keeps the schedule |
+| An asset's price data no longer supports a score | The same free retry | Tried 3 times over a few minutes, since a provider coming back won't fix this, then refunded |
+| The purchase can't ever be delivered, such as a snapshot that no longer matches | The same free retry | Refunded straight away |
+| It still can't be delivered | The admin team is emailed about each failed run, and staff decide on a refund | Refunded in full automatically. If that refund fails, staff are alerted and the customer is told |
 
 ## Refund cases that remain
 
@@ -49,11 +51,31 @@ A locked snapshot removes eligibility drift. It can't remove a provider outage o
 1. **Long price-feed outage on a wallet purchase.** Retries are free, but there's no automatic refund and no customer-facing refund request.
 2. **Price data no longer supports a score on a wallet purchase.** A provider can revise its data after the check. Retrying won't help, so this needs a refund.
 
-Wallet refunds are manual today. `POST /agent/admin/refund` moves USDC from the seller wallet to the admin refund address and marks the purchase refunded, which also stops further retries. It doesn't send anything to the customer, so staff must then send the USDC to the payer's address. PayPal's fee on a refunded payment isn't returned to Selun.
+PayPal's fee on a refunded payment isn't returned to Selun.
+
+### Wallet refunds are manual, and have two steps
+
+Moving USDC to the admin wallet doesn't refund a customer.
+
+1. `POST /agent/admin/refund` moves USDC from the seller wallet to the admin refund address. The purchase becomes `refund_pending`, which stops further retries, and the customer has received nothing.
+2. Staff send the USDC to the payer's address from the admin wallet. The response lists it as `payToAddress`.
+3. `POST /agent/admin/refund/complete` with `purchaseKey` and `customerTransactionHash` records that payment, and only then is the purchase `refunded`. This route moves no money, and it refuses the transaction from step 1.
+
+The admin page shows these as "Refund pending" and "Refunded". A record made before this distinction reads as pending, because nothing shows its customer was paid.
 
 ## Not locked
 
-**Later subscription months.** Each is a new analysis on that month's market, so it's screened when it runs. An asset that no longer qualifies then shows price measurements and no overall score, and the report says why. The purchase card discloses this.
+**Later subscription months.** Each is a new analysis on that month's market, so it uses a fresh screen, and the first purchase's snapshot is never reused for it.
+
+| What happens at renewal | Behaviour |
+| --- | --- |
+| Some assets lose their score | The report is delivered with the available measurements, says which assets have no overall score and why, and the subscriber gets one notice |
+| No asset can get a score | No report yet. The subscriber is asked to choose different assets and gets one notice. New assets deliver that month's report on the same payment. It's tried again every 6 hours in case the market moves. After 3 days from payment, that month is refunded |
+| A provider fails | The same 24-hour retry as a one-time report, with no request to change anything |
+
+New assets must pass the eligibility check before they replace the old ones. They apply to later months, and to a month that's waiting on them. The purchase card discloses this.
+
+The notice email can only point to the subscription in the chat where it started, because that's the only browser holding its token until cross-device recovery exists.
 
 **Other wallet services.** Only the Asset Scorecard is checked. Allocation and rebalancing screen when they run and don't promise a score for a named asset.
 

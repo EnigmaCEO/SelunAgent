@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { ScorecardPreflight, type ScreeningSnapshot } from "./scorecard-preflight";
+import { ScoreUnavailableError, UndeliverableError } from "../services/fulfillment-errors";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { createServer, type Server } from "node:http";
@@ -14,7 +15,7 @@ import { AssistantError, AssistantService } from "./assistant.service";
 import { buildRegistry, getToolSpec } from "./capability-registry";
 import { COMPREHENSIVE_REPORT_ID } from "./commerce";
 import { PayPalApiError, parseOrder, readPayPalConfig, type PayPalApi, type PayPalOrder, type PayPalSaleTransaction, type PayPalSubscription, type WebhookHeaders } from "./paypal-client";
-import { PayPalCommerceService, purchaseIdFor, type PayPalCommerceDeps } from "./paypal-commerce.service";
+import { PayPalCommerceService, purchaseIdFor, type CoverageNotice, type PayPalCommerceDeps } from "./paypal-commerce.service";
 import { renderResultPdf, resultRecordHash } from "./result-report";
 import { presentResult } from "./result-presenter";
 import { ReportService } from "./report.service";
@@ -151,16 +152,17 @@ function harness(overrides: Partial<PayPalCommerceDeps> & { file?: string } = {}
       emails.push({ token, email });
     },
     stateFile: overrides.file ?? stateFile(),
-    sleep: async () => undefined,
     alert: (message) => alerts.push(message),
     eventRetryMs: 0,
+    retryDelayMs: 0,
+    nothingScoredRetryMs: 0,
     ...overrides,
   });
   return { api, service, runs, alerts, emails };
 }
 
 const flush = async () => {
-  for (let index = 0; index < 20; index += 1) await new Promise((resolve) => setImmediate(resolve));
+  for (let index = 0; index < 20; index += 1) await new Promise((resolve) => setTimeout(resolve, 3));
 };
 
 async function paidPurchase(h: ReturnType<typeof harness>) {
@@ -226,16 +228,215 @@ test("every run of a paid report uses the snapshot it was bought with, even afte
   assert.equal(h.api.refunds.length, 0);
 });
 
-test("a paid report that can't be delivered refunds", async () => {
+test("a locked asset that can't score refunds after a few tries, without waiting out the provider window", async () => {
   const screening = await lockedSnapshot();
-  const h = harness({ now: () => ACCEPTED_AT, runReport: async () => { throw new Error("Price history no longer supports an overall score for every purchased asset."); } });
+  let tries = 0;
+  const h = harness({ now: () => ACCEPTED_AT, runReport: async () => { tries += 1; throw new ScoreUnavailableError(); } });
   const { purchaseId } = await lockedCheckout(h, screening);
   h.api.approve();
   await h.service.capture(purchaseId);
   await flush();
   assert.equal((await h.service.status(purchaseId)).phase, "refunded");
   assert.equal(h.api.refunds.length, 1);
+  assert.equal(tries, 3);
 });
+
+const hour = 60 * 60_000;
+
+test("a provider outage doesn't refund in minutes: the customer is told, and it recovers on the same payment", async () => {
+  const start = Date.parse("2026-11-07T12:00:00.000Z");
+  let clock = start;
+  let feedUp = false;
+  let tries = 0;
+  const h = harness({
+    now: () => new Date(clock),
+    retryDelayMs: 60_000,
+    runReport: async () => {
+      tries += 1;
+      if (!feedUp) throw new Error("Price history is temporarily unavailable.");
+      return RESULT;
+    },
+  });
+  const { purchaseId } = await paidPurchase(h);
+  assert.equal(tries, 1);
+  const delayed = await h.service.status(purchaseId);
+  assert.equal(delayed.phase, "delayed");
+  assert.match(delayed.message ?? "", /up to 24 hours/);
+  assert.match(delayed.message ?? "", /won't be charged again/);
+  assert.equal(h.api.refunds.length, 0);
+
+  // Not due yet, so checking the status doesn't start another run.
+  await h.service.status(purchaseId);
+  await flush();
+  assert.equal(tries, 1);
+
+  clock = start + 23 * hour;
+  feedUp = true;
+  assert.equal((await h.service.status(purchaseId)).phase, "running");
+  await flush();
+  assert.equal(tries, 2);
+  assert.equal((await h.service.status(purchaseId)).phase, "completed");
+  assert.equal(h.api.captureCalls.length, 1);
+  assert.equal(h.api.refunds.length, 0);
+});
+
+test("an outage that outlasts the window refunds, once", async () => {
+  const start = Date.parse("2026-11-07T12:00:00.000Z");
+  let clock = start;
+  const h = harness({ now: () => new Date(clock), retryDelayMs: 60_000, runReport: async () => { throw new Error("feed down"); } });
+  const { purchaseId } = await paidPurchase(h);
+  assert.equal((await h.service.status(purchaseId)).phase, "delayed");
+  clock = start + 24 * hour;
+  await h.service.status(purchaseId);
+  await flush();
+  assert.equal((await h.service.status(purchaseId)).phase, "refunded");
+  assert.equal(h.api.refunds.length, 1);
+});
+
+test("the retry schedule survives a restart, and isn't brought forward by it", async () => {
+  const start = Date.parse("2026-11-07T12:00:00.000Z");
+  let clock = start;
+  let tries = 0;
+  const file = stateFile();
+  const failing = async () => { tries += 1; throw new Error("feed down"); };
+  const first = harness({ file, now: () => new Date(clock), retryDelayMs: hour, runReport: failing });
+  const { purchaseId } = await paidPurchase(first);
+  assert.equal(tries, 1);
+
+  clock = start + 30 * 60_000;
+  const second = harness({ file, now: () => new Date(clock), retryDelayMs: hour, runReport: failing });
+  second.service.resume();
+  await flush();
+  assert.equal(tries, 1, "not due yet");
+  assert.equal((await second.service.status(purchaseId)).phase, "delayed");
+
+  clock = start + 2 * hour;
+  const third = harness({ file, now: () => new Date(clock), retryDelayMs: hour, runReport: async () => { tries += 1; return RESULT; } });
+  third.service.resume();
+  await flush();
+  assert.equal(tries, 2);
+  assert.equal((await third.service.status(purchaseId)).phase, "completed");
+  assert.equal(third.api.refunds.length + first.api.refunds.length, 0);
+});
+
+test("a result that can't ever be delivered refunds straight away", async () => {
+  let tries = 0;
+  const h = harness({ runReport: async () => { tries += 1; throw new UndeliverableError("The screening decision for this purchase can't be used: altered."); } });
+  const { purchaseId } = await paidPurchase(h);
+  assert.equal(tries, 1);
+  assert.equal((await h.service.status(purchaseId)).phase, "refunded");
+});
+
+const SCORED_AND_LOST = {
+  ...RESULT,
+  assetScorecard: { ...RESULT.assetScorecard, scorecards: [...RESULT.assetScorecard.scorecards, { ...RESULT.assetScorecard.scorecards[0], asset: "ETH", overallScore: null, priceRiskScore: null, priceHistory: { status: "insufficient", reason: "Only 90 daily closes were available, and 180 are needed." } }], unscreenedAssets: [{ asset: "DOGE", name: "Dogecoin", coingeckoId: "dogecoin", priceHistory: { status: "measured" } }] },
+};
+const renewalSale = (id: string) => ({ id, status: "COMPLETED", amount: "9.99", currency: "USD", time: "2026-11-07T12:00:00Z" });
+
+async function activeSubscription(overrides: Parameters<typeof harness>[0]) {
+  const notices: { email: string; notice: CoverageNotice }[] = [];
+  const h = harness({ notifyCoverage: async (email, notice) => { notices.push({ email, notice }); }, ...overrides });
+  const { subscriptionLocalId } = await h.service.createSubscription({ actionKey: "renewal", capabilityId: COMPREHENSIVE_REPORT_ID, title: "Report", body: { ...INPUT, assets: ["BTC", "ETH", "DOGE"] }, conversationId: null, actionId: null });
+  h.api.activate("I-1");
+  return { h, notices, subscriptionLocalId };
+}
+
+test("a renewal losing some assets is delivered, says which and why, and notifies once", async () => {
+  const { h, notices, subscriptionLocalId } = await activeSubscription({ runReport: async () => SCORED_AND_LOST });
+  h.api.sales.push(renewalSale("R-1"));
+  await h.service.syncSubscription(subscriptionLocalId);
+  await flush();
+  const view = await h.service.syncSubscription(subscriptionLocalId);
+  assert.equal(view.phase, "completed");
+  assert.equal(h.api.refunds.length, 0);
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].email, "subscriber@example.com");
+  assert.equal(notices[0].notice.chooseBy, null);
+  assert.deepEqual(notices[0].notice.missing.map((entry) => entry.asset), ["ETH", "DOGE"]);
+  assert.match(notices[0].notice.missing[0].reason, /180/);
+  const text = JSON.stringify(view.document);
+  assert.match(text, /ETH has no overall score/);
+  assert.match(text, /DOGE is outside/);
+});
+
+test("a renewal with nothing to score waits for new assets, and they deliver it on the same payment", async () => {
+  const start = Date.parse("2026-11-07T12:00:00.000Z");
+  let clock = start;
+  const inputs: Record<string, unknown>[] = [];
+  const locks: unknown[] = [];
+  let checked: string[] = [];
+  const snapshot = await lockedSnapshot();
+  const { h, notices, subscriptionLocalId } = await activeSubscription({
+    now: () => new Date(clock),
+    nothingScoredRetryMs: 6 * hour,
+    checkAssets: async (assets) => { checked = assets; return { deliverable: true, assets: [], snapshot }; },
+    runReport: async (_decisionId, input, locked) => {
+      inputs.push(input);
+      locks.push(locked);
+      if ((input.assets as string[]).includes("DOGE")) throw new ScoreUnavailableError("None of the requested assets can get an overall score.");
+      return RESULT;
+    },
+  });
+  h.api.sales.push(renewalSale("R-1"));
+  await h.service.syncSubscription(subscriptionLocalId);
+  await flush();
+  const waiting = await h.service.syncSubscription(subscriptionLocalId);
+  assert.equal(waiting.phase, "needs_selection");
+  assert.match(waiting.message ?? "", /Choose different assets/);
+  assert.equal(notices.length, 1);
+  assert.ok(notices[0].notice.chooseBy?.startsWith("2026-11-10"));
+  assert.equal(h.api.refunds.length, 0);
+
+  clock = start + hour;
+  await h.service.updateSubscriptionAssets(subscriptionLocalId, ["BTC"]);
+  await flush();
+  assert.deepEqual(checked, ["BTC"]);
+  const done = await h.service.syncSubscription(subscriptionLocalId);
+  assert.equal(done.phase, "completed");
+  assert.deepEqual(inputs.at(-1)?.assets, ["BTC"]);
+  assert.equal(locks.at(-1), snapshot);
+  assert.equal(h.api.refunds.length, 0);
+  assert.equal(h.runs.length, 0);
+});
+
+test("a renewal nobody updates is refunded for that month when the window ends", async () => {
+  const start = Date.parse("2026-11-07T12:00:00.000Z");
+  let clock = start;
+  const { h, subscriptionLocalId } = await activeSubscription({ now: () => new Date(clock), nothingScoredRetryMs: 6 * hour, runReport: async () => { throw new ScoreUnavailableError(); } });
+  h.api.sales.push(renewalSale("R-1"));
+  await h.service.syncSubscription(subscriptionLocalId);
+  await flush();
+  clock = start + 73 * hour;
+  await h.service.sweep();
+  await flush();
+  assert.deepEqual(h.api.refunds.map((refund) => refund.id), ["R-1"]);
+  assert.equal((await h.service.syncSubscription(subscriptionLocalId)).phase, "refunded");
+});
+
+test("a renewal's provider outage retries instead of asking the customer to change anything", async () => {
+  const { h, notices, subscriptionLocalId } = await activeSubscription({ retryDelayMs: hour, runReport: async () => { throw new Error("feed down"); } });
+  h.api.sales.push(renewalSale("R-1"));
+  await h.service.syncSubscription(subscriptionLocalId);
+  await flush();
+  assert.equal((await h.service.syncSubscription(subscriptionLocalId)).phase, "delayed");
+  assert.equal(notices.length, 0);
+});
+
+test("new subscription assets are refused unless they can be scored, and nothing changes", async () => {
+  const { h, subscriptionLocalId } = await activeSubscription({
+    checkAssets: async () => ({ deliverable: false, assets: [{ symbol: "DOT", name: "Polkadot", outcome: "outside_segment" }] }),
+    runReport: async (_decisionId, input) => { h2Runs.push(input); return RESULT; },
+  });
+  h.api.sales.push(renewalSale("R-1"));
+  await h.service.syncSubscription(subscriptionLocalId);
+  await flush();
+  await assert.rejects(() => h.service.updateSubscriptionAssets(subscriptionLocalId, ["DOT"]), (error: AssistantError) => error.code === "scorecard_unavailable" && /wasn't changed/.test(error.message));
+  h.api.sales.push(renewalSale("R-2"));
+  await h.service.syncSubscription(subscriptionLocalId);
+  await flush();
+  assert.deepEqual(h2Runs.at(-1)?.assets, ["BTC", "ETH", "DOGE"]);
+});
+const h2Runs: Record<string, unknown>[] = [];
 
 test("PayPal isn't captured on an expired quote, and a fresh quote recovers the same order", async () => {
   const screening = await lockedSnapshot();
@@ -412,8 +613,9 @@ test("a failed run retries on the same payment, without a second capture", async
   assert.equal((await h.service.status(purchaseId)).phase, "completed");
 });
 
-test("if it can't be delivered, the full payment is refunded once", async () => {
+test("if it can't be delivered by the end of the window, the full payment is refunded once", async () => {
   const h = harness({
+    retryWindowMs: 0,
     runReport: async () => {
       throw new Error("feed down");
     },
@@ -438,7 +640,7 @@ test("a result that can't become a report counts as undelivered", async () => {
 });
 
 test("a refund that fails alerts a person and tells the customer plainly", async () => {
-  const h = harness({
+  const h = harness({ retryWindowMs: 0,
     runReport: async () => {
       throw new Error("feed down");
     },
@@ -910,7 +1112,7 @@ test("a failed subscription payment is recorded and earns nothing", async () => 
 
 test("a cycle that can't be delivered refunds that month's payment only", async () => {
   let calls = 0;
-  const h = harness({
+  const h = harness({ retryWindowMs: 0,
     runReport: async () => {
       calls += 1;
       if (calls === 1) return RESULT;

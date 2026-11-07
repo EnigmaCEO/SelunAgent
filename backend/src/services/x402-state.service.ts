@@ -108,12 +108,17 @@ function normalizeRefundRecord(value: unknown): X402RefundRecord | undefined {
     return undefined;
   }
 
+  const customerTransactionHash = typeof value.customerTransactionHash === "string" && value.customerTransactionHash.trim() ? value.customerTransactionHash.trim() : undefined;
   return {
     refundedAt,
     transactionHash,
     toAddress,
     amountUsdc,
     ...(note ? { note } : {}),
+    // Only a recorded payment to the customer can read as refunded.
+    status: value.status === "refunded" && customerTransactionHash ? "refunded" : "refund_pending",
+    ...(customerTransactionHash ? { customerTransactionHash } : {}),
+    ...(typeof value.completedAt === "string" ? { completedAt: value.completedAt } : {}),
   };
 }
 

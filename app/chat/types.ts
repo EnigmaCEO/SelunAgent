@@ -30,7 +30,7 @@ export type ResultDocument = {
   };
 };
 
-export type PayPalPhase = "awaiting_payment" | "payment_pending" | "running" | "completed" | "refunded" | "restricted" | "revoked" | "failed";
+export type PayPalPhase = "awaiting_payment" | "payment_pending" | "running" | "delayed" | "needs_selection" | "completed" | "refunded" | "restricted" | "revoked" | "failed";
 
 /** Kept with the action in this browser. The token is the only way to read the purchase. */
 export type PayPalState = {

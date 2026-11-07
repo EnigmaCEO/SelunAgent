@@ -2,13 +2,14 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { sendAdminErrorEmail } from "../services/email.service";
+import { ScoreUnavailableError, UndeliverableError } from "../services/fulfillment-errors";
 import { issueReportToken } from "../services/job-access.service";
 import { AssistantError } from "./assistant-error";
 import { getToolSpec } from "./capability-registry";
 import { COMPREHENSIVE_REPORT_ID, type PayPalPaymentEvidence } from "./commerce";
 import { PayPalApiError, type PayPalApi, type PayPalConfig, type PayPalSaleTransaction, type WebhookHeaders } from "./paypal-client";
 import { presentResult, type ResultDocument } from "./result-presenter";
-import { purchaseOf, snapshotProblem, type ScreeningSnapshot } from "./scorecard-preflight";
+import { purchaseOf, snapshotProblem, type PreflightResult, type ScreenProfile, type ScreeningSnapshot } from "./scorecard-preflight";
 
 /**
  * PayPal purchases and subscriptions.
@@ -16,12 +17,16 @@ import { purchaseOf, snapshotProblem, type ScreeningSnapshot } from "./scorecard
  * The rules this exists to keep:
  * - The service runs only after PayPal itself reports a completed capture or sale.
  * - One capture or sale produces at most one fulfillment, however often it's retried.
- * - A failed run retries on the original payment. If it can't be delivered, it's refunded.
+ * - A failed run retries on the original payment, and that schedule survives a restart.
+ *   A provider outage gets a long window, because a brief one shouldn't cost a sale and a fee.
+ *   If the report still can't be delivered, the payment is refunded.
  * - A refund or reversal revokes that purchase only. Records and hashes are never deleted.
  */
 
 export type PaymentStatus = "created" | "capture_pending" | "captured" | "declined" | "refunded" | "reversed" | "refund_failed";
 export type FulfillmentStatus = "waiting" | "running" | "complete" | "failed" | "stopped";
+/** Temporary provider trouble, an asset that can't score, or a renewal with nothing left to score. */
+export type FailureKind = "provider" | "score_unavailable" | "nothing_scored";
 export type AccessStatus = "active" | "restricted" | "revoked";
 
 export type Purchase = {
@@ -47,7 +52,15 @@ export type Purchase = {
     refundId: string | null;
     checkedAt: string | null;
   };
-  fulfillment: { status: FulfillmentStatus; attempts: number; lastError: string | null; completedAt: string | null };
+  fulfillment: {
+    status: FulfillmentStatus;
+    attempts: number;
+    lastError: string | null;
+    completedAt: string | null;
+    /** When the next try is due, saved so a restart keeps the schedule. */
+    nextAttemptAt?: string | null;
+    failureKind?: FailureKind | null;
+  };
   access: AccessStatus;
   dispute: { id: string; status: string; outcome: string | null } | null;
   /** The stored result the report is built from. Never overwritten once complete. */
@@ -112,7 +125,7 @@ type StoreShape = {
 export type PurchaseView = {
   kind: "one_time";
   purchaseId: string;
-  phase: "awaiting_payment" | "payment_pending" | "running" | "completed" | "refunded" | "restricted" | "revoked" | "failed";
+  phase: "awaiting_payment" | "payment_pending" | "running" | "delayed" | "needs_selection" | "completed" | "refunded" | "restricted" | "revoked" | "failed";
   message: string | null;
   decisionId: string;
   document: ResultDocument | null;
@@ -132,21 +145,40 @@ export type SubscriptionView = {
   reports: number;
 };
 
+export type CoverageNotice = {
+  title: string;
+  /** Each asset without an overall score, and why. */
+  missing: { asset: string; reason: string }[];
+  /** No report exists yet, and this month's payment depends on new assets by this date. */
+  chooseBy: string | null;
+};
+
 export type PayPalCommerceDeps = {
   api: PayPalApi;
   config: Pick<PayPalConfig, "env" | "returnBaseUrl" | "reportPriceUsd" | "subscriptionPriceUsd" | "webhookId">;
   /** The same pipeline as the x402 services. Takes a decision and an input, returns the result. */
   runReport: (decisionId: string, input: Record<string, unknown>, screening?: ScreeningSnapshot | null) => Promise<Record<string, unknown>>;
+  /** Tells a subscriber a report lost an asset's score, or that this month's report needs different assets. */
+  notifyCoverage?: (email: string, notice: CoverageNotice) => Promise<void>;
+  /** Confirms new assets for a subscription before they replace the old ones. */
+  checkAssets?: (assets: string[], profile: ScreenProfile) => Promise<PreflightResult>;
   /** Delivers a subscription cycle's report to the subscriber, through the report service. */
   deliverReport?: (reportToken: string, email: string) => Promise<void>;
   /** Told about any purchase that has reached an end state, so a live conversation can update. */
   onPurchaseUpdate?: (purchase: Purchase) => void;
   stateFile?: string;
   now?: () => Date;
-  sleep?: (ms: number) => Promise<void>;
   alert?: (message: string, purchase: Purchase | null) => void;
+  /** Tries for a locked asset that can't score, since a feed coming back won't fix that. */
   maxAttempts?: number;
+  /** The first wait. It doubles per try, up to an hour. */
   retryDelayMs?: number;
+  /** How long a provider outage is retried, counted from payment. */
+  retryWindowMs?: number;
+  /** How long a renewal with nothing to score waits for different assets, counted from payment. */
+  selectionWindowMs?: number;
+  /** A market move can bring an asset back, so a month waiting on new assets is also tried again. */
+  nothingScoredRetryMs?: number;
   maxConcurrentRuns?: number;
   reconcileAfterMs?: number;
   eventRetryMs?: number;
@@ -160,12 +192,30 @@ function defaultStateFile(): string {
 }
 
 const QUOTE_EXPIRED_MESSAGE = "This quote expired before PayPal confirmed it, so nothing was charged. Please ask Selun for a new quote.";
+const RETRY_WINDOW_MS = 24 * 60 * 60_000;
+const SELECTION_WINDOW_MS = 3 * 24 * 60 * 60_000;
+const MAX_RETRY_DELAY_MS = 60 * 60_000;
+const NOTHING_SCORED_RETRY_MS = 6 * 60 * 60_000;
+const DELAYED_MESSAGE = "A market data provider is temporarily unavailable, so your report is taking longer. Your payment is safe and you won't be charged again. Selun keeps trying for up to 24 hours, and refunds you in full if it can't finish.";
+const NEEDS_SELECTION_MESSAGE = "None of your assets can get an overall score this month. Choose different assets below to get this month's report. If you don't within 3 days, this month's payment is refunded in full.";
 const REFUND_NOTE = "Selun could not deliver your report, so this payment has been refunded in full.";
 const REFUNDED_MESSAGE = "We couldn't complete your report, so your payment has been refunded in full. It can take a few days to appear.";
 const REFUND_FAILED_MESSAGE = "We couldn't complete your report, and the automatic refund didn't go through. Our team has been alerted and will refund you. Please contact support with the request ID below.";
 const REVOKED_MESSAGE = "This payment was refunded or reversed, so this report is no longer available.";
 const RESTRICTED_MESSAGE = "This purchase is under an open payment dispute, so this report is on hold until it's resolved.";
 const SLOW_MESSAGE = "PayPal is still confirming this payment. Your report will start once it clears.";
+
+/** Which assets a delivered report couldn't give an overall score, and why, from the result itself. */
+export function missingScores(response: Record<string, unknown> | null): CoverageNotice["missing"] {
+  const scorecard = (response?.result as { assetScorecard?: { scorecards?: unknown; unscreenedAssets?: unknown } } | undefined)?.assetScorecard;
+  const list = (value: unknown) => (Array.isArray(value) ? (value as { asset?: string; overallScore?: number | null; priceHistory?: { reason?: string } }[]) : []);
+  return [
+    ...list(scorecard?.scorecards)
+      .filter((card) => card.overallScore === null)
+      .map((card) => ({ asset: card.asset ?? "An asset", reason: card.priceHistory?.reason ?? "Its price history wasn't enough to score." })),
+    ...list(scorecard?.unscreenedAssets).map((entry) => ({ asset: entry.asset ?? "An asset", reason: "It wasn't in the group of assets screened for this segment this month." })),
+  ];
+}
 
 export function purchaseIdFor(decisionId: string): string {
   return `pp-${createHash("sha256").update(decisionId).digest("hex").slice(0, 24)}`;
@@ -175,9 +225,12 @@ export class PayPalCommerceService {
   private readonly api: PayPalApi;
   private readonly stateFile: string;
   private readonly now: () => Date;
-  private readonly sleep: (ms: number) => Promise<void>;
   private readonly maxAttempts: number;
   private readonly retryDelayMs: number;
+  private readonly retryWindowMs: number;
+  private readonly selectionWindowMs: number;
+  private readonly nothingScoredRetryMs: number;
+  private readonly retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly maxConcurrentRuns: number;
   private readonly reconcileAfterMs: number;
   private readonly eventRetryMs: number;
@@ -194,9 +247,11 @@ export class PayPalCommerceService {
     this.api = deps.api;
     this.stateFile = deps.stateFile ?? defaultStateFile();
     this.now = deps.now ?? (() => new Date());
-    this.sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.maxAttempts = deps.maxAttempts ?? 3;
-    this.retryDelayMs = deps.retryDelayMs ?? 30_000;
+    this.retryDelayMs = deps.retryDelayMs ?? 60_000;
+    this.retryWindowMs = deps.retryWindowMs ?? RETRY_WINDOW_MS;
+    this.selectionWindowMs = deps.selectionWindowMs ?? SELECTION_WINDOW_MS;
+    this.nothingScoredRetryMs = deps.nothingScoredRetryMs ?? NOTHING_SCORED_RETRY_MS;
     this.maxConcurrentRuns = deps.maxConcurrentRuns ?? 3;
     this.reconcileAfterMs = deps.reconcileAfterMs ?? 15 * 60_000;
     this.eventRetryMs = deps.eventRetryMs ?? 30_000;
@@ -453,13 +508,31 @@ export class PayPalCommerceService {
     return purchase.payment.status === "captured" && purchase.access === "active" && purchase.fulfillment.status !== "complete" && purchase.fulfillment.status !== "stopped";
   }
 
-  /** Starts the run in the background. Does nothing unless a verified payment is waiting. */
+  /** Starts the run in the background. Does nothing unless a verified payment is waiting and a try is due. */
   private startFulfillment(purchase: Purchase) {
     if (!this.mayFulfill(purchase) || this.active.has(purchase.purchaseId)) return;
+    const due = purchase.fulfillment.nextAttemptAt ? Date.parse(purchase.fulfillment.nextAttemptAt) : 0;
+    if (due > this.now().getTime()) {
+      this.armRetry(purchase);
+      return;
+    }
     this.active.add(purchase.purchaseId);
     void this.fulfill(purchase)
       .catch((error) => this.alert(`Fulfillment crashed: ${error instanceof Error ? error.message : String(error)}`, purchase))
       .finally(() => this.active.delete(purchase.purchaseId));
+  }
+
+  /** The saved schedule is the record. This timer only acts on it, and resume() sets it again after a restart. */
+  private armRetry(purchase: Purchase) {
+    const next = purchase.fulfillment.nextAttemptAt;
+    if (!next) return;
+    clearTimeout(this.retryTimers.get(purchase.purchaseId));
+    const timer = setTimeout(() => {
+      this.retryTimers.delete(purchase.purchaseId);
+      this.startFulfillment(purchase);
+    }, Math.max(0, Date.parse(next) - this.now().getTime()));
+    timer.unref?.();
+    this.retryTimers.set(purchase.purchaseId, timer);
   }
 
   private async takeRunSlot() {
@@ -498,46 +571,75 @@ export class PayPalCommerceService {
     };
   }
 
+  /** One try. A failure decides the next step, which is saved rather than held in this call. */
   private async fulfill(purchase: Purchase) {
-    while (this.mayFulfill(purchase) && purchase.fulfillment.attempts < this.maxAttempts) {
-      purchase.fulfillment.status = "running";
-      purchase.fulfillment.attempts += 1;
-      this.stamp(purchase, "fulfillment_started", `attempt ${purchase.fulfillment.attempts}`);
+    purchase.fulfillment.status = "running";
+    purchase.fulfillment.attempts += 1;
+    purchase.fulfillment.nextAttemptAt = null;
+    this.stamp(purchase, "fulfillment_started", `attempt ${purchase.fulfillment.attempts}`);
 
-      let failure: string | null = null;
-      await this.takeRunSlot();
-      try {
-        const result = await this.deps.runReport(purchase.decisionId, purchase.input, purchase.screening ?? null);
-        const response = this.buildResponse(purchase, result);
-        const spec = getToolSpec(purchase.capabilityId);
-        // A result that can't become a report isn't a delivered one.
-        if (!spec || !presentResult(purchase.capabilityId, spec.title, response)) throw new Error("The result couldn't be turned into a report.");
+    let failure: unknown;
+    await this.takeRunSlot();
+    try {
+      const result = await this.deps.runReport(purchase.decisionId, purchase.input, purchase.screening ?? null);
+      const response = this.buildResponse(purchase, result);
+      const spec = getToolSpec(purchase.capabilityId);
+      // A result that can't become a report isn't a delivered one.
+      if (!spec || !presentResult(purchase.capabilityId, spec.title, response)) throw new UndeliverableError("The result couldn't be turned into a report.");
 
-        // The payment may have been reversed while this ran. Evidence is kept, access isn't granted.
-        purchase.responseData = response;
-        if (purchase.access === "revoked" || (purchase.fulfillment.status as FulfillmentStatus) === "stopped") {
-          this.stamp(purchase, "fulfillment_finished_after_revocation");
-          return;
-        }
-        purchase.fulfillment.status = "complete";
-        purchase.fulfillment.completedAt = this.now().toISOString();
-        purchase.fulfillment.lastError = null;
-        this.stamp(purchase, "fulfillment_completed");
-        this.notify(purchase);
-        await this.deliverCycle(purchase);
+      // The payment may have been reversed while this ran. Evidence is kept, access isn't granted.
+      purchase.responseData = response;
+      if (purchase.access === "revoked" || (purchase.fulfillment.status as FulfillmentStatus) === "stopped") {
+        this.stamp(purchase, "fulfillment_finished_after_revocation");
         return;
-      } catch (error) {
-        failure = error instanceof Error ? error.message : String(error);
-      } finally {
-        this.releaseRunSlot();
       }
-
-      purchase.fulfillment.status = "failed";
-      purchase.fulfillment.lastError = failure;
-      this.stamp(purchase, "fulfillment_failed", failure);
-      if (purchase.fulfillment.attempts < this.maxAttempts) await this.sleep(this.retryDelayMs);
+      purchase.fulfillment.status = "complete";
+      purchase.fulfillment.completedAt = this.now().toISOString();
+      purchase.fulfillment.lastError = null;
+      purchase.fulfillment.failureKind = null;
+      this.stamp(purchase, "fulfillment_completed");
+      this.notify(purchase);
+      await this.deliverCycle(purchase);
+      return;
+    } catch (error) {
+      failure = error;
+    } finally {
+      this.releaseRunSlot();
     }
-    if (this.mayFulfill(purchase) && purchase.fulfillment.attempts >= this.maxAttempts) await this.refundUndelivered(purchase);
+    await this.afterFailure(purchase, failure);
+  }
+
+  private async afterFailure(purchase: Purchase, error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    const renewal = purchase.kind === "subscription_cycle" && !purchase.screening;
+    const kind: FailureKind = error instanceof ScoreUnavailableError ? (renewal ? "nothing_scored" : "score_unavailable") : "provider";
+    purchase.fulfillment.status = "failed";
+    purchase.fulfillment.lastError = message;
+    purchase.fulfillment.failureKind = kind;
+    this.stamp(purchase, "fulfillment_failed", message);
+    if (!this.mayFulfill(purchase)) return;
+
+    const now = this.now().getTime();
+    const paidAt = Date.parse(purchase.payment.capturedAt ?? purchase.createdAt);
+    const backoff = Math.min(this.retryDelayMs * 2 ** (purchase.fulfillment.attempts - 1), MAX_RETRY_DELAY_MS);
+    let deadline: number;
+    let delay = backoff;
+    if (error instanceof UndeliverableError) deadline = now;
+    else if (kind === "provider") deadline = paidAt + this.retryWindowMs;
+    else if (kind === "nothing_scored") {
+      deadline = paidAt + this.selectionWindowMs;
+      delay = this.nothingScoredRetryMs;
+      await this.sendCoverageNotice(purchase, [{ asset: purchaseOf(purchase.input).assets.join(", "), reason: message }], new Date(deadline).toISOString());
+    } else {
+      deadline = purchase.fulfillment.attempts >= this.maxAttempts ? now : Number.POSITIVE_INFINITY;
+    }
+    if (now >= deadline) {
+      await this.refundUndelivered(purchase);
+      return;
+    }
+    purchase.fulfillment.nextAttemptAt = new Date(Math.min(now + delay, deadline)).toISOString();
+    this.stamp(purchase, "fulfillment_retry_scheduled", `${kind} at ${purchase.fulfillment.nextAttemptAt}`);
+    this.armRetry(purchase);
   }
 
   /** Full refund for a payment that couldn't be delivered. PayPal keeps its fee. */
@@ -575,6 +677,21 @@ export class PayPalCommerceService {
       this.stamp(purchase, "cycle_report_email_failed", error instanceof Error ? error.message : String(error));
       this.alert("A subscription report was generated, but emailing it failed.", purchase);
     }
+    const missing = missingScores(purchase.responseData);
+    if (missing.length > 0) await this.sendCoverageNotice(purchase, missing, null);
+  }
+
+  /** Sent at most once per billing cycle. A notice that fails doesn't affect the report or the payment. */
+  private async sendCoverageNotice(purchase: Purchase, missing: CoverageNotice["missing"], chooseBy: string | null) {
+    if (purchase.audit.some((entry) => entry.event === "coverage_notice_sent")) return;
+    const email = purchase.subscriptionLocalId ? this.all().subscriptions[purchase.subscriptionLocalId]?.subscriberEmail : null;
+    if (!email || !this.deps.notifyCoverage) return;
+    try {
+      await this.deps.notifyCoverage(email, { title: purchase.title, missing, chooseBy });
+      this.stamp(purchase, "coverage_notice_sent", missing.map((entry) => entry.asset).join(", "));
+    } catch (error) {
+      this.stamp(purchase, "coverage_notice_failed", error instanceof Error ? error.message : String(error));
+    }
   }
 
   /** Runs after a restart. A pipeline run is in memory, so a paid purchase mid-run starts again. */
@@ -585,11 +702,8 @@ export class PayPalCommerceService {
         purchase.fulfillment.status = "waiting";
         this.stamp(purchase, "fulfillment_resumed_after_restart");
       }
-      if (this.mayFulfill(purchase) && purchase.fulfillment.attempts >= this.maxAttempts) {
-        void this.refundUndelivered(purchase);
-      } else {
-        this.startFulfillment(purchase);
-      }
+      // A try that's due now runs. One that isn't due is scheduled again from its saved time.
+      this.startFulfillment(purchase);
     }
   }
 
@@ -606,7 +720,11 @@ export class PayPalCommerceService {
     if (purchase.payment.status === "created") return "awaiting_payment";
     if (purchase.payment.status === "capture_pending") return "payment_pending";
     if (purchase.payment.status === "declined" || purchase.payment.status === "refund_failed") return "failed";
-    return purchase.fulfillment.status === "complete" ? "completed" : "running";
+    if (purchase.fulfillment.status === "complete") return "completed";
+    if (purchase.fulfillment.status === "failed" && purchase.fulfillment.nextAttemptAt) {
+      return purchase.fulfillment.failureKind === "nothing_scored" ? "needs_selection" : "delayed";
+    }
+    return "running";
   }
 
   private messageOf(purchase: Purchase, phase: PurchaseView["phase"]): string | null {
@@ -614,6 +732,8 @@ export class PayPalCommerceService {
     if (phase === "revoked") return REVOKED_MESSAGE;
     if (phase === "restricted") return RESTRICTED_MESSAGE;
     if (phase === "payment_pending") return SLOW_MESSAGE;
+    if (phase === "delayed") return DELAYED_MESSAGE;
+    if (phase === "needs_selection") return NEEDS_SELECTION_MESSAGE;
     if (phase === "failed") return purchase.payment.status === "declined" ? "PayPal declined this payment, so you have not been charged." : REFUND_FAILED_MESSAGE;
     return null;
   }
@@ -860,6 +980,34 @@ export class PayPalCommerceService {
     };
   }
 
+  /**
+   * Replaces the assets for future months, once they're confirmed scoreable. A month waiting on new
+   * assets runs straight away on them, under its original payment, and keeps that decision.
+   */
+  updateSubscriptionAssets(localId: string, assets: string[]): Promise<SubscriptionView> {
+    return this.withLock(localId, async () => {
+      const subscription = this.requireSubscription(localId);
+      if (subscription.status !== "active") throw new AssistantError("action_not_payable", 409, "Only an active subscription can change its assets.");
+      if (!this.deps.checkAssets) throw new AssistantError("service_unavailable", 503, "Selun can't check those assets right now. Please try again shortly.");
+      const checked = await this.deps.checkAssets(assets, purchaseOf(subscription.input).profile);
+      if (!checked.deliverable) {
+        throw new AssistantError("scorecard_unavailable", 409, "Selun can't confirm an overall score for every one of those assets right now, so your subscription wasn't changed.", { assets: checked.assets });
+      }
+      subscription.input = { ...subscription.input, assets };
+      this.stamp(subscription, "subscription_assets_updated", assets.join(", "));
+      for (const id of Object.values(subscription.cycles)) {
+        const purchase = this.all().purchases[id];
+        if (!purchase || !this.mayFulfill(purchase) || purchase.fulfillment.failureKind !== "nothing_scored") continue;
+        purchase.input = subscription.input;
+        purchase.screening = checked.snapshot ?? null;
+        purchase.fulfillment.nextAttemptAt = null;
+        this.stamp(purchase, "cycle_assets_updated", assets.join(", "));
+        this.startFulfillment(purchase);
+      }
+      return this.subscriptionView(subscription);
+    });
+  }
+
   /** Stops future billing. Reports already paid for stay available. */
   cancelSubscription(localId: string): Promise<SubscriptionView> {
     return this.withLock(localId, async () => {
@@ -890,6 +1038,8 @@ export class PayPalCommerceService {
           await this.reconcile(purchase);
           this.startFulfillment(purchase);
         }).catch((error) => console.warn("PayPal purchase sync failed:", error instanceof Error ? error.message : error));
+      } else if (purchase.payment.saleId && purchase.access !== "revoked") {
+        this.startFulfillment(purchase);
       }
     }
   }

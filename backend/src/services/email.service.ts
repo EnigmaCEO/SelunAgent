@@ -594,6 +594,31 @@ export type DocumentEmailOutcome =
   | { status: "sent" | "test_recorded" }
   | { status: "skipped" | "failed"; error: string };
 
+/** Tells a subscriber an asset lost its overall score, so they can choose differently. */
+export async function sendCoverageNoticeEmail(input: {
+  toEmail: string;
+  title: string;
+  missing: { asset: string; reason: string }[];
+  chooseBy: string | null;
+}): Promise<DocumentEmailOutcome> {
+  if (!isUserResultEmailEnabled()) return { status: "skipped", error: "Result email delivery is disabled." };
+  if (!isValidEmail(input.toEmail)) return { status: "failed", error: "Recipient email address is invalid." };
+  const lead = input.chooseBy
+    ? `None of your assets can get an overall score this month. Choose different assets by ${input.chooseBy.slice(0, 10)} to get this month's report. If you don't, this month's payment is refunded in full.`
+    : "This month's report is ready, but some assets have no overall score. The rest of the report isn't affected.";
+  const manage = "You can change your assets on your subscription in the Selun chat where you started it.";
+  const lines = input.missing.map((entry) => `${entry.asset}: ${entry.reason}`);
+  const result = await sendViaResend({
+    to: [input.toEmail],
+    subject: `Your Selun ${input.title}: asset coverage changed`,
+    text: [lead, "", ...lines, "", manage].join("\n"),
+    html: `<p>${escapeHtml(lead)}</p><ul>${lines.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}</ul><p>${escapeHtml(manage)}</p>`,
+    idempotencyKey: `selun-coverage-${createHash("sha256").update(`${input.toEmail}|${input.title}|${lines.join("|")}|${input.chooseBy ?? new Date().toISOString().slice(0, 7)}`).digest("hex").slice(0, 32)}`,
+  });
+  if (!result.ok) return { status: "failed", error: result.error };
+  return { status: result.mock ? "test_recorded" : "sent" };
+}
+
 /** Sends a chat result's PDF. test_recorded means the mock provider kept it and nothing was sent. */
 export async function sendResultDocumentEmail(input: {
   toEmail: string;

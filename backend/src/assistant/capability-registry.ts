@@ -505,7 +505,7 @@ const PAYPAL_SPECS: ToolSpec[] = [
     whenToUse: "The customer wants ongoing, recurring, or monthly reports or a subscription. It needs at least one named asset.",
     outputType: "comprehensive_report_subscription",
     duration: "The first report starts once PayPal confirms your first payment",
-    limitations: `${REPORT_LIMITATIONS} ${REPORT_ASSURANCE} That applies to your first report. Each later month is checked when it runs, so an asset that no longer qualifies then would show price measurements without an overall score. Each paid month includes one report. Reports already paid for stay available if you cancel.`,
+    limitations: `${REPORT_LIMITATIONS} ${REPORT_ASSURANCE} That applies to your first report. Each later month is checked when it runs. If an asset no longer qualifies, the report says so and we'll let you know so you can change your assets. If none qualifies, you can choose new ones, or that month is refunded. Each paid month includes one report. Reports already paid for stay available if you cancel.`,
     ...REPORT_INPUT,
   },
 ];
