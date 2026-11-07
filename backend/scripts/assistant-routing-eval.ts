@@ -120,7 +120,10 @@ async function main() {
 
   console.log(`Model: ${config.model}. Each request runs ${runs} time(s).\n`);
   let failures = 0;
-  for (const testCase of CASES) {
+  // --only=rebalance,portfolio reruns just the requests containing those words.
+  const only = process.argv.find((argument) => argument.startsWith("--only="))?.slice("--only=".length).split(",").filter(Boolean) ?? [];
+  const cases = only.length ? CASES.filter((testCase) => only.some((word) => testCase.say.toLowerCase().includes(word.toLowerCase()))) : CASES;
+  for (const testCase of cases) {
     const seenInRuns: string[] = [];
     let failedRuns = 0;
     for (let run = 0; run < runs; run += 1) {
@@ -138,7 +141,7 @@ async function main() {
     failures += failedRuns;
     console.log(`${failedRuns ? "FAIL" : "PASS"}  "${testCase.say}"\n      ${[...new Set(seenInRuns)].join("\n      ")}`);
   }
-  const total = CASES.length * runs;
+  const total = cases.length * runs;
   console.log(`\n${total - failures}/${total} runs chose correctly.`);
   process.exit(failures ? 1 : 0);
 }

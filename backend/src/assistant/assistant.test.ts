@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import express from "express";
 import { encodePaymentRequiredHeader, encodePaymentSignatureHeader } from "@x402/core/http";
@@ -12,6 +15,8 @@ import { SpendLedger } from "./commerce";
 import { LlmError, OpenAiClient, readOpenAiConfig, type ChatMessage, type LlmClient, type LlmRequest, type LlmResponse } from "./openai-client";
 import { presentResult } from "./result-presenter";
 import { AiCredits, readCreditConfig } from "./ai-credits";
+import { replyIssues } from "./claim-guard";
+import { classifyIntent, type Intent } from "./intent";
 import { classifyPaidFailure, HttpX402Gateway, type ChallengeOutcome, type PaidOutcome, type X402Gateway } from "./x402-gateway";
 
 const PAYER = "0xfe2d5E9c5aE6E48B7F8b0b82AC4dE8B423bA0557";
@@ -46,7 +51,7 @@ function toolCall(name: string, args: unknown, id = `call_${name}`) {
 /** Scripted model. Each entry answers one model call and sees the request. */
 class ScriptedLlm implements LlmClient {
   readonly requests: LlmRequest[] = [];
-  constructor(private readonly script: (LlmResponse | Error)[]) {}
+  constructor(readonly script: (LlmResponse | Error)[]) {}
   async complete(request: LlmRequest): Promise<LlmResponse> {
     this.requests.push(request);
     const next = this.script.shift() ?? { content: "Done.", toolCalls: [] };
@@ -903,13 +908,147 @@ test("a guest gets five substantive answers, and questions about Selun's service
   const offTopic = await service.chat({ message: "Explain what staking is", guestToken: token, clientKey: "c1" });
   assert.equal(llm.requests.length, asked, "nothing a service answers: no model call");
   assert.match(offTopic.text, /used your free questions, so I can't answer that one.*adds 10 more/);
+  const shown = offTopic.blocks.find((block) => block.type === "capabilities");
+  assert.ok(shown?.type === "capabilities" && shown.items.length > 3, "the catalog is still one tap away");
 
   const limited = await service.chat({ message: "Analyze the risks of Bitcoin", guestToken: token, clientKey: "c1" });
   const request = llm.requests.at(-1)!;
   assert.match(String(request.messages[0].content), /used their free Selun AI questions/);
   assert.ok(!(request.tools ?? []).some((tool) => tool.function.name === "search_sagitta_sites"), "no knowledge tools once questions run out");
-  assert.match(limited.text, /used your free questions/, "an answer that offered no service isn't shown");
+  assert.ok((request.tools ?? []).some((tool) => tool.function.name === "propose_asset_scorecard"), "but every service can still be quoted");
+  assert.match(limited.text, /Here's what Selun offers for that/, "an answer that offered no service isn't shown");
+  const offered = limited.blocks.find((block) => block.type === "capabilities");
+  assert.deepEqual(offered?.type === "capabilities" && offered.items.map((item) => item.id), ["asset_scorecard"], "the service it asked for");
   assert.equal(limited.credits?.remaining, 0);
+});
+
+test("with no questions left, a customer can still discover, quote, change, and buy a service", async () => {
+  const { llm, service } = creditedService([], { guestQuestions: 0 });
+  const quoted = { content: null, toolCalls: [toolCall("propose_sce_continuity_mode", {})] };
+  llm.script.push(quoted, answer("Here's the safety check."));
+  const safety = await service.chat({ message: "Is it safe to use DeFi right now?", clientKey: "c5" });
+  assert.equal(safety.credits?.remaining, 0);
+  const card = safety.blocks.find((block) => block.type === "action");
+  assert.ok(card?.type === "action" && card.action.capabilityId === "sce_continuity_mode", "a quote, with zero questions");
+  assert.equal(safety.text, "Here's the safety check.");
+  const token = safety.guestToken!;
+
+  // The model answers in words alone: the matching service is shown in its place.
+  llm.script.push(answer("DeFi carries smart contract risk."));
+  const words = await service.chat({ message: "Is it safe to use DeFi right now?", clientKey: "c5", guestToken: token });
+  const shown = words.blocks.find((block) => block.type === "capabilities");
+  assert.deepEqual(shown?.type === "capabilities" && shown.items.map((item) => item.id), ["sce_continuity_mode"]);
+  assert.ok(!words.text.includes("smart contract"));
+
+  // A price question is answered as asked, and a payment question isn't swapped for the catalog.
+  llm.script.push(answer("The Asset Scorecard is listed on the card."), answer("You can pay by wallet, PayPal, or card."));
+  const priced = await service.chat({ message: "How much does the Asset Scorecard cost?", clientKey: "c5", guestToken: token, conversationId: safety.conversationId });
+  assert.equal(priced.text, "The Asset Scorecard is listed on the card.");
+  const paying = await service.chat({ message: "Can I pay with PayPal?", clientKey: "c5", guestToken: token, conversationId: safety.conversationId });
+  assert.equal(paying.text, "You can pay by wallet, PayPal, or card.");
+  assert.ok(!paying.blocks.some((block) => block.type === "capabilities"));
+
+  // Changing the waiting quote is a transaction too.
+  llm.script.push(answer("Updated."));
+  const asked = llm.requests.length;
+  await service.chat({ message: "Make it a conservative profile instead", clientKey: "c5", guestToken: token, conversationId: safety.conversationId });
+  assert.equal(llm.requests.length, asked + 1, "sent to the model, not turned away");
+});
+
+test("intents come from Selun's capabilities, not single words", () => {
+  const none = { hasQuote: false, hasResult: false };
+  const cases: [string, Intent, typeof none?][] = [
+    ["What services do you offer?", "service_discovery"],
+    ["How much is the Asset Scorecard?", "service_discovery"],
+    ["Tell me more about Safety Check (Continuity Mode)", "service_discovery"],
+    ["Is it safe to use DeFi right now?", "service_discovery"],
+    ["Is Aave safe?", "service_discovery"],
+    ["How is the crypto market right now?", "service_discovery"],
+    ["Analyze the risks of Ethereum", "service_discovery"],
+    ["Can I pay with a card?", "transaction"],
+    ["How do I get a refund?", "transaction"],
+    ["Cancel my subscription", "transaction"],
+    ["yes, go ahead", "transaction", { hasQuote: true, hasResult: false }],
+    ["Why is the drawdown so large?", "result_followup", { hasQuote: false, hasResult: true }],
+    ["What is a drawdown?", "general"],
+    ["What is a credit report?", "general"],
+    ["Explain what staking is", "general"],
+    ["What is a stablecoin?", "general"],
+  ];
+  for (const [message, intent, context] of cases) assert.equal(classifyIntent(message, context ?? none).intent, intent, message);
+  assert.equal(classifyIntent("What is a drawdown?", none).catalog, false);
+  assert.deepEqual(classifyIntent("Is it safe to use DeFi right now?", none).services, ["sce_continuity_mode"]);
+});
+
+test("a refund takes back the unused questions it added, once, and never more than are left", () => {
+  const file = path.join(os.tmpdir(), `selun-credits-${process.pid}-${Date.now()}.json`);
+  try {
+    const credits = new AiCredits({ ...readCreditConfig({}), guestQuestions: 0 }, file);
+    const account = credits.account(null, "c6")!;
+    credits.grant(account.id, "paid-1", 10);
+    credits.grant(account.id, "paid-2", 10);
+    for (let index = 0; index < 13; index += 1) credits.charge(account);
+    assert.equal(credits.remaining(account), 7);
+    assert.equal(credits.revoke("paid-1"), 0, "its ten were the first used");
+    assert.equal(credits.revoke("paid-2"), 7, "only what was left of the second");
+    assert.equal(credits.revoke("paid-2"), 0, "a repeat changes nothing");
+    assert.equal(credits.grant(account.id, "paid-2", 10), false, "a refunded purchase can't add again");
+    assert.equal(credits.remaining(account), 0);
+    assert.equal(credits.revoke("never-granted"), 0);
+
+    // After a restart: the same balances, and the same answers to repeats.
+    credits.grant(account.id, "paid-3", 10);
+    credits.charge(account);
+    const reloaded = new AiCredits({ ...readCreditConfig({}), guestQuestions: 0 }, file);
+    const again = reloaded.find(account.id)!;
+    assert.equal(reloaded.remaining(again), 9);
+    assert.equal(reloaded.grant(account.id, "paid-3", 10), false, "a payment retried after a restart adds nothing");
+    assert.equal(reloaded.revoke("paid-3"), 9);
+    assert.equal(reloaded.revoke("paid-3"), 0);
+    assert.equal(reloaded.summary().grantsRevoked, 3);
+  } finally {
+    fs.rmSync(file, { force: true });
+  }
+});
+
+test("an older ledger without grant balances is read as if the newest grants are unused", () => {
+  const file = path.join(os.tmpdir(), `selun-credits-legacy-${process.pid}-${Date.now()}.json`);
+  try {
+    fs.writeFileSync(file, JSON.stringify({ accounts: { a: { id: "a", createdAt: "2026-11-01T00:00:00Z", free: 0, earned: 12, grants: { old: { amount: 10, at: "2026-11-01T00:00:00Z" }, new: { amount: 10, at: "2026-11-02T00:00:00Z" } } } }, issued: {}, usage: [] }));
+    const credits = new AiCredits(readCreditConfig({}), file);
+    assert.equal(credits.revoke("new"), 10);
+    assert.equal(credits.revoke("old"), 2);
+    assert.equal(credits.remaining(credits.find("a")), 0);
+  } finally {
+    fs.rmSync(file, { force: true });
+  }
+});
+
+test("a worked example can explain a term, but a real or Selun figure still needs a source", () => {
+  const drawdown = "A drawdown is the fall from a peak to a later low. For example, if a portfolio worth $10,000 falls to $6,000, that's a 40% drawdown. It recovers only when it's back above $10,000.";
+  assert.deepEqual(replyIssues(drawdown, ""), []);
+  assert.ok(replyIssues("Bitcoin is at $68,000 today.", "").length > 0);
+  assert.ok(replyIssues("For example, if Bitcoin falls from $70,000 to $50,000, that's a drawdown.", "").length > 0, "not tied to a real asset");
+  assert.ok(replyIssues("For example, the Asset Scorecard costs $9.", "").length > 0, "never a price");
+  assert.ok(replyIssues("Imagine $1,000 invested. The report costs $40.", "").length > 0, "a price after an example is still checked");
+  assert.ok(replyIssues("It dropped to $2,000.", "").length > 0, "no example, no exemption");
+});
+
+test("the websites' API price is never stated as the chat price", async () => {
+  assert.match(replyIssues("The Asset Scorecard costs $0.50.", "Asset Scorecard: $0.50 per call", ["0.5"]).join(), /API price/);
+  assert.deepEqual(replyIssues("The Asset Scorecard costs $1.50 here.", "Asset Scorecard: $0.50 per call. price 1.5", ["0.5"]), []);
+
+  const llm = new ScriptedLlm([
+    answer("The Asset Scorecard costs $0.50."),
+    { content: null, toolCalls: [toolCall("list_capabilities", {})] },
+    answer("The Asset Scorecard costs $1.50 here."),
+  ]);
+  const chatCatalog = catalog({ asset_scorecard: "1.5" });
+  chatCatalog.resources = chatCatalog.resources.map((resource) => (resource.productId === "asset_scorecard" ? { ...resource, apiAmountUsdc: "0.5" } : resource));
+  const service = new AssistantService({ llm, gateway: new FakeGateway(), loadCatalog: async () => chatCatalog, limits: { catalogTtlMs: 0 } });
+  const reply = await service.chat({ message: "I saw the scorecard is $0.50. How much is it?" });
+  assert.equal(reply.text, "The Asset Scorecard costs $1.50 here.");
+  assert.match(String(llm.requests[1].messages.at(-1)?.content), /0.5 is an API price/, "sent back to use the real price");
 });
 
 test("the allowance lives on the server: a new conversation keeps it, and clearing the browser only goes so far", async () => {

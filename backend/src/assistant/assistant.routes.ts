@@ -6,7 +6,7 @@ import { sandboxFaultFile, withSandboxFaults } from "./sandbox-faults";
 import { sendCoverageNoticeEmail } from "../services/email.service";
 import { createHash } from "node:crypto";
 import { Router, type NextFunction, type Request, type RequestHandler, type Response } from "express";
-import { getChatCapabilitiesData, getPaidToolResponse, getX402CapabilitiesData, listWalletPaymentRows, requireAdminRequest, runPaidCapability } from "../routes/agent.routes";
+import { getChatCapabilitiesData, getPaidToolResponse, getX402CapabilitiesData, listWalletPaymentRows, requireAdminRequest, runPaidCapability, setWalletRefundListener } from "../routes/agent.routes";
 import { issuePurchaseToken, issueReportToken, readPurchaseToken } from "../services/job-access.service";
 import { legacyClientIp } from "../services/legacy-cooldown";
 import { AssistantError, AssistantService, DEFAULT_LIMITS, STRIPE_META, hostedProvider, type AssistantDeps, type AssistantLimits } from "./assistant.service";
@@ -226,6 +226,8 @@ export function createAssistantRouter(injected?: AssistantDeps, injectedReports?
   }
 
   function onPurchaseUpdate(current: PayPalCommerceService, purchase: Purchase) {
+    // Refunded or reversed: its unused questions go too. Repeats and restarts change nothing.
+    if (purchase.access === "revoked") getService().revokeQuestions(purchase.purchaseId);
     if (purchase.fulfillment.status !== "complete" || purchase.access !== "active") return;
     // Once per purchase, kept with the purchase so a restart or an expired conversation doesn't lose it.
     getService().grantQuestions(purchase.creditId ?? null, purchase.purchaseId, purchase.kind === "subscription_cycle");
@@ -253,6 +255,9 @@ export function createAssistantRouter(injected?: AssistantDeps, injectedReports?
     const config = injected ? null : readPayPalConfig() ?? readStripeConfig();
     return (service = new AssistantService(injected ?? createDefaultDeps(current, injected ? null : getStripe(), config ? { reportUsd: config.reportPriceUsd, subscriptionUsd: config.subscriptionPriceUsd } : null)));
   };
+
+  // A wallet purchase staff refund takes back its unused questions, as a hosted refund does.
+  if (!injected) setWalletRefundListener((decisionId) => getService().revokeQuestions(decisionId));
 
   if (!injected && !injectedPayPal && process.env.SELUN_SITES_REFRESH !== "0") {
     // Keeps what Selun knows about Sagitta in step with the live websites.

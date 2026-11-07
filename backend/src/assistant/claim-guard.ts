@@ -5,6 +5,7 @@
  * catch recommendation language, predictions, and figures with no source.
  */
 
+import { findAssetMentions } from "./asset-resolver";
 import { EXCLUDED_NAMES } from "./sagitta-sites";
 
 const RECOMMENDATION_PATTERNS: RegExp[] = [
@@ -35,6 +36,11 @@ const SUMMARY_ADVICE_PATTERNS: RegExp[] = [
 
 /** A sentence refusing to do these things may name them: "I can't say if it will go up." */
 const NEGATION = /\b(can't|cannot|can not|won't|not|never|don't|doesn't|isn't|aren't|no|unable)\b/i;
+
+/** "If a portfolio worth $1,000 falls to $600..." explains a term. It isn't a figure about anything real. */
+const ILLUSTRATION = /\b(for example|for instance|e\.g\.|as an example|imagine|suppose|say you|let'?s say|hypothetical(ly)?|if (you|your|an?|it|the value|the price)\b)/i;
+/** What an illustration can never state: Selun's prices, a live price, or a figure about Sagitta or a named asset. */
+const REAL_FIGURE = /\b(costs?|priced?|prices|pricing|fees?|charged?|pay|paid|usdc|selun|sagitta|radar|treasury|vault|escrow|today|currently|right now|trading at|market cap)\b/i;
 
 const DOLLAR_AMOUNT = /\$\s?(\d[\d,]*(?:\.\d+)?)|(\d[\d,]*(?:\.\d+)?)\s?(?:usd|usdc|dollars)\b/gi;
 
@@ -86,17 +92,38 @@ function protocolClaimIssues(text: string): string[] {
   return issues;
 }
 
-/** For an ordinary reply: dollar figures must come from a tool or from the customer. */
-export function replyIssues(text: string, sourceText: string): string[] {
+/**
+ * The text a dollar figure needs a source for. A worked example that a paragraph introduces as one is left out,
+ * one sentence at a time, unless that sentence touches a price, Sagitta, or a named asset.
+ */
+function statedText(text: string): string {
+  const kept: string[] = [];
+  for (const paragraph of text.split(/\n\s*\n/)) {
+    let example = false;
+    for (const sentence of paragraph.split(/(?<=[.!?\n])\s+/)) {
+      example ||= ILLUSTRATION.test(sentence);
+      const real = REAL_FIGURE.test(sentence) || findAssetMentions(sentence).length > 0;
+      if (!example || real) kept.push(sentence);
+    }
+  }
+  return kept.join(" ");
+}
+
+/**
+ * For an ordinary reply: dollar figures must come from a tool or from the customer.
+ * `apiPrices` are what agents pay for per-use services through the API, which the websites list. No tool gave them
+ * in this conversation, and the chat charges more, so they're never a chat price.
+ */
+export function replyIssues(text: string, sourceText: string, apiPrices: readonly string[] = []): string[] {
   const excluded = EXCLUDED_NAMES.exec(text);
   if (excluded) return [`mentions a name Selun doesn't discuss: "${excluded[0]}". Don't name it. Say you can only help with Sagitta Systems`];
   const allowed = numbersIn(sourceText);
-  const unsupported = [...text.matchAll(DOLLAR_AMOUNT)]
-    .map((match) => normalizeNumber(match[1] ?? match[2]))
-    .filter((value) => !allowed.has(value));
+  const apiOnly = numbersIn(apiPrices.join(" "));
+  const stated = [...statedText(text).matchAll(DOLLAR_AMOUNT)].map((match) => normalizeNumber(match[1] ?? match[2]));
   return [
     ...recommendationIssues(text),
     ...protocolClaimIssues(text),
-    ...unsupported.map((value) => `dollar amount with no source: ${value}`),
+    ...stated.filter((value) => !allowed.has(value)).map((value) => `dollar amount with no source: ${value}`),
+    ...stated.filter((value) => allowed.has(value) && apiOnly.has(value)).map((value) => `${value} is an API price from the websites. Bought in this chat, Selun's per-use services cost more, so state only the price a tool gave you`),
   ];
 }

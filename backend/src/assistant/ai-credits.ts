@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import type { Intent } from "./intent";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -55,8 +56,17 @@ type Account = {
   free: number;
   /** Questions added by purchases, left. */
   earned: number;
-  /** One entry per purchase, so a repeated completion can't add twice. */
-  grants: Record<string, { amount: number; at: string }>;
+  /** One entry per purchase, so a repeated completion can't add twice, and a refund removes only what's left of it. */
+  grants: Record<string, Grant>;
+};
+
+type Grant = {
+  amount: number;
+  at: string;
+  /** Not yet used. Questions come from the oldest grant first. */
+  left?: number;
+  /** Refunded or reversed: what was left is gone, and the same purchase can't add again. */
+  revokedAt?: string;
 };
 
 export type TurnKind = "service" | "metered";
@@ -64,6 +74,8 @@ export type TurnKind = "service" | "metered";
 export type UsageRecord = {
   at: string;
   kind: TurnKind;
+  /** What the message was for. Missing on records from before intents were kept. */
+  intent?: Intent;
   /** Whether the answer used a question. */
   charged: boolean;
   /** Out of questions: Selun only helped with its services. */
@@ -102,6 +114,7 @@ export class AiCredits {
       try {
         const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<Store>;
         this.store = { accounts: parsed.accounts ?? {}, issued: parsed.issued ?? {}, usage: parsed.usage ?? [] };
+        for (const account of Object.values(this.store.accounts)) settleLegacyGrants(account);
       } catch (error) {
         console.error("AI credit records couldn't be read, so they start empty:", error instanceof Error ? error.message : error);
       }
@@ -150,8 +163,11 @@ export class AiCredits {
   /** Uses one question, free ones first. False if there were none. */
   charge(account: Account): boolean {
     if (account.free > 0) account.free -= 1;
-    else if (account.earned > 0) account.earned -= 1;
-    else return false;
+    else if (account.earned > 0) {
+      account.earned -= 1;
+      const oldest = Object.values(account.grants).filter((grant) => !grant.revokedAt && (grant.left ?? 0) > 0).sort((left, right) => left.at.localeCompare(right.at))[0];
+      if (oldest) oldest.left! -= 1;
+    } else return false;
     this.save();
     return true;
   }
@@ -160,10 +176,28 @@ export class AiCredits {
   grant(id: string | null | undefined, purchaseKey: string, amount: number): boolean {
     const account = this.find(id);
     if (!account || amount <= 0 || account.grants[purchaseKey]) return false;
-    account.grants[purchaseKey] = { amount, at: this.now().toISOString() };
+    account.grants[purchaseKey] = { amount, at: this.now().toISOString(), left: amount };
     account.earned += amount;
     this.save();
     return true;
+  }
+
+  /**
+   * A refunded or reversed purchase takes back what's left of its questions. Questions already used stay used,
+   * so a balance never goes below zero. A repeat, or a purchase that never added any, changes nothing.
+   */
+  revoke(purchaseKey: string): number {
+    for (const account of Object.values(this.store.accounts)) {
+      const grant = account.grants[purchaseKey];
+      if (!grant || grant.revokedAt) continue;
+      const left = Math.min(grant.left ?? 0, account.earned);
+      account.earned -= left;
+      grant.left = 0;
+      grant.revokedAt = this.now().toISOString();
+      this.save();
+      return left;
+    }
+    return 0;
   }
 
   costOf(usage: { inputTokens: number; cachedTokens: number; outputTokens: number }): number {
@@ -198,10 +232,26 @@ export class AiCredits {
       metered: group(usage.filter((row) => row.kind === "metered" && !row.limited)),
       service: group(usage.filter((row) => row.kind === "service")),
       outOfQuestions: group(usage.filter((row) => row.limited)),
+      byIntent: Object.fromEntries((["service_discovery", "transaction", "result_followup", "general"] as const).map((intent) => {
+        const rows = usage.filter((row) => row.intent === intent);
+        return [intent, { ...group(rows), charged: rows.filter((row) => row.charged).length }];
+      })),
       charged: usage.filter((row) => row.charged).length,
       notChargedSuppressed: usage.filter((row) => row.suppressed || row.capped).length,
       accounts: accounts.length,
       accountsWithPurchases: accounts.filter((account) => Object.keys(account.grants).length > 0).length,
+      grantsRevoked: accounts.reduce((sum, account) => sum + Object.values(account.grants).filter((grant) => grant.revokedAt).length, 0),
     };
+  }
+}
+
+/** Records from before grants kept their own balance: what's earned is taken to be left on the newest grants. */
+function settleLegacyGrants(account: Account) {
+  const grants = Object.values(account.grants);
+  if (!grants.some((grant) => grant.left === undefined)) return;
+  let earned = account.earned;
+  for (const grant of grants.sort((left, right) => right.at.localeCompare(left.at))) {
+    grant.left = grant.revokedAt ? 0 : Math.min(grant.amount, earned);
+    earned -= grant.left;
   }
 }

@@ -433,6 +433,13 @@ function isAuthorizedAdminRequest(req: Request): boolean {
   return timingSafeEqual(expectedBuffer, providedBuffer);
 }
 
+let walletRefundListener: ((decisionId: string) => void) | null = null;
+
+/** Told the decision ID of each wallet purchase staff refund, so whatever it added can be taken back. */
+export function setWalletRefundListener(listener: ((decisionId: string) => void) | null) {
+  walletRefundListener = listener;
+}
+
 export function requireAdminRequest(req: Request, res: Response): boolean {
   const expected = getAdminApiToken();
   if (!expected) {
@@ -2415,7 +2422,7 @@ export async function getChatCapabilitiesData() {
       const productId = chatPaths.get(resource.endpoint);
       if (!productId) return resource;
       const amountUsdc = getChatToolPriceUsdc(productId);
-      return { ...resource, endpoint: resource.endpoint.replace("/agent/x402/", "/agent/x402/chat/"), pricing: { amountUsdc, price: toUsdPrice(amountUsdc) } };
+      return { ...resource, endpoint: resource.endpoint.replace("/agent/x402/", "/agent/x402/chat/"), pricing: { amountUsdc, price: toUsdPrice(amountUsdc) }, apiAmountUsdc: resource.pricing.amountUsdc };
     }),
   };
 }
@@ -3917,6 +3924,11 @@ router.post("/admin/refund", async (req: Request, res: Response) => {
           stateStore.markAllocateRefund(purchase.decisionId, refund);
         } else {
           stateStore.markToolRefund(purchase.productId as X402ToolProductId, purchase.decisionId, refund);
+        }
+        try {
+          walletRefundListener?.(purchase.decisionId);
+        } catch (error) {
+          console.error("Wallet refund listener failed:", error instanceof Error ? error.message : error);
         }
       }
     }

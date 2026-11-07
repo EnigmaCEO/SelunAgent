@@ -28,6 +28,8 @@ export type CatalogResource = {
   productId: string;
   endpoint: string;
   pricing: { amountUsdc: string };
+  /** What agents pay through the public API, when the chat charges something else. */
+  apiAmountUsdc?: string;
 };
 
 export type CapabilityCatalog = { resources: CatalogResource[] };
@@ -536,6 +538,41 @@ const HANDOFF_SPECS: Omit<Capability, "endpoint" | "priceUsdc" | "currency" | "p
     execution: "wizard_handoff",
   },
 ];
+
+const PROTOCOLS = "aave|uniswap|compound|curve|lido|makerdao|maker|morpho|pendle|gmx|eigenlayer|balancer|sushiswap|yearn|convex|ethena|jupiter|raydium|hyperliquid|pancakeswap|rocket ?pool|frax|venus|spark";
+
+/**
+ * How customers ask for each service, in their own words. Checked before any question limit applies,
+ * so someone with no questions left can still find, quote, and buy what they asked for.
+ * Typed by capability, so a new service can't be added without saying how it's asked for.
+ */
+export const SERVICE_REQUESTS: Record<CapabilityId, RegExp> = {
+  market_regime: /\b(market (conditions|regime|update|overview|sentiment|outlook)|how('s| is) the (crypto )?market|state of the (crypto )?market|(crypto )?market (right now|today)|bull (or|vs\.?) bear|risk[- ](on|off))\b/i,
+  asset_scorecard: /\b(analy[sz]e|analysis|scorecard|risk (score|rating|analysis|assessment)|risks? (of|for)|how risky|compare|comparison|tell me about)\b/i,
+  policy_envelope: /\b(risk limits?|exposure (caps?|limits?)|stablecoin floor|risk budget|policy envelope)\b/i,
+  rebalance: /\brebalanc\w*/i,
+  sce_continuity_mode: /\bsafety check\b|\bcontinuity\b|\b(safe|secure)\b[^.?!]*\b(defi|move (my )?funds|right now|today|bridg\w*)\b/i,
+  sce_risk_evaluate: new RegExp(`\\b(${PROTOCOLS})\\b|\\bprotocol risk\\b|\\b(is|are) (?!(it|this|that|there|now|defi|crypto)\\b)[\\w.-]+ (protocol )?safe( to use)?\\b`, "i"),
+  sce_case_relevance: /\b(hack(ed|s)?|exploit(ed|s)?|incidents?|threats?|attack(ed|s)?|rug ?pulls?)\b/i,
+  comprehensive_report: /\b(full|complete|comprehensive|detailed) (report|analysis|intelligence)\b|\bintelligence report\b/i,
+  monthly_intelligence: /\b(monthly|recurring|ongoing|every month|subscription|subscribe)\b/i,
+  allocate: /\b(portfolio plan|asset mix|recommended portfolio|build (me )?a portfolio|allocat(e|ion) (my|for))\b/i,
+  allocate_with_report: /\b(certified|documented) (report|decision|record)\b|\bdecision report\b/i,
+};
+
+const TITLES: [CapabilityId, string][] = [...TOOL_SPECS, ...PAYPAL_SPECS, ...HANDOFF_SPECS].map((spec) => [spec.id, spec.title.toLowerCase()]);
+
+/** The services a message asks for, by how customers phrase them or by name. */
+export function requestedServices(message: string): CapabilityId[] {
+  const lower = message.toLowerCase();
+  return (Object.keys(SERVICE_REQUESTS) as CapabilityId[]).filter((id) => SERVICE_REQUESTS[id].test(message) || TITLES.some(([titled, title]) => titled === id && lower.includes(title)));
+}
+
+/** Names a service by its title, as the catalog card's "Tell me more" does. */
+export function namesService(message: string): boolean {
+  const lower = message.toLowerCase();
+  return TITLES.some(([, title]) => lower.includes(title));
+}
 
 export const TOOL_CAPABILITY_IDS = TOOL_SPECS.map((spec) => spec.id);
 
