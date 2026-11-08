@@ -21,7 +21,7 @@ const MAX_POLL_FAILURES = 6;
 // Highest-value services first. Each one is checked to land on its own quote: the report, the portfolio plan,
 // the subscription, then the entry-level analyses.
 const SUGGESTIONS = [
-  "Get a full intelligence report on Bitcoin and Ethereum",
+  "Get an intelligence report on Bitcoin",
   "Build me a crypto portfolio plan",
   "Send me a monthly report on Bitcoin",
   "Analyze the risks of Ethereum",
