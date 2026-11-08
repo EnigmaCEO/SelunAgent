@@ -32,6 +32,8 @@ const SKIPPED_FILE = /\.(css|js|mjs|map|png|jpe?g|gif|svg|ico|webp|avif|woff2?|t
  * as if it were current, so they are never kept. Selun gives their address instead.
  */
 const LIVE_PAGE = /^https:\/\/radar\.sagitta\.systems\/alerts(\/|$)/i;
+/** A live ticker inside an ordinary page, such as Radar's homepage feed ("4m ago"). Only that passage goes. */
+const LIVE_TEXT = /\b\d+\s?(s|m|h|min|mins|hr|hrs|minutes?|hours?)\s+ago\b/i;
 const MAX_PAGES_PER_HOST = 120;
 const MAX_PAGE_BYTES = 2_000_000;
 const CHUNK_CHARS = 900;
@@ -279,7 +281,7 @@ const PRICE_BOOST = 1.6;
 /** Also applied to anything read from disk, so a copy from before an exclusion can't bring it back. Live pages go too. */
 function withoutExcluded(corpus: SiteCorpus): SiteCorpus {
   const hosts = Object.fromEntries(Object.entries(corpus.hosts).filter(([host]) => !EXCLUDED_NAMES.test(host)));
-  const chunks = corpus.chunks.filter((chunk) => !LIVE_PAGE.test(chunk.url) && !EXCLUDED_NAMES.test(`${chunk.url} ${chunk.title} ${chunk.heading} ${chunk.text}`));
+  const chunks = corpus.chunks.filter((chunk) => !LIVE_PAGE.test(chunk.url) && !LIVE_TEXT.test(chunk.text) && !EXCLUDED_NAMES.test(`${chunk.url} ${chunk.title} ${chunk.heading} ${chunk.text}`));
   // Dropped live pages leave the page count too, so a refresh without them doesn't look like a site shrinking.
   const live = new Set(corpus.chunks.filter((chunk) => LIVE_PAGE.test(chunk.url)).map((chunk) => chunk.url));
   for (const url of live) {

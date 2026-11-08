@@ -103,6 +103,7 @@ export type Block =
   | { type: "capabilities"; items: PublicCapability[] }
   | { type: "asset_choice"; query: string; reason: string; options: { symbol: string; label: string }[] }
   | { type: "handoff"; title: string; summary: string; href: string; prices: { label: string; priceUsdc: string }[]; note: string }
+  | { type: "live_feed"; title: string; summary: string; href: string; linkLabel: string; note: string }
   | { type: "notice"; tone: "info" | "warning"; text: string };
 
 export type PublicCapability = Pick<Capability, "id" | "title" | "summary" | "outputType" | "duration" | "limitations" | "execution" | "priceUsdc" | "currency" | "billing">;
@@ -349,6 +350,16 @@ After proposing, end with one or two sentences: what they will get and that the 
 export const RADAR_ALERTS_URL = "https://radar.sagitta.systems/alerts";
 const NOW_WORDS = /\b(latest|recent|recently|current|currently|right now|now|today|active|live|ongoing|this week)\b/i;
 const EVENT_WORDS = /\b(alerts?|incidents?|exploits?|hacks?|hacked|breach(es)?|warnings?|attacks?)\b/i;
+/** Only what Radar's own site says it covers. */
+export const LIVE_ALERTS_TEXT = "Radar monitors DeFi infrastructure, including oracles, bridges, and liquidity pools, and publishes its alerts from the past 24 hours. For past incidents affecting a protocol, ask me about its known incidents.";
+const RADAR_LIVE_FEED: Block = {
+  type: "live_feed",
+  title: "Sagitta Radar: live alerts",
+  summary: "The latest published alerts from the past 24 hours, on Radar.",
+  href: RADAR_ALERTS_URL,
+  linkLabel: "View latest Radar alerts",
+  note: "Live alert details are on Radar. Selun doesn't retrieve the feed directly yet.",
+};
 /** "Any recent incidents involving Aave?", "latest alerts for Ethereum": about events happening now, which only Radar shows. */
 export function asksAboutNow(message: string): boolean {
   return NOW_WORDS.test(message) && EVENT_WORDS.test(message);
@@ -543,25 +554,23 @@ export class AssistantService {
         // Out of questions, a general question or a result follow-up goes without a model call, and so does a price list,
         // which needs no model: its card is the answer. The rest is rate limited, so free discovery can't run up model costs.
         const commerce = classified.intent === "service_discovery" || classified.intent === "transaction";
-        const fixed = !session.turn.limited ? null
+        // What's happening now only Radar shows, so the answer is its live page, without a model call or a question used.
+        const live = classified.intent !== "transaction" && asksAboutNow(message);
+        if (live) session.turn.free = true;
+        const fixed = live ? LIVE_ALERTS_TEXT
+          : !session.turn.limited ? null
           : !commerce ? (classified.intent === "result_followup" ? RESULT_KEPT : OUT_OF_QUESTIONS)(credits!.config.purchaseGrant)
           : classified.listing ? PRICES_SHOWN
           : !this.takeZeroCreditTurn(account?.id ?? `client:${input.clientKey ?? "unknown"}`) ? (classified.intent === "transaction" ? PAYMENT_HELP : SERVICE_INSTEAD(credits!.config.purchaseGrant))
           : null;
         const served = fixed === null;
-        const reply = served ? await this.runModel(session) : { text: fixed, blocks: [] as Block[] };
+        const reply = served ? await this.runModel(session) : { text: fixed, blocks: (live ? [RADAR_LIVE_FEED] : []) as Block[] };
         if (!served) session.messages.push({ role: "assistant", content: reply.text });
-        // Selun can't see what's happening now, so a question about it always gets the page that shows it.
-        if (served && asksAboutNow(message) && !reply.text.includes(RADAR_ALERTS_URL)) {
-          reply.text = `${reply.text.trim()}\n\nFor alerts happening now, Sagitta Radar's free public page shows the last 24 hours: ${RADAR_ALERTS_URL}`;
-          const last = session.messages.at(-1);
-          if (last?.role === "assistant") last.content = reply.text;
-        }
         // Listing pages under "the sites don't say that" would suggest they do.
         // Unless a page governs the question: "the whitepaper doesn't name a regulator" is an answer from that page.
         const blocks = saysNotCovered(reply.text) && !whitepaperTopics(message).length ? reply.blocks.filter((block) => block.type !== "sagitta_sources") : reply.blocks;
         // After that, so a fact the reply does state from the sheet still shows its page.
-        if (!session.turn.limited) this.citeFacts(message, reply.text, blocks);
+        if (!session.turn.limited && !live) this.citeFacts(message, reply.text, blocks);
         if (!credits) return { conversationId: session.id, text: reply.text, blocks };
 
         const turn = session.turn;

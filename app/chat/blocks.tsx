@@ -747,6 +747,15 @@ export function BlockView(props: {
           <p className={styles.approvalNote}>{block.note}</p>
         </article>
       );
+    case "live_feed":
+      return (
+        <article className={styles.handoff} aria-label={block.title}>
+          <h3>{block.title}</h3>
+          <p>{block.summary}</p>
+          <a href={block.href} target="_blank" rel="noopener noreferrer" className={styles.approveButton}>{block.linkLabel}</a>
+          <p className={styles.approvalNote}>{block.note}</p>
+        </article>
+      );
     case "notice":
       return <p className={block.tone === "warning" ? styles.noticeWarning : styles.noticeInfo} role={block.tone === "warning" ? "alert" : "status"}>{block.text}</p>;
   }

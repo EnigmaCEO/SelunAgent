@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { AssistantService, RADAR_ALERTS_URL, asksAboutNow, buildSystemPrompt } from "./assistant.service";
+import { AssistantService, LIVE_ALERTS_TEXT, RADAR_ALERTS_URL, asksAboutNow, buildSystemPrompt } from "./assistant.service";
 import { CAPITAL_FLOW_PAGE, CAPITAL_FLOW_PASSAGES } from "./sagitta-capital-flow";
 import { KNOWLEDGE_CASES, WHITEPAPER_CASES } from "./sagitta-knowledge-cases";
 import { buildFactSheet, citedSections } from "./sagitta-facts";
@@ -620,13 +620,31 @@ test("questions about what's happening now are told apart from past cases and fr
   for (const q of ["Have there been any known incidents affecting Aave?", "How do Radar alerts work?", "What is the latest Radar pricing?", "Analyze the risks of Bitcoin"]) assert.ok(!asksAboutNow(q), q);
 });
 
-test("a reply about what's happening now always carries Radar's alert page, even when the model leaves it out", async () => {
-  const service = assistant([{ content: "Selun doesn't have a live feed for that.", toolCalls: [] }]);
-  const reply = await service.chat({ message: "Any recent incidents involving Aave?" });
-  assert.ok(reply.text.startsWith("Selun doesn't have a live feed for that."), reply.text);
-  assert.ok(reply.text.includes(RADAR_ALERTS_URL), reply.text);
+test("a question about what's happening now gets Radar's live page on its own, without the model or the website cards", async () => {
+  let calls = 0;
+  const service = new AssistantService({
+    llm: { complete: async () => { calls += 1; return { content: "Radar is operating.", toolCalls: [] }; } },
+    gateway: { requestChallenge: async () => { throw new Error("no"); }, submitPaid: async () => { throw new Error("no"); } },
+    loadCatalog: async () => ({ resources: [] }),
+    sites: new SiteKnowledge({ bundled: SAGITTA_SITES_SNAPSHOT }),
+  });
+  for (const message of ["Show me the latest Radar alerts", "Are there any warning signs on Ethereum right now?", "Any recent incidents involving Aave?"]) {
+    const reply = await service.chat({ message });
+    assert.equal(reply.text, LIVE_ALERTS_TEXT, message);
+    assert.deepEqual(reply.blocks.map((block) => block.type), ["live_feed"], message);
+    const feed = reply.blocks[0] as { href: string; linkLabel: string };
+    assert.equal(feed.href, RADAR_ALERTS_URL);
+    assert.equal(feed.linkLabel, "View latest Radar alerts");
+  }
+  assert.equal(calls, 0);
+});
 
-  const once = assistant([{ content: `Radar's public page is ${RADAR_ALERTS_URL}.`, toolCalls: [] }]);
-  const text = (await once.chat({ message: "Latest alerts for Ethereum?" })).text;
-  assert.equal(text.split(RADAR_ALERTS_URL).length - 1, 1, text);
+test("a live ticker inside an ordinary page, such as Radar's homepage feed, is dropped too", () => {
+  const chunk = (text: string) => ({ url: "https://radar.sagitta.systems/", site: "radar.sagitta.systems", title: "Radar", heading: "", text });
+  const knowledge = new SiteKnowledge({ bundled: { fetchedAt: "2026-01-01T00:00:00.000Z", pages: 1, hosts: { "radar.sagitta.systems": 1 }, chunks: [chunk("Chainlink ETH/USD on Arbitrum is stale beyond heartbeat · oracle · 4m ago"), chunk("Radar tracks oracle price freshness and deviation.")] } });
+  const found = knowledge.search("Chainlink oracle stale heartbeat freshness", "");
+  assert.ok(found.length > 0);
+  assert.ok(found.every((match) => !/ago/.test(match.text)));
+  assert.ok(SAGITTA_SITES_SNAPSHOT.chunks.some((c) => c.url === "https://radar.sagitta.systems/" && /\b\d+m ago\b/.test(c.text)), "the bundled homepage still has its ticker, so this test means something");
+  assert.ok(new SiteKnowledge({ bundled: SAGITTA_SITES_SNAPSHOT }).search("Chainlink ETH/USD Arbitrum differs CoinMarketCap", "").every((match) => !/\b\d+m ago\b/.test(match.text)));
 });

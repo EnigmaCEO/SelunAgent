@@ -136,6 +136,7 @@ export type Block =
   | { type: "capabilities"; items: PublicCapability[] }
   | { type: "asset_choice"; query: string; reason: string; options: { symbol: string; label: string }[] }
   | { type: "handoff"; title: string; summary: string; href: string; prices: { label: string; priceUsdc: string }[]; note: string }
+  | { type: "live_feed"; title: string; summary: string; href: string; linkLabel: string; note: string }
   | { type: "notice"; tone: "info" | "warning"; text: string };
 
 export type ChatItem =
