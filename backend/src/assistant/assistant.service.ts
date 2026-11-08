@@ -16,7 +16,7 @@ import {
   type PayPalPrices,
 } from "./capability-registry";
 import { explanationIssues, numbersIn, replyIssues } from "./claim-guard";
-import { classifyIntent, type Classified } from "./intent";
+import { classifyIntent, explicitPurchase, type Classified } from "./intent";
 import {
   COMPREHENSIVE_REPORT_ID,
   WALLET_METHOD,
@@ -154,6 +154,8 @@ type TurnBudget = {
   suppressed: boolean;
   /** Stopped by the cost ceiling. Never charged. */
   capped: boolean;
+  /** A fixed commerce step, such as asking which assets a report should cover. Never charged. */
+  free?: boolean;
 };
 
 /** Tools that answer general or Sagitta questions, which aren't offered once questions run out. */
@@ -165,6 +167,16 @@ const SERVICE_BLOCKS = new Set<string>(["action", "handoff", "capabilities", "as
 const OUT_OF_QUESTIONS = (grant: number) => `You've used your free questions, so I can't answer that one. Selun's analyses are always available, though, and each one you buy adds ${grant} more questions.`;
 
 const SERVICE_INSTEAD = (grant: number) => `Here's what Selun offers for that. Finding, quoting, and buying a service never uses a question, and each analysis you buy adds ${grant} more.`;
+
+const RESULT_KEPT = (grant: number) => `You've used your free questions, so I can't explain it further right now. Everything you bought stays available above, with its download and email options, and each analysis you buy adds ${grant} more questions.`;
+
+const PRICES_SHOWN = "Here's what each costs in this chat. Card and PayPal are charged in US dollars, and a wallet pays the same amount in USDC. Pick one to get a quote. Finding and buying a service never uses a question.";
+
+const PAYMENT_HELP = "Every quote card lets you pay by wallet (USDC on Base), PayPal, or card in US dollars. A completed purchase shows its receipt and lets you download or email the report. I can go into more detail again in a little while.";
+
+const ASK_REPORT_ASSETS = "Which assets should the Comprehensive Intelligence Report cover? Name up to 12, such as Bitcoin or Ethereum, and I'll show you the quote.";
+
+const ASK_SUBSCRIPTION_ASSETS = "Which assets should your monthly report cover? Name up to 12, such as Bitcoin or Ethereum, and I'll show you the subscription quote.";
 
 const LIMITED_INSTRUCTION ="The customer has used their free Selun AI questions. Help only with Selun's services: what they do, their prices, quoting, changing, or buying one, payments, and support. When they ask for something a service answers, propose that service. Don't answer general, educational, or Sagitta questions yourself.";
 
@@ -376,7 +388,8 @@ export class AssistantService {
   private readonly limits: AssistantLimits;
   private readonly ledger: SpendLedger;
   private readonly now: () => Date;
-  private catalogCache: { at: number; registry: Capability[]; apiPrices: string[] } | null = null;
+  private readonly zeroCreditTurns = new Map<string, number[]>();
+  private catalogCache:{ at: number; registry: Capability[]; apiPrices: string[] } | null = null;
   private dailyTurns = { day: "", count: 0 };
 
   constructor(private readonly deps: AssistantDeps) {
@@ -501,10 +514,12 @@ export class AssistantService {
       const account = credits ? credits.account(input.guestToken || session.creditId, input.clientKey ?? "unknown") : null;
       if (account) session.creditId = account.id;
       const earned = Boolean(account && account.free === 0 && account.earned > 0);
+      const limited = Boolean(credits) && credits!.remaining(account) <= 0;
       session.turn = {
-        limited: Boolean(credits) && credits!.remaining(account) <= 0,
-        maxCostUsd: credits ? (earned ? credits.config.earnedTurnCostUsd : credits.config.freeTurnCostUsd) : Number.POSITIVE_INFINITY,
-        maxOutputTokens: credits && !earned ? credits.config.freeOutputTokens : undefined,
+        limited,
+        // At zero, a turn only finds or quotes a service, so it gets the smallest budget.
+        maxCostUsd: !credits ? Number.POSITIVE_INFINITY : limited ? credits.config.zeroCreditTurnCostUsd : earned ? credits.config.earnedTurnCostUsd : credits.config.freeTurnCostUsd,
+        maxOutputTokens: !credits ? undefined : limited ? credits.config.zeroCreditOutputTokens : earned ? undefined : credits.config.freeOutputTokens,
         usage: { requests: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0 },
         suppressed: false,
         capped: false,
@@ -516,9 +531,16 @@ export class AssistantService {
           hasResult: actions.some((action) => action.state === "completed"),
         });
         // Finding, quoting, changing, and buying a service come before any question limit.
-        // Out of questions, only a general question or a result follow-up goes without a model call.
-        const served = !session.turn.limited || classified.intent === "service_discovery" || classified.intent === "transaction";
-        const reply = served ? await this.runModel(session) : { text: OUT_OF_QUESTIONS(credits!.config.purchaseGrant), blocks: [] as Block[] };
+        // Out of questions, a general question or a result follow-up goes without a model call, and so does a price list,
+        // which needs no model: its card is the answer. The rest is rate limited, so free discovery can't run up model costs.
+        const commerce = classified.intent === "service_discovery" || classified.intent === "transaction";
+        const fixed = !session.turn.limited ? null
+          : !commerce ? (classified.intent === "result_followup" ? RESULT_KEPT : OUT_OF_QUESTIONS)(credits!.config.purchaseGrant)
+          : classified.listing ? PRICES_SHOWN
+          : !this.takeZeroCreditTurn(account?.id ?? `client:${input.clientKey ?? "unknown"}`) ? (classified.intent === "transaction" ? PAYMENT_HELP : SERVICE_INSTEAD(credits!.config.purchaseGrant))
+          : null;
+        const served = fixed === null;
+        const reply = served ? await this.runModel(session) : { text: fixed, blocks: [] as Block[] };
         if (!served) session.messages.push({ role: "assistant", content: reply.text });
         // Listing pages under "the sites don't say that" would suggest they do.
         // Unless a page governs the question: "the whitepaper doesn't name a regulator" is an answer from that page.
@@ -531,7 +553,7 @@ export class AssistantService {
         const grant = credits.config.purchaseGrant;
         let text = reply.text;
         const offered = blocks.some((block) => SERVICE_BLOCKS.has(block.type));
-        if (turn.limited && !offered && classified.intent !== "transaction") {
+        if (turn.limited && !offered && !turn.free && classified.intent !== "transaction") {
           // Out of questions, a service is still one tap away: the ones asked for, or the whole catalog.
           await this.offerCatalog(blocks, classified.services);
           // The model was told not to answer, but an answer that offered nothing for sale isn't shown.
@@ -541,7 +563,7 @@ export class AssistantService {
             if (last?.role === "assistant") last.content = text;
           }
         }
-        const kind = this.turnKind(classified, offered);
+        const kind = turn.free ? "service" : this.turnKind(classified, offered);
         // A failed, held-back, or cut-short answer never uses a question.
         const charged = kind === "metered" && !turn.limited && !turn.suppressed && !turn.capped && Boolean(account) && credits.charge(account!);
         credits.record({ kind, intent: classified.intent, charged, limited: turn.limited, suppressed: turn.suppressed, capped: turn.capped, ...turn.usage, costUsd: Number(credits.costOf(turn.usage).toFixed(6)) });
@@ -562,6 +584,25 @@ export class AssistantService {
    */
   private turnKind(classified: Classified, offered: boolean): TurnKind {
     return offered || classified.catalog || classified.intent === "transaction" ? "service" : "metered";
+  }
+
+  /**
+   * Model turns for someone with no questions left, per account (or per client, without one) in a rolling hour.
+   * Past the limit, discovery and payment questions still get a fixed answer and the service cards.
+   */
+  private takeZeroCreditTurn(key: string): boolean {
+    const limit = this.deps.credits?.config.zeroCreditTurnsPerHour ?? Number.POSITIVE_INFINITY;
+    const now = this.now().getTime();
+    const recent = (this.zeroCreditTurns.get(key) ?? []).filter((at) => now - at < 3_600_000);
+    if (recent.length >= limit) {
+      this.zeroCreditTurns.set(key, recent);
+      return false;
+    }
+    recent.push(now);
+    this.zeroCreditTurns.set(key, recent);
+    // Bounded: the oldest keys go first.
+    if (this.zeroCreditTurns.size > 10_000) this.zeroCreditTurns.delete(this.zeroCreditTurns.keys().next().value!);
+    return true;
   }
 
   /** Shows the services a message asked for, or all of them. Without prices, the reply's words have to do. */
@@ -656,7 +697,7 @@ export class AssistantService {
       .join("\n");
   }
 
-  private async callModel(session: Session, tools: ChatTool[] | undefined, deadline: number, correction: string | null = null) {
+  private async callModel(session: Session, tools: ChatTool[] | undefined, deadline: number, correction: string | null = null, forceTool?: string) {
     const remaining = deadline - this.now().getTime();
     if (remaining <= 0) throw new LlmError("timeout", "The turn ran out of time.");
     const limited = Boolean(session.turn?.limited);
@@ -670,6 +711,7 @@ export class AssistantService {
       tools,
       deadlineMs: remaining,
       maxOutputTokens: session.turn?.maxOutputTokens,
+      forceTool,
     });
   }
 
@@ -697,7 +739,17 @@ export class AssistantService {
     // Left to the model, these questions get answered from the sheet or searched in the sheet's words,
     // so the page that governs them is read first. This adds passages but no request.
     const asked = customerMessage?.role === "user" ? customerMessage.content : "";
-    const readWhitepaper = !limited && Boolean(this.deps.sites) && whitepaperTopics(asked).length > 0;
+    // A request that can only mean the report or the subscription gets that quote, not whatever the model picks.
+    const earlier = session.messages.slice(0, -1).filter((message) => message.role === "user").map((message) => message.content).join("\n");
+    const route = explicitPurchase(asked, earlier);
+    const forced = route && tools.some((tool) => tool.function.name === `propose_${route.capabilityId}`) ? route : null;
+    if (forced?.needsAssets) {
+      const text = forced.capabilityId === "monthly_intelligence" ? ASK_SUBSCRIPTION_ASSETS : ASK_REPORT_ASSETS;
+      if (session.turn) session.turn.free = true;
+      session.messages.push({ role: "assistant", content: text });
+      return { text, blocks };
+    }
+    const readWhitepaper =!limited && Boolean(this.deps.sites) && whitepaperTopics(asked).length > 0;
     if (readWhitepaper) {
       const id = `call_whitepaper_${session.messages.length}`;
       const args = { query: asked.slice(0, 300) };
@@ -711,7 +763,8 @@ export class AssistantService {
         // A reply that doesn't repeat a stated fact is sent to search below.
         const question = customerMessage?.role === "user" ? customerMessage.content : "";
         const sheetFirst = !limited && round === 0 && Boolean(this.deps.sites?.facts) && namesSagitta(question) && !readWhitepaper;
-        const response = await this.callModel(session, sheetFirst ? undefined : tools, deadline, correction);
+        const forceTool = round === 0 && forced ? `propose_${forced.capabilityId}` : undefined;
+        const response = await this.callModel(session, sheetFirst && !forceTool ? undefined : tools, deadline, correction, forceTool);
         this.countUsage(session, response.usage);
         correction = null;
         if (response.toolCalls.length === 0) {
@@ -876,7 +929,7 @@ export class AssistantService {
     blocks.push({ type: "capabilities", items });
     return {
       shown_to_customer: true,
-      capabilities: items.map((item) => ({ id: item.id, title: item.title, summary: item.summary, price: item.priceUsdc, currency: item.currency })),
+      capabilities: (await this.getRegistry()).map((item) => ({ id: item.id, title: item.title, summary: item.summary, price: this.priceWords(item) })),
     };
   }
 
@@ -975,7 +1028,7 @@ export class AssistantService {
       prices,
       note: "Pay by card or crypto wallet in the plan builder. You approve before anything is charged.",
     });
-    return { shown_to_customer: true, prices };
+    return { shown_to_customer: true, prices: registry.filter((capability) => capability.execution === "wizard_handoff").map((capability) => ({ label: capability.title, price: this.priceWords(capability) })) };
   }
 
   private async toolPropose(session: Session, capabilityId: string, args: unknown, blocks: Block[]) {
@@ -1038,7 +1091,8 @@ export class AssistantService {
       result_available: false,
       title: capability.title,
       price_usd: capability.priceUsdc,
-      payment: `The customer picks how to pay on the card: ${this.optionsFor(capability).map((option) => option.label).join(", ")}. Don't assume one, and don't describe the price as USDC.`,
+      price: this.priceWords(capability),
+      payment: `The customer picks how to pay on the card: ${this.optionsFor(capability).map((option) => option.label).join(", ")}. Don't assume one. Say a price in the currency of the method it's for.`,
       limitations: capability.limitations,
       assumptions: normalized.assumptions,
       ...(denial ? { spending_limit_note: SPEND_DENIAL_MESSAGE[denial] } : {}),
@@ -1256,6 +1310,17 @@ export class AssistantService {
     return [...(paypal ? [hostedProvider(PAYPAL_META, paypal)] : []), ...(this.deps.checkoutProviders ?? [])];
   }
 
+  /** A price with the currency each payment method actually charges, so it's never said in the wrong one. */
+  private priceWords(capability: Capability): string {
+    const amount = Number(capability.priceUsdc).toFixed(2);
+    const month = capability.billing === "monthly" ? " a month" : "";
+    const options = this.optionsFor(capability);
+    const wallet = options.some((option) => option.flow !== "hosted_checkout");
+    const hosted = options.filter((option) => option.flow === "hosted_checkout").map((option) => option.shortLabel);
+    if (capability.execution === "wizard_handoff") return `$${amount} USD by card, or ${amount} USDC by wallet, in the plan builder`;
+    return [hosted.length ? `$${amount} USD${month} by ${hosted.join(" or ")}` : "", wallet ? `${amount} USDC${month} by wallet` : ""].filter(Boolean).join(", or ");
+  }
+
   private optionsFor(capability: Capability): PaymentOption[] {
     const providers = this.checkoutProviders();
     return capability.paymentMethods.flatMap((id): PaymentOption[] => {
@@ -1263,7 +1328,9 @@ export class AssistantService {
       const provider = providers.find((entry) => entry.id === id);
       if (!provider || Number(capability.priceUsdc) < (provider.minimumUsd ?? 0)) return [];
       const choice = provider.choice ?? { label: provider.label, shortLabel: provider.label, detail: "" };
-      return [{ id, ...choice, flow: "hosted_checkout", currency: "USD", note: provider.note(capability.billing) }];
+      // Card and PayPal charge US dollars, so the row says so, as the wallet row says USDC.
+      const amount = `$${Number(capability.priceUsdc).toFixed(2)} USD${capability.billing === "monthly" ? " a month" : ""}`;
+      return [{ id, ...choice, detail: choice.detail ? `${amount} · ${choice.detail}` : amount, flow: "hosted_checkout", currency: "USD", note: provider.note(capability.billing) }];
     });
   }
 

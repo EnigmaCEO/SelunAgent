@@ -26,8 +26,10 @@ export type Classified = {
   intent: Intent;
   /** Services the message asks for, from the capability registry. */
   services: CapabilityId[];
-  /** Asking about the catalog or a price, which is free however it's answered. */
+  /** Asking about the catalog or a price, or naming a service, which is free however it's answered. */
   catalog: boolean;
+  /** Asking what Selun offers or what it costs, which the service cards answer on their own. */
+  listing: boolean;
 };
 
 /** About Selun's offering itself, rather than the market. */
@@ -42,14 +44,40 @@ const QUOTE_REPLY = /^(yes|yeah|yep|ok|okay|sure|go ahead|do it|proceed|confirm|
 /** About a result: its figures, or what they mean. */
 const FOLLOWUP = /\b(my|this|that|the|these) (report|result|results|analysis|score|scores|scorecard|check|figures|numbers|metrics)\b|\bwhat does (this|that|it) mean\b|\bwhy (is|was|did|does) (it|my|the|this)\b|\b(volatility|drawdown|price risk|market standing|overall score|regime)\b/i;
 
+/** Ongoing reports: "monthly report", "subscription", "sign me up". Not managing one that exists. */
+const SUBSCRIBE = /\b(monthly|every month|recurring|ongoing)\b[^.?!]*\breports?\b|\bsubscri(be|ption)\b|\bsign me up\b/i;
+const MANAGING = /\b(cancel\w*|unsubscribe|refund\w*|my subscription|renew\w*|stop)\b/i;
+/** The full report, however it's asked for: "comprehensive report", "a report on Bitcoin", "full analysis". */
+const FULL_REPORT = /\b(full|complete|comprehensive|detailed|intelligence) (report|analysis)\b|\breports? (on|for|about|covering)\b/i;
+/** Asked for a different product by name, so "report" isn't the full report. */
+const OTHER_PRODUCT = /\b(scorecard|risk analysis|safety check|regime|rebalanc\w*|portfolio plan|policy envelope)\b/i;
+
+export type PurchaseRoute = { capabilityId: "comprehensive_report" | "monthly_intelligence"; needsAssets: boolean };
+
+/**
+ * A request that can only mean one product, decided from the registry's own products rather than left to the model.
+ * The report and the subscription are the ones a model most often swaps for a cheaper tool or a catalog card.
+ * `needsAssets` when nothing in the conversation names an asset yet: both products need one.
+ */
+export function explicitPurchase(message: string, earlierCustomerText: string): PurchaseRoute | null {
+  // "How much is the report?" wants a price, not a quote yet.
+  if (MANAGING.test(message) || CATALOG.test(message)) return null;
+  const capabilityId = SUBSCRIBE.test(message) ? "monthly_intelligence" : FULL_REPORT.test(message) && !OTHER_PRODUCT.test(message) ? "comprehensive_report" : null;
+  if (!capabilityId) return null;
+  const needsAssets = findAssetMentions(message).length === 0 && findAssetMentions(earlierCustomerText).length === 0;
+  return { capabilityId, needsAssets };
+}
+
 export function classifyIntent(message: string, context: IntentContext): Classified {
   const services = requestedServices(message);
-  const catalog = CATALOG.test(message) || namesService(message);
-  if (TRANSACTION.test(message) || (context.hasQuote && QUOTE_REPLY.test(message))) return { intent: "transaction", services, catalog };
-  if (catalog) return { intent: "service_discovery", services, catalog };
+  const listing = CATALOG.test(message);
+  const catalog = listing || namesService(message);
+  const of = (intent: Intent): Classified => ({ intent, services, catalog, listing: listing && intent === "service_discovery" });
+  if (TRANSACTION.test(message) || (context.hasQuote && QUOTE_REPLY.test(message))) return of("transaction");
+  if (catalog) return of("service_discovery");
   // A result's own figures come before the services that produce them: "why is the drawdown so large?".
-  if (context.hasResult && FOLLOWUP.test(message)) return { intent: "result_followup", services, catalog };
+  if (context.hasResult && FOLLOWUP.test(message)) return of("result_followup");
   // A named asset is what the Asset Scorecard analyzes.
-  if (services.length > 0 || findAssetMentions(message).length > 0) return { intent: "service_discovery", services, catalog };
-  return { intent: "general", services, catalog };
+  if (services.length > 0 || findAssetMentions(message).length > 0) return of("service_discovery");
+  return of("general");
 }

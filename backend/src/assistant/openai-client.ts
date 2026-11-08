@@ -25,6 +25,8 @@ export type LlmRequest = {
   deadlineMs?: number;
   /** Lower than the configured limit, for answers that should stay short. */
   maxOutputTokens?: number;
+  /** Call this tool now, for a request whose service is already certain. */
+  forceTool?: string;
 };
 
 export type LlmUsage = { inputTokens: number; cachedTokens: number; outputTokens: number };
@@ -93,7 +95,7 @@ export class OpenAiClient implements LlmClient {
           messages: request.messages,
           max_completion_tokens: Math.min(request.maxOutputTokens ?? this.config.maxOutputTokens, this.config.maxOutputTokens),
           store: false,
-          ...(request.tools?.length ? { tools: request.tools, tool_choice: "auto" } : {}),
+          ...(request.tools?.length ? { tools: request.tools, tool_choice: request.forceTool && request.tools.some((tool) => tool.function.name === request.forceTool) ? { type: "function", function: { name: request.forceTool } } : "auto" } : {}),
         }),
         signal: AbortSignal.timeout(timeoutMs),
       });

@@ -22,6 +22,13 @@ export type CreditConfig = {
   earnedTurnCostUsd: number;
   /** Free answers are kept shorter. */
   freeOutputTokens: number;
+  /**
+   * With no questions left, Selun still finds and quotes services. These keep that from running up model costs:
+   * model turns per account per hour, then fixed answers with the service cards, and a small budget for each turn.
+   */
+  zeroCreditTurnsPerHour: number;
+  zeroCreditTurnCostUsd: number;
+  zeroCreditOutputTokens: number;
   /** List prices per million tokens, for the cost record only. */
   rates: { input: number; cached: number; output: number };
 };
@@ -40,6 +47,9 @@ export function readCreditConfig(env: NodeJS.ProcessEnv = process.env): CreditCo
     freeTurnCostUsd: number(env.SELUN_AI_FREE_TURN_COST_USD, 0.02),
     earnedTurnCostUsd: number(env.SELUN_AI_EARNED_TURN_COST_USD, 0.05),
     freeOutputTokens: number(env.SELUN_AI_FREE_OUTPUT_TOKENS, 700),
+    zeroCreditTurnsPerHour: number(env.SELUN_AI_ZERO_CREDIT_TURNS_PER_HOUR, 20),
+    zeroCreditTurnCostUsd: number(env.SELUN_AI_ZERO_CREDIT_TURN_COST_USD, 0.01),
+    zeroCreditOutputTokens: number(env.SELUN_AI_ZERO_CREDIT_OUTPUT_TOKENS, 350),
     // gpt-5.4-mini list prices.
     rates: {
       input: number(env.SELUN_AI_RATE_INPUT_PER_M, 0.75),

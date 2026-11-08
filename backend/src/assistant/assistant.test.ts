@@ -16,7 +16,7 @@ import { LlmError, OpenAiClient, readOpenAiConfig, type ChatMessage, type LlmCli
 import { presentResult } from "./result-presenter";
 import { AiCredits, readCreditConfig } from "./ai-credits";
 import { replyIssues } from "./claim-guard";
-import { classifyIntent, type Intent } from "./intent";
+import { classifyIntent, explicitPurchase, type Intent } from "./intent";
 import { classifyPaidFailure, HttpX402Gateway, type ChallengeOutcome, type PaidOutcome, type X402Gateway } from "./x402-gateway";
 
 const PAYER = "0xfe2d5E9c5aE6E48B7F8b0b82AC4dE8B423bA0557";
@@ -940,11 +940,15 @@ test("with no questions left, a customer can still discover, quote, change, and 
   assert.deepEqual(shown?.type === "capabilities" && shown.items.map((item) => item.id), ["sce_continuity_mode"]);
   assert.ok(!words.text.includes("smart contract"));
 
-  // A price question is answered as asked, and a payment question isn't swapped for the catalog.
-  llm.script.push(answer("The Asset Scorecard is listed on the card."), answer("You can pay by wallet, PayPal, or card."));
+  // A price question needs no model: the card answers it. A payment question isn't swapped for the catalog.
+  llm.script.push(answer("You can pay by wallet, PayPal, or card."));
+  const before = llm.requests.length;
   const priced = await service.chat({ message: "How much does the Asset Scorecard cost?", clientKey: "c5", guestToken: token, conversationId: safety.conversationId });
-  assert.equal(priced.text, "The Asset Scorecard is listed on the card.");
-  const paying = await service.chat({ message: "Can I pay with PayPal?", clientKey: "c5", guestToken: token, conversationId: safety.conversationId });
+  assert.equal(llm.requests.length, before, "no model call for a price list");
+  assert.match(priced.text, /US dollars.*USDC/);
+  const listed = priced.blocks.find((block) => block.type === "capabilities");
+  assert.deepEqual(listed?.type === "capabilities" && listed.items.map((item) => item.id), ["asset_scorecard"]);
+  const paying =await service.chat({ message: "Can I pay with PayPal?", clientKey: "c5", guestToken: token, conversationId: safety.conversationId });
   assert.equal(paying.text, "You can pay by wallet, PayPal, or card.");
   assert.ok(!paying.blocks.some((block) => block.type === "capabilities"));
 
@@ -953,6 +957,73 @@ test("with no questions left, a customer can still discover, quote, change, and 
   const asked = llm.requests.length;
   await service.chat({ message: "Make it a conservative profile instead", clientKey: "c5", guestToken: token, conversationId: safety.conversationId });
   assert.equal(llm.requests.length, asked + 1, "sent to the model, not turned away");
+  assert.equal(llm.requests.at(-1)?.maxOutputTokens, 350, "a zero-credit turn gets a small budget");
+});
+
+test("zero-credit model turns are rate limited, but services and payment help stay available", async () => {
+  const { llm, service } = creditedService([], { guestQuestions: 0, zeroCreditTurnsPerHour: 2 });
+  const first = await service.chat({ message: "Analyze the risks of Bitcoin", clientKey: "c7" });
+  await service.chat({ message: "Analyze the risks of Ethereum", clientKey: "c7", guestToken: first.guestToken });
+  const used = llm.requests.length;
+  const third = await service.chat({ message: "Analyze the risks of Solana", clientKey: "c7", guestToken: first.guestToken });
+  assert.equal(llm.requests.length, used, "past the hourly limit: no model call");
+  const card = third.blocks.find((block) => block.type === "capabilities");
+  assert.deepEqual(card?.type === "capabilities" && card.items.map((item) => item.id), ["asset_scorecard"], "the service is still shown");
+  const paying = await service.chat({ message: "Can I pay with PayPal?", clientKey: "c7", guestToken: first.guestToken });
+  assert.match(paying.text, /wallet \(USDC on Base\), PayPal, or card in US dollars/);
+  assert.equal(paying.credits?.remaining, 0);
+});
+
+test("with no questions left, a purchased result stays available and only new interpretation is held back", async () => {
+  const made = makeService(MARKET_SCRIPT());
+  const { conversationId, action } = await proposeMarketRegime(made.service);
+  await made.service.approveAndExecute(conversationId, action.id, { approved: true, approvedPriceUsdc: "0.25", paymentSignature: signature() });
+  await waitForState(made.service, conversationId, action.id, (view) => view.state === "completed");
+  const credits = new AiCredits({ ...readCreditConfig({}), guestQuestions: 0 }, null);
+  (made.service as unknown as { deps: { credits: AiCredits } }).deps.credits = credits;
+  const followUp = await made.service.chat({ conversationId, message: "Why is the regime classified that way?", clientKey: "c8" });
+  assert.match(followUp.text, /Everything you bought stays available above/);
+  const view = made.service.getAction(conversationId, action.id);
+  assert.equal(view?.state, "completed");
+  assert.ok(view?.document, "the result itself is untouched");
+});
+
+test("explicit report and subscription requests get those quotes, and ask for assets when none are named", async () => {
+  const cases: [string, string, string | null, boolean][] = [
+    ["I don't have a crypto wallet. Can I pay by card for a report on Bitcoin?", "", "comprehensive_report", false],
+    ["I'd like a comprehensive report", "", "comprehensive_report", true],
+    ["I want a monthly subscription", "", "monthly_intelligence", true],
+    ["I want a monthly report on Bitcoin", "", "monthly_intelligence", false],
+    ["Sign me up for a subscription covering BTC and ETH", "", "monthly_intelligence", false],
+    ["I'd like a comprehensive report", "Analyze the risks of Bitcoin", "comprehensive_report", false],
+    ["Cancel my subscription", "", null, false],
+    ["How much is the Comprehensive Intelligence Report?", "", null, false],
+    ["Analyze the risks of Bitcoin", "", null, false],
+    ["Can I get a PDF of the scorecard report on Bitcoin?", "", null, false],
+  ];
+  for (const [message, earlier, id, needsAssets] of cases) {
+    const route = explicitPurchase(message, earlier);
+    assert.deepEqual(route && [route.capabilityId, route.needsAssets], id && [id, needsAssets], message);
+  }
+
+  const llm = new ScriptedLlm([{ content: null, toolCalls: [toolCall("propose_comprehensive_report", { assets: ["BTC"] })] }, answer("Here's the report quote.")]);
+  const service = new AssistantService({ llm, gateway: new FakeGateway(), loadCatalog: async () => catalog(), limits: { catalogTtlMs: 0 }, paypal: { prices: { reportUsd: "4.99", subscriptionUsd: "9.99" }, createCheckout: async () => { throw new Error("no"); }, createSubscription: async () => { throw new Error("no"); } } });
+  await service.chat({ message: "Can I pay by card for a report on Bitcoin?" });
+  assert.equal(llm.requests[0].forceTool, "propose_comprehensive_report", "the model is made to quote it");
+  const asked = llm.requests.length;
+  const ask = await service.chat({ message: "I want a monthly subscription" });
+  assert.equal(llm.requests.length, asked, "asking which assets needs no model call");
+  assert.match(ask.text, /Which assets should your monthly report cover/);
+});
+
+test("prices are said in the currency of the method that charges them", async () => {
+  const llm = new ScriptedLlm([{ content: null, toolCalls: [toolCall("list_capabilities", {})] }, answer("Listed.")]);
+  const provider = { id: "stripe", label: "Card (Stripe)", choice: { label: "Credit or debit card", shortLabel: "card", detail: "Powered by Stripe" }, note: () => "", start: async () => { throw new Error("no"); } };
+  const service = new AssistantService({ llm, gateway: new FakeGateway(), loadCatalog: async () => catalog({ asset_scorecard: "1.5" }), limits: { catalogTtlMs: 0 }, checkoutProviders: [provider as never] });
+  await service.chat({ message: "What do your services cost?" });
+  const listed = JSON.parse(String(llm.requests[1].messages.find((message) => message.role === "tool")?.content));
+  const scorecard = listed.capabilities.find((item: { id: string }) => item.id === "asset_scorecard");
+  assert.equal(scorecard.price, "$1.50 USD by card, or 1.50 USDC by wallet");
 });
 
 test("intents come from Selun's capabilities, not single words", () => {
