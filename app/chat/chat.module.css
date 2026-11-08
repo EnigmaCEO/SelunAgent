@@ -795,8 +795,9 @@
   transform: translateY(-3px) rotate(45deg);
 }
 
+/* The headline drops under the title when there isn't room beside it. */
 .reportSection > summary > span:first-of-type {
-  flex: 1;
+  flex: 1 1 11rem;
 }
 
 .reportHeadline {
@@ -1076,7 +1077,7 @@
   font-size: 15px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .meterSpace {
