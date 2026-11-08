@@ -341,6 +341,8 @@ export function createAssistantRouter(injected?: AssistantDeps, injectedReports?
       available: current.isConfigured,
       limits: current.publicLimits(),
       rails: getPaymentRails(Boolean(getPayPal())),
+      // What the homepage may name: only methods this deployment can actually take.
+      methods: [...(getPayPal() ? ["paypal"] : []), ...(getStripe() ? ["card"] : []), "wallet"],
     });
   });
 

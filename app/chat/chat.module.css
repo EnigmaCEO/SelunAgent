@@ -239,6 +239,23 @@
   line-height: 1.55;
 }
 
+.paymentStrip {
+  margin-top: 28px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.paymentStrip p {
+  margin: 0;
+}
+
+.paymentStripNote {
+  font-size: 12px;
+  opacity: 0.8;
+}
+
 .suggestions {
   display: flex;
   flex-wrap: wrap;

@@ -155,7 +155,11 @@ export type AssistantStatus = {
   available: boolean;
   limits: { maxMessageChars: number; sessionLimitUsdc: string };
   rails: PaymentRail[];
+  /** Payment methods this deployment accepts. Missing from an older backend. */
+  methods?: PaymentMethodId[];
 };
+
+export type PaymentMethodId = "paypal" | "card" | "wallet";
 
 /** The decoded 402 challenge, passed unchanged to the x402 client for signing. */
 export type PaymentChallenge = {

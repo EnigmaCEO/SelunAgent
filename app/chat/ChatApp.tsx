@@ -7,7 +7,7 @@ import { appendReferralParam } from "@/app/lib/referral";
 import { useReferralCapture } from "@/app/lib/use-referral-capture";
 import { ApiError, cancelSubscription, capturePurchase, declineAction, executeAction, fetchAction, fetchPurchaseStatus, fetchStatus, requestChallenge, sendChat, startCheckout, updateSubscriptionAssets, fetchCredits } from "./api";
 import { BlockView, RichText, type ApprovalPhase } from "./blocks";
-import type { ActionView, AssistantStatus, Block, ChatItem, Conversation, PaymentOption, PayPalStatusView, CreditView } from "./types";
+import type { ActionView, AssistantStatus, Block, ChatItem, Conversation, PaymentMethodId, PaymentOption, PayPalStatusView, CreditView } from "./types";
 import { assertWalletAvailable, signX402Challenge, toBaseUnits, WalletError } from "./wallet";
 import styles from "./chat.module.css";
 
@@ -27,6 +27,15 @@ const SUGGESTIONS = [
   "Analyze the risks of Ethereum",
   "Is it safe to use DeFi right now?",
 ];
+
+// PayPal and cards first: most customers have never used a crypto wallet.
+const METHOD_NAMES: Record<PaymentMethodId, string> = { paypal: "PayPal", card: "credit/debit cards", wallet: "crypto wallets" };
+
+/** "PayPal, credit/debit cards, or crypto wallets", naming only what this deployment accepts. */
+function listMethods(methods: PaymentMethodId[]): string {
+  const names = (["paypal", "card", "wallet"] as const).filter((id) => methods.includes(id)).map((id) => METHOD_NAMES[id]);
+  return names.length <= 2 ? names.join(" or ") : `${names.slice(0, -1).join(", ")}, or ${names.at(-1)}`;
+}
 
 function newId(): string {
   return typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -729,6 +738,12 @@ export default function ChatApp() {
                 <button key={suggestion} type="button" className={styles.chip} disabled={thinking || offline} onClick={() => void send(suggestion)}>{suggestion}</button>
               ))}
             </div>
+            {status?.methods && status.methods.length > 0 && (
+              <div className={styles.paymentStrip}>
+                <p>Secure checkout with {listMethods(status.methods)}.</p>
+                <p className={styles.paymentStripNote}>Prices are shown before payment.</p>
+              </div>
+            )}
           </section>
         ) : (
           <>
