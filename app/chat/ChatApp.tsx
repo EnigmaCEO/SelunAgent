@@ -634,7 +634,7 @@ export default function ChatApp() {
         maxLength={maxChars}
         onChange={(event) => setDraft(event.target.value)}
         onKeyDown={onComposerKey}
-        placeholder={offline ? "Selun AI is offline right now" : "Ask about crypto markets or Sagitta"}
+        placeholder={offline ? "Selun AI is offline right now" : "Ask about markets, portfolios, risk, or Sagitta…"}
         disabled={offline}
       />
       <button type="submit" className={styles.sendButton} disabled={!draft.trim() || thinking || offline} aria-label="Send message">
@@ -720,7 +720,7 @@ export default function ChatApp() {
           <section className={styles.welcome}>
             <Image src="/selun-mark.svg" alt="" width={68} height={68} className={styles.welcomeMark} priority />
             <h1>What can Selun help you do?</h1>
-            <p className={styles.welcomeLede}>Ask in your own words. Selun finds the right analysis, tells you what it costs first, and explains the result.</p>
+            <p className={styles.welcomeLede}>Ask in your own words. Selun finds the right analysis, shows you the price upfront, and makes the results easy to understand.</p>
             {composer}
             {offlineNotice}
             {payPalBanner}
