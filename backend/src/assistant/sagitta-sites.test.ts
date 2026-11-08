@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { AssistantService, buildSystemPrompt } from "./assistant.service";
+import { AssistantService, RADAR_ALERTS_URL, asksAboutNow, buildSystemPrompt } from "./assistant.service";
 import { CAPITAL_FLOW_PAGE, CAPITAL_FLOW_PASSAGES } from "./sagitta-capital-flow";
 import { KNOWLEDGE_CASES, WHITEPAPER_CASES } from "./sagitta-knowledge-cases";
 import { buildFactSheet, citedSections } from "./sagitta-facts";
@@ -565,4 +565,68 @@ test("the crawl skips Radar's live alert pages", async () => {
   const corpus = await crawlSagittaSites({ fetcher, hosts: ["radar.sagitta.systems"] });
   assert.ok(!asked.some((url) => url.includes("/alerts")));
   assert.ok(corpus.chunks.every((c) => !c.url.includes("/alerts")));
+});
+
+/** Words a customer might use for what's happening now. */
+const CURRENT_EVENT_QUERIES = ["Radar alerts Ethereum critical", "latest incidents Ethereum", "Radar incidents today", "active alerts Aave", "crvUSD USDC balance concentration observed", "stale beyond expected heartbeat Chainlink"];
+const isLivePage = (url: string) => url.startsWith("https://radar.sagitta.systems/alerts");
+
+test("old alerts can't come back after a restart from a saved copy that still holds them", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "selun-sites-"));
+  try {
+    const file = path.join(dir, "sites.json");
+    // A copy saved before live pages were excluded, newer than the bundled one, so it's the one loaded.
+    fs.writeFileSync(file, JSON.stringify({ ...SAGITTA_SITES_SNAPSHOT, fetchedAt: "2099-01-01T00:00:00.000Z" }));
+    const knowledge = new SiteKnowledge({ bundled: SAGITTA_SITES_SNAPSHOT, file });
+    assert.equal(knowledge.fetchedAt, "2099-01-01T00:00:00.000Z");
+    for (const query of CURRENT_EVENT_QUERIES) {
+      const found = knowledge.search(query, query);
+      assert.ok(found.every((match) => !isLivePage(match.url)), `${query}: ${found.map((m) => m.url).join(", ")}`);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("old alerts can't come back through an index refresh, or the copy it saves", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "selun-sites-"));
+  try {
+    const file = path.join(dir, "sites.json");
+    // Even a crawl that somehow returns alert pages doesn't put them back.
+    const crawled: SiteCorpus = { ...SAGITTA_SITES_SNAPSHOT, fetchedAt: "2099-02-01T00:00:00.000Z" };
+    const knowledge = new SiteKnowledge({ bundled: SAGITTA_SITES_SNAPSHOT, file, crawl: async () => crawled });
+    await knowledge.refresh();
+    assert.equal(knowledge.fetchedAt, crawled.fetchedAt);
+    for (const query of CURRENT_EVENT_QUERIES) assert.ok(knowledge.search(query, query).every((match) => !isLivePage(match.url)), query);
+    const saved = JSON.parse(fs.readFileSync(file, "utf8")) as SiteCorpus;
+    assert.ok(saved.chunks.every((chunk) => !isLivePage(chunk.url)));
+    // And the next restart, from what the refresh saved, stays clean.
+    const restarted = new SiteKnowledge({ bundled: SAGITTA_SITES_SNAPSHOT, file });
+    for (const query of CURRENT_EVENT_QUERIES) assert.ok(restarted.search(query, query).every((match) => !isLivePage(match.url)), query);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the prompt sends current alerts and latest incidents to Radar, and past incidents to Threat Case Relevance", () => {
+  const prompt = buildSystemPrompt("November 8, 2026");
+  assert.match(prompt, /latest alerts for Ethereum[^\n]*https:\/\/radar\.sagitta\.systems\/alerts/);
+  assert.match(prompt, /latest incidents/);
+  assert.match(prompt, /Known past incidents[^\n]*propose_sce_case_relevance/);
+});
+
+test("questions about what's happening now are told apart from past cases and from Radar itself", () => {
+  for (const q of ["Give me the latest alerts for Ethereum", "Any recent incidents involving Aave?", "Are there active alerts on Curve?", "Was Uniswap hacked today?", "What are the latest incidents on Ethereum?"]) assert.ok(asksAboutNow(q), q);
+  for (const q of ["Have there been any known incidents affecting Aave?", "How do Radar alerts work?", "What is the latest Radar pricing?", "Analyze the risks of Bitcoin"]) assert.ok(!asksAboutNow(q), q);
+});
+
+test("a reply about what's happening now always carries Radar's alert page, even when the model leaves it out", async () => {
+  const service = assistant([{ content: "Selun doesn't have a live feed for that.", toolCalls: [] }]);
+  const reply = await service.chat({ message: "Any recent incidents involving Aave?" });
+  assert.ok(reply.text.startsWith("Selun doesn't have a live feed for that."), reply.text);
+  assert.ok(reply.text.includes(RADAR_ALERTS_URL), reply.text);
+
+  const once = assistant([{ content: `Radar's public page is ${RADAR_ALERTS_URL}.`, toolCalls: [] }]);
+  const text = (await once.chat({ message: "Latest alerts for Ethereum?" })).text;
+  assert.equal(text.split(RADAR_ALERTS_URL).length - 1, 1, text);
 });
