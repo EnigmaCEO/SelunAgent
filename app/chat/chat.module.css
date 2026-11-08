@@ -251,6 +251,39 @@
   margin: 0;
 }
 
+.payLogos {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px 20px;
+  margin: 10px 0 8px;
+  padding: 0;
+  list-style: none;
+}
+
+.payLogos li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.payLogos li span {
+  margin-left: 2px;
+}
+
+.payMark {
+  width: 18px;
+  height: 18px;
+  flex: none;
+}
+
+.payMarkWide {
+  width: auto;
+  height: 16px;
+  flex: none;
+}
+
 .paymentStripNote {
   font-size: 12px;
   opacity: 0.8;

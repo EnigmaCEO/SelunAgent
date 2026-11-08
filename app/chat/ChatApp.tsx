@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { appendReferralParam } from "@/app/lib/referral";
 import { useReferralCapture } from "@/app/lib/use-referral-capture";
+import { PaymentLogos } from "./payment-logos";
 import { ApiError, cancelSubscription, capturePurchase, declineAction, executeAction, fetchAction, fetchPurchaseStatus, fetchStatus, requestChallenge, sendChat, startCheckout, updateSubscriptionAssets, fetchCredits } from "./api";
 import { BlockView, RichText, type ApprovalPhase } from "./blocks";
 import type { ActionView, AssistantStatus, Block, ChatItem, Conversation, PaymentMethodId, PaymentOption, PayPalStatusView, CreditView } from "./types";
@@ -741,6 +742,7 @@ export default function ChatApp() {
             {status?.methods && status.methods.length > 0 && (
               <div className={styles.paymentStrip}>
                 <p>Secure checkout with {listMethods(status.methods)}.</p>
+                <PaymentLogos methods={status.methods} />
                 <p className={styles.paymentStripNote}>Prices are shown before payment.</p>
               </div>
             )}
