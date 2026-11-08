@@ -18,12 +18,14 @@ const PAYPAL_POLL_INTERVAL_MS = 5_000;
 const PAYPAL_PENDING_KEY = "selun.paypal.pending";
 const MAX_POLL_FAILURES = 6;
 
+// Highest-value services first. Each one is checked to land on its own quote: the report, the portfolio plan,
+// the subscription, then the entry-level analyses.
 const SUGGESTIONS = [
-  "Give me a Bitcoin market update",
+  "Get a full intelligence report on Bitcoin and Ethereum",
+  "Build me a crypto portfolio plan",
+  "Send me a monthly report on Bitcoin",
   "Analyze the risks of Ethereum",
   "Is it safe to use DeFi right now?",
-  "Help me build a crypto portfolio",
-  "What does Sagitta Systems do?",
 ];
 
 function newId(): string {
