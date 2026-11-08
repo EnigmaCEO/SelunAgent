@@ -157,6 +157,8 @@ type TurnBudget = {
   capped: boolean;
   /** A fixed commerce step, such as asking which assets a report should cover. Never charged. */
   free?: boolean;
+  /** The only services this turn may propose, when the question names which ones fit. */
+  onlyServices?: ReadonlySet<string>;
 };
 
 /** Tools that answer general or Sagitta questions, which aren't offered once questions run out. */
@@ -309,6 +311,7 @@ Rules you must never break:
 Choosing services (propose only what each rule names, never extra services the customer didn't ask about):
 - "What can you do" or "what services": call list_capabilities. A card shows the list, so reply with one short sentence and do not repeat the list.
 - Alerts, warnings, or monitoring for a token, network, protocol, or pool, such as "latest alerts for Ethereum", "any alerts on Aave right now?" (live status happening now): Selun has no live alert feed, but Sagitta Radar publishes a free public page of the last 24 hours of alerts at https://radar.sagitta.systems/alerts, with alert history and delivery on its paid plans. Call lookup_sagitta for Radar and give that address in full. Lead with what Radar shows and where, then say briefly that you can't see the alerts yourself. Selun can't see the alerts themselves, so never list or describe any, and don't mention passages or what you searched. If a token was named, you may also mention its risk analysis as historical risk, not alerts, but don't propose it unless they ask.
+- Current warning signs, red flags, or risks right now, such as "any warning signs on Ethereum right now?": broader than alerts, since it could mean infrastructure incidents, price risk, or market conditions. A compact card linking to Radar's live infrastructure alerts (bridges, oracles, and liquidity pools, past 24 hours) is added for you, so don't search, don't call lookup_sagitta, and don't write the Radar address. For a named token: resolve_asset, then propose_asset_scorecard for its historical price risk (volatility, drawdowns, and market standing). With no token named, propose_market_regime. Propose nothing else. Open with what you can help them check, for example: "I can help you look into warning signs for Ethereum. For current infrastructure incidents involving bridges, oracles, and liquidity pools, Radar publishes alerts from the past 24 hours. For Ethereum's historical price risk, I can prepare a risk analysis covering volatility, drawdowns, and market standing." Say neither includes live prices or news.
 - Any request about a named token, such as "tell me about BTC" or "analyze the risks of Ethereum": resolve_asset, then propose_asset_scorecard. If the result says not_offered, follow its instruction.
 - A market update or assessment naming a token, such as "market update on Bitcoin": resolve_asset, then propose_asset_scorecard (that token) and propose_market_regime (the whole market). Open with what you can help them understand, not with what's for sale, for example: "I can help you understand Bitcoin's historical risk and broader crypto market conditions. I have two analyses available: a Bitcoin risk assessment and an overall market conditions report. Which would you prefer?" Also say that neither includes live prices or news. Don't say "quote card" here.
 - Market update with no token named, or how the market is doing: propose_market_regime. Say plainly that it covers the whole crypto market.
@@ -353,7 +356,9 @@ export const RADAR_ALERTS_URL = "https://radar.sagitta.systems/alerts";
  * which Threat Case Relevance covers, so neither sends a question here.
  */
 const NOW_WORDS = /\b(latest|current|currently|right now|now|today|active|live|ongoing)\b/i;
-const ALERT_WORDS = /\b(alerts?|warnings?|warning signs?|feed)\b/i;
+const ALERT_WORDS = /\b(alerts?|warnings|feed)\b/i;
+/** Broader than alerts: price, liquidity, security, or sentiment could all be meant. */
+const RISK_WORDS = /\b(warning signs?|red flags?|risks?|risky|danger\w*|trouble|worr\w+|concerns?)\b/i;
 /** Only what Radar's own site says it covers. */
 export const LIVE_ALERTS_TEXT = "Radar monitors DeFi infrastructure, including oracles, bridges, and liquidity pools, and publishes its alerts from the past 24 hours. For past incidents affecting a protocol, ask me about its known incidents.";
 const RADAR_LIVE_FEED: Block = {
@@ -364,10 +369,29 @@ const RADAR_LIVE_FEED: Block = {
   linkLabel: "View latest Radar alerts",
   note: "Live alert details are on Radar. Selun doesn't retrieve the feed directly yet.",
 };
-/** "Latest alerts for Ethereum", "active alerts on Aave", "warning signs right now": what only Radar's live feed shows. */
+/** "Latest alerts for Ethereum", "active alerts on Aave": what only Radar's live feed shows. */
 export function asksAboutNow(message: string): boolean {
   return NOW_WORDS.test(message) && ALERT_WORDS.test(message);
 }
+
+/**
+ * "Any warning signs on Ethereum right now?": current risk in general, which Radar answers only in part.
+ * The model answers it with the services that fit, and Radar's live alerts come with it as a compact card.
+ */
+export function asksAboutCurrentRisk(message: string): boolean {
+  return !asksAboutNow(message) && NOW_WORDS.test(message) && RISK_WORDS.test(message);
+}
+
+const CURRENT_RISK_SERVICES: ReadonlySet<string> = new Set(["asset_scorecard", "market_regime"]);
+
+const RADAR_INFRASTRUCTURE_FEED: Block = {
+  type: "live_feed",
+  title: "Live infrastructure alerts",
+  summary: "Radar's latest published alerts on bridges, oracles, and liquidity pools, from the past 24 hours.",
+  href: RADAR_ALERTS_URL,
+  linkLabel: "View Radar alerts",
+  note: "Live alert details are on Radar. Selun doesn't retrieve the feed directly yet.",
+};
 
 /** These sell an overall score for each named asset, so none is quoted until that's confirmed. */
 const SCREENED_CAPABILITIES = new Set(["asset_scorecard", COMPREHENSIVE_REPORT_ID, "monthly_intelligence"]);
@@ -561,6 +585,9 @@ export class AssistantService {
         // What's happening now only Radar shows, so the answer is its live page, without a model call or a question used.
         const live = classified.intent !== "transaction" && asksAboutNow(message);
         if (live) session.turn.free = true;
+        // Current risk in general: the token's risk analysis, or the market report, and nothing else.
+        const currentRisk = !live && classified.intent !== "transaction" && asksAboutCurrentRisk(message);
+        if (currentRisk) session.turn.onlyServices = CURRENT_RISK_SERVICES;
         const fixed = live ? LIVE_ALERTS_TEXT
           : !session.turn.limited ? null
           : !commerce ? (classified.intent === "result_followup" ? RESULT_KEPT : OUT_OF_QUESTIONS)(credits!.config.purchaseGrant)
@@ -572,9 +599,11 @@ export class AssistantService {
         if (!served) session.messages.push({ role: "assistant", content: reply.text });
         // Listing pages under "the sites don't say that" would suggest they do.
         // Unless a page governs the question: "the whitepaper doesn't name a regulator" is an answer from that page.
-        const blocks = saysNotCovered(reply.text) && !whitepaperTopics(message).length ? reply.blocks.filter((block) => block.type !== "sagitta_sources") : reply.blocks;
+        let blocks = saysNotCovered(reply.text) && !whitepaperTopics(message).length ? reply.blocks.filter((block) => block.type !== "sagitta_sources") : reply.blocks;
+        // Current risk in general: Radar's live alerts as one compact card first, without the website cards, then the services offered.
+        if (currentRisk) blocks = [RADAR_INFRASTRUCTURE_FEED, ...blocks.filter((block) => block.type !== "sagitta_system" && block.type !== "sagitta_sources" && block.type !== "live_feed")];
         // After that, so a fact the reply does state from the sheet still shows its page.
-        if (!session.turn.limited && !live) this.citeFacts(message, reply.text, blocks);
+        if (!session.turn.limited && !live && !currentRisk) this.citeFacts(message, reply.text, blocks);
         if (!credits) return { conversationId: session.id, text: reply.text, blocks };
 
         const turn = session.turn;
@@ -1070,6 +1099,10 @@ export class AssistantService {
   private async toolPropose(session: Session, capabilityId: string, args: unknown, blocks: Block[]) {
     const spec = getToolSpec(capabilityId);
     if (!spec) return { error: "unknown_capability", message: "That service is not available." };
+    const only = session.turn?.onlyServices;
+    if (only && !only.has(spec.id)) {
+      return { status: "not_proposed", instruction: "That service doesn't fit this question, so nothing was proposed. Don't mention it. Offer only the risk analysis for a named token, or the market conditions report." };
+    }
 
     const normalized = spec.normalize(args);
     if (!normalized.ok) {

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { AssistantService, LIVE_ALERTS_TEXT, RADAR_ALERTS_URL, asksAboutNow, buildSystemPrompt } from "./assistant.service";
+import { AssistantService, LIVE_ALERTS_TEXT, RADAR_ALERTS_URL, asksAboutCurrentRisk, asksAboutNow, buildSystemPrompt } from "./assistant.service";
 import { CAPITAL_FLOW_PAGE, CAPITAL_FLOW_PASSAGES } from "./sagitta-capital-flow";
 import { KNOWLEDGE_CASES, WHITEPAPER_CASES } from "./sagitta-knowledge-cases";
 import { buildFactSheet, citedSections } from "./sagitta-facts";
@@ -616,7 +616,13 @@ test("the prompt sends current alerts and latest incidents to Radar, and past in
 });
 
 test("questions about what's happening now are told apart from past cases and from Radar itself", () => {
-  for (const q of ["Show me the latest Radar alerts", "Give me the latest alerts for Ethereum", "Are there active alerts on Aave?", "Are there any warning signs on Ethereum right now?", "Open Radar's live feed"]) assert.ok(asksAboutNow(q), q);
+  for (const q of ["Show me the latest Radar alerts", "Give me the latest alerts for Ethereum", "Are there active alerts on Aave?", "Any current warnings for Curve?", "Open Radar's live feed"]) assert.ok(asksAboutNow(q), q);
+  // Broader than alerts: answered with the services that fit, plus the Radar card.
+  for (const q of ["Are there any warning signs on Ethereum right now?", "What are the risks of Ethereum right now?", "Any red flags in crypto today?"]) {
+    assert.ok(!asksAboutNow(q), q);
+    assert.ok(asksAboutCurrentRisk(q), q);
+  }
+  for (const q of ["Analyze the risks of Ethereum", "Show me the latest Radar alerts", "Any recent incidents involving Aave?", "Is it safe to use DeFi right now?"]) assert.ok(!asksAboutCurrentRisk(q), q);
   // Incident history, even recent, is Threat Case Relevance; what Radar is, is product information.
   for (const q of ["Any recent incidents involving Aave?", "What incidents affected Aave last month?", "Have there been any known incidents affecting Aave?", "What does Radar monitor?", "How do Radar alerts work?", "What is the latest Radar pricing?", "Is it safe to use DeFi right now?", "Analyze the risks of Bitcoin"]) assert.ok(!asksAboutNow(q), q);
 });
@@ -629,7 +635,7 @@ test("a question about what's happening now gets Radar's live page on its own, w
     loadCatalog: async () => ({ resources: [] }),
     sites: new SiteKnowledge({ bundled: SAGITTA_SITES_SNAPSHOT }),
   });
-  for (const message of ["Show me the latest Radar alerts", "Are there any warning signs on Ethereum right now?", "Are there active alerts on Aave?"]) {
+  for (const message of ["Show me the latest Radar alerts", "Give me the latest alerts for Ethereum", "Are there active alerts on Aave?"]) {
     const reply = await service.chat({ message });
     assert.equal(reply.text, LIVE_ALERTS_TEXT, message);
     assert.deepEqual(reply.blocks.map((block) => block.type), ["live_feed"], message);
@@ -648,4 +654,49 @@ test("a live ticker inside an ordinary page, such as Radar's homepage feed, is d
   assert.ok(found.every((match) => !/ago/.test(match.text)));
   assert.ok(SAGITTA_SITES_SNAPSHOT.chunks.some((c) => c.url === "https://radar.sagitta.systems/" && /\b\d+m ago\b/.test(c.text)), "the bundled homepage still has its ticker, so this test means something");
   assert.ok(new SiteKnowledge({ bundled: SAGITTA_SITES_SNAPSHOT }).search("Chainlink ETH/USD Arbitrum differs CoinMarketCap", "").every((match) => !/\b\d+m ago\b/.test(match.text)));
+});
+
+test("a question about current risk in general gets the model's answer, with Radar's live alerts as one compact card and no website cards", async () => {
+  let calls = 0;
+  const service = new AssistantService({
+    llm: {
+      complete: async () => {
+        calls += 1;
+        return calls === 1
+          ? { content: null, toolCalls: [{ id: "l1", type: "function", function: { name: "lookup_sagitta", arguments: JSON.stringify({ query: "Radar" }) } }] }
+          : { content: "I can help you look into warning signs for Ethereum.", toolCalls: [] };
+      },
+    },
+    gateway: { requestChallenge: async () => { throw new Error("no"); }, submitPaid: async () => { throw new Error("no"); } },
+    loadCatalog: async () => ({ resources: [] }),
+    sites: new SiteKnowledge({ bundled: SAGITTA_SITES_SNAPSHOT }),
+  });
+  const reply = await service.chat({ message: "Are there any warning signs on Ethereum right now?" });
+  assert.equal(reply.text, "I can help you look into warning signs for Ethereum.");
+  assert.ok(calls >= 2);
+  assert.equal(reply.blocks[0].type, "live_feed");
+  const feed = reply.blocks[0] as { title: string; href: string; linkLabel: string };
+  assert.deepEqual([feed.title, feed.href, feed.linkLabel], ["Live infrastructure alerts", RADAR_ALERTS_URL, "View Radar alerts"]);
+  assert.ok(reply.blocks.every((block) => block.type !== "sagitta_system" && block.type !== "sagitta_sources"), reply.blocks.map((b) => b.type).join(", "));
+  assert.equal(reply.blocks.filter((block) => block.type === "live_feed").length, 1);
+});
+
+test("a question about current risk can't pick up services it didn't ask for", async () => {
+  const seen: string[] = [];
+  let calls = 0;
+  const service = new AssistantService({
+    llm: {
+      complete: async (request: { messages: { role: string; content: string | null }[] }) => {
+        calls += 1;
+        if (calls === 1) return { content: null, toolCalls: [{ id: "p1", type: "function", function: { name: "propose_sce_continuity_mode", arguments: "{}" } }] };
+        seen.push(String(request.messages.at(-1)?.content ?? ""));
+        return { content: "I can help you look into warning signs for Ethereum.", toolCalls: [] };
+      },
+    },
+    gateway: { requestChallenge: async () => { throw new Error("no"); }, submitPaid: async () => { throw new Error("no"); } },
+    loadCatalog: async () => ({ resources: [] }),
+  });
+  const reply = await service.chat({ message: "Are there any warning signs on Ethereum right now?" });
+  assert.ok(reply.blocks.every((block) => block.type !== "action"), reply.blocks.map((b) => b.type).join(", "));
+  assert.match(seen[0], /not_proposed/);
 });
