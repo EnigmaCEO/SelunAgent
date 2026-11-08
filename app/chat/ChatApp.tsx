@@ -27,7 +27,7 @@ const SUGGESTIONS = [
   "Send me a monthly report on Bitcoin",
   "Analyze the risks of Ethereum",
   "Is it safe to use DeFi right now?",
-  "Show me the latest Radar alerts",
+  "Are there any warning signs on Ethereum right now?",
 ];
 
 // PayPal and cards first: most customers have never used a crypto wallet.
