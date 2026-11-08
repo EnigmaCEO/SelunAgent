@@ -616,8 +616,22 @@ function sagittaLink(url: string | null): string | null {
   }
 }
 
-function StatusBadge({ status }: { status: string }) {
-  return <span className={status === "Operating" ? styles.systemStatusLive : styles.systemStatus}>{status}</span>;
+/** A day from the public record, such as 2026-07-29, in the reader's own format and without a timezone shift. */
+function formatDay(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const date = new Date(/^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T12:00:00` : value);
+  return Number.isNaN(date.getTime()) ? null : date.toLocaleDateString(undefined, { dateStyle: "medium" });
+}
+
+/** A status from Sagitta's public record, always with the day it was reported, so it can't pass for a live health check. */
+function StatusBadge({ status, asOf }: { status: string; asOf?: string | null }) {
+  const day = formatDay(asOf);
+  return (
+    <span className={styles.statusGroup}>
+      <span className={status === "Operating" ? styles.systemStatusLive : styles.systemStatus}>{status}</span>
+      {day && <span className={styles.statusAsOf}>status reported {day}</span>}
+    </span>
+  );
 }
 
 function SystemCard({ system }: { system: SystemDetail }) {
@@ -626,7 +640,7 @@ function SystemCard({ system }: { system: SystemDetail }) {
     <article className={styles.systemCard} aria-label={`${system.name} information`}>
       <header className={styles.systemHeader}>
         <h3>{system.name}</h3>
-        <StatusBadge status={system.status} />
+        <StatusBadge status={system.status} asOf={system.statusAsOf ?? system.lastVerifiedAt} />
       </header>
       <p>{system.summary}</p>
       {system.parent && <p className={styles.systemMeta}>Part of {system.parent}</p>}
@@ -638,7 +652,6 @@ function SystemCard({ system }: { system: SystemDetail }) {
       )}
       <footer className={styles.systemFooter}>
         {href && <a className={styles.systemLink} href={href} target="_blank" rel="noopener noreferrer">Visit {system.name}<span className={styles.srOnly}> (opens in a new tab)</span></a>}
-        {system.lastVerifiedAt && <span>From Sagitta&apos;s public record, checked {system.lastVerifiedAt}</span>}
       </footer>
     </article>
   );
@@ -669,7 +682,7 @@ function DirectoryCard({ systems }: { systems: SystemSummary[] }) {
           <li key={system.slug} className={styles.capability}>
             <div className={styles.capabilityTop}>
               <h3>{system.name}</h3>
-              <StatusBadge status={system.status} />
+              <StatusBadge status={system.status} asOf={system.statusAsOf} />
             </div>
             <p>{system.summary}</p>
             {href && <a className={styles.systemLink} href={href} target="_blank" rel="noopener noreferrer">Visit site<span className={styles.srOnly}>: {system.name} (opens in a new tab)</span></a>}

@@ -1683,3 +1683,18 @@
   font-size: 13px;
   opacity: 0.75;
 }
+
+/* A public-record status, with the day it was reported beside it. */
+.statusGroup {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+}
+
+.statusAsOf {
+  color: #5b6b80;
+  font-size: 0.74rem;
+  white-space: nowrap;
+}

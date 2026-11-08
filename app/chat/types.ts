@@ -123,7 +123,7 @@ export type PublicCapability = {
   billing?: Billing;
 };
 
-export type SystemSummary = { slug: string; name: string; status: string; summary: string; url: string | null };
+export type SystemSummary = { slug: string; name: string; status: string; summary: string; url: string | null; statusAsOf?: string | null };
 export type SystemDetail = SystemSummary & { parent: string | null; availableToday: string[]; lastVerifiedAt: string | null };
 
 export type SiteSource = { title: string; url: string; site: string };

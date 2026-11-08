@@ -12,6 +12,8 @@ export type SystemSummary = {
   status: string;
   summary: string;
   url: string | null;
+  /** When Sagitta's public record reported the status. It is not a live health check. */
+  statusAsOf: string | null;
 };
 
 export type SystemDetail = SystemSummary & {
@@ -51,7 +53,7 @@ function matches(query: string, slug: string, names: string[]): boolean {
 }
 
 function summaryOf(record: (typeof SAGITTA_SYSTEMS)[number]): SystemSummary {
-  return { slug: record.slug, name: record.name, status: record.status, summary: record.summary, url: record.url };
+  return { slug: record.slug, name: record.name, status: record.status, summary: record.summary, url: record.url, statusAsOf: record.lastVerifiedAt ?? null };
 }
 
 export function lookupSagitta(rawQuery: unknown): DirectoryLookup {
@@ -77,6 +79,7 @@ export function lookupSagitta(rawQuery: unknown): DirectoryLookup {
         status: `Delivered through ${capability.deliveredBy.join(", ")}`,
         summary: capability.summary,
         url: capability.url,
+        statusAsOf: capability.lastVerifiedAt ?? null,
         parent: null,
         availableToday: capability.accessPath ? [capability.accessPath] : [],
         lastVerifiedAt: capability.lastVerifiedAt,

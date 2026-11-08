@@ -611,13 +611,14 @@ test("old alerts can't come back through an index refresh, or the copy it saves"
 test("the prompt sends current alerts and latest incidents to Radar, and past incidents to Threat Case Relevance", () => {
   const prompt = buildSystemPrompt("November 8, 2026");
   assert.match(prompt, /latest alerts for Ethereum[^\n]*https:\/\/radar\.sagitta\.systems\/alerts/);
-  assert.match(prompt, /latest incidents/);
-  assert.match(prompt, /Known past incidents[^\n]*propose_sce_case_relevance/);
+  assert.match(prompt, /any recent incidents involving Aave\?[^\n]*propose_sce_case_relevance/);
+  assert.match(prompt, /status with the date it was reported/);
 });
 
 test("questions about what's happening now are told apart from past cases and from Radar itself", () => {
-  for (const q of ["Give me the latest alerts for Ethereum", "Any recent incidents involving Aave?", "Are there active alerts on Curve?", "Was Uniswap hacked today?", "What are the latest incidents on Ethereum?"]) assert.ok(asksAboutNow(q), q);
-  for (const q of ["Have there been any known incidents affecting Aave?", "How do Radar alerts work?", "What is the latest Radar pricing?", "Analyze the risks of Bitcoin"]) assert.ok(!asksAboutNow(q), q);
+  for (const q of ["Show me the latest Radar alerts", "Give me the latest alerts for Ethereum", "Are there active alerts on Aave?", "Are there any warning signs on Ethereum right now?", "Open Radar's live feed"]) assert.ok(asksAboutNow(q), q);
+  // Incident history, even recent, is Threat Case Relevance; what Radar is, is product information.
+  for (const q of ["Any recent incidents involving Aave?", "What incidents affected Aave last month?", "Have there been any known incidents affecting Aave?", "What does Radar monitor?", "How do Radar alerts work?", "What is the latest Radar pricing?", "Is it safe to use DeFi right now?", "Analyze the risks of Bitcoin"]) assert.ok(!asksAboutNow(q), q);
 });
 
 test("a question about what's happening now gets Radar's live page on its own, without the model or the website cards", async () => {
@@ -628,7 +629,7 @@ test("a question about what's happening now gets Radar's live page on its own, w
     loadCatalog: async () => ({ resources: [] }),
     sites: new SiteKnowledge({ bundled: SAGITTA_SITES_SNAPSHOT }),
   });
-  for (const message of ["Show me the latest Radar alerts", "Are there any warning signs on Ethereum right now?", "Any recent incidents involving Aave?"]) {
+  for (const message of ["Show me the latest Radar alerts", "Are there any warning signs on Ethereum right now?", "Are there active alerts on Aave?"]) {
     const reply = await service.chat({ message });
     assert.equal(reply.text, LIVE_ALERTS_TEXT, message);
     assert.deepEqual(reply.blocks.map((block) => block.type), ["live_feed"], message);
