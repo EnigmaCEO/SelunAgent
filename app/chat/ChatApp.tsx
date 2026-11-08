@@ -212,6 +212,23 @@ export default function ChatApp() {
 
   const active = useMemo(() => conversations.find((entry) => entry.id === activeId) ?? null, [conversations, activeId]);
 
+  // A completed or refunded purchase changes the question balance on the server, so read it again whenever the
+  // results on screen change. A hosted checkout returns to a fresh page before its purchase finishes, so the
+  // balance read on load is from before the purchase.
+  const resultKey = useMemo(() => conversations.flatMap((conversation) => conversation.items.flatMap((item) => item.role !== "assistant" ? [] : item.blocks.flatMap((block) => block.type === "action" && block.action.state === "completed" && block.action.document ? [block.action.id] : []))).join(","), [conversations]);
+  useEffect(() => {
+    if (!resultKey) return;
+    fetchCredits().then((reply) => setCredits(reply.credits)).catch(() => undefined);
+  }, [resultKey]);
+  // Another tab, a refund, or a renewal can change the balance while this tab sits in the background: read it
+  // again when the tab comes back into view, or when another tab saves its conversations.
+  useEffect(() => {
+    const refresh = () => { if (document.visibilityState === "visible") fetchCredits().then((reply) => setCredits(reply.credits)).catch(() => undefined); };
+    document.addEventListener("visibilitychange", refresh);
+    window.addEventListener("storage", refresh);
+    return () => { document.removeEventListener("visibilitychange", refresh); window.removeEventListener("storage", refresh); };
+  }, []);
+
   // Results this browser holds, by service and assets, so a repeat quote can offer the one already bought.
   const purchased = useMemo(() => {
     const found = new Map<string, { conversationId: string; actionId: string; at: string | null }>();

@@ -158,6 +158,18 @@ export class AiCredits {
     return account;
   }
 
+  /**
+   * An account for someone paying who has none yet, such as a guest on a shared network that has opened its daily
+   * share of allowances. It starts with no free questions, so it can't be used to get around that limit, and the
+   * purchase adds its questions to it.
+   */
+  openForPurchase(): Account {
+    const account: Account = { id: randomBytes(24).toString("base64url"), createdAt: this.now().toISOString(), free: 0, earned: 0, grants: {} };
+    this.store.accounts[account.id] = account;
+    this.save();
+    return account;
+  }
+
   find(id: string | null | undefined): Account | null {
     return (id && this.store.accounts[id]) || null;
   }

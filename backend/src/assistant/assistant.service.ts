@@ -617,6 +617,14 @@ export class AssistantService {
   }
 
   /** The questions a guest has left, without opening an allowance for them. */
+  /** The account a purchase in this conversation adds its questions to, opened if there isn't one. Null without credits. */
+  private buyerAccount(session: Session): string | null {
+    const credits = this.deps.credits;
+    if (!credits) return null;
+    if (!credits.find(session.creditId)) session.creditId = credits.openForPurchase().id;
+    return session.creditId ?? null;
+  }
+
   creditView(guestToken: string | null | undefined) {
     const credits = this.deps.credits;
     if (!credits) return null;
@@ -1190,7 +1198,7 @@ export class AssistantService {
   }
 
   /** Fetches the real 402 challenge the customer's wallet will sign. */
-  async prepareApproval(conversationId: string | undefined, actionId: string): Promise<{ paymentRequired: PaymentRequired; action: ActionView }> {
+  async prepareApproval(conversationId: string | undefined, actionId: string): Promise<{ paymentRequired: PaymentRequired; action: ActionView; guestToken: string | null }> {
     const session = this.requireSession(conversationId);
     const action = this.requireAction(session, actionId);
     this.payable(action);
@@ -1232,6 +1240,8 @@ export class AssistantService {
     return {
       paymentRequired: { ...outcome.paymentRequired, accepts: evmOptions },
       action: this.toView(action),
+      // Opened now if needed, so the paid result's questions have somewhere to go, and the browser keeps it.
+      guestToken: this.buyerAccount(session),
     };
   }
 
@@ -1264,7 +1274,7 @@ export class AssistantService {
     conversationId: string | undefined,
     actionId: string,
     approval: { method?: unknown; approved?: unknown; approvedPrice?: unknown },
-  ): Promise<{ approveUrl: string; kind: "one_time" | "subscription"; id: string; method: string; action: ActionView }> {
+  ): Promise<{ approveUrl: string; kind: "one_time" | "subscription"; id: string; method: string; action: ActionView; guestToken: string | null }> {
     const session = this.requireSession(conversationId);
     const action = this.requireAction(session, actionId);
     this.payable(action);
@@ -1281,6 +1291,8 @@ export class AssistantService {
     }
 
     const screening = await this.currentScreening(action);
+    // Every purchase has an account for its questions, even for a guest who never got free ones.
+    const guestToken = this.buyerAccount(session);
     try {
       const monthly = action.capability.billing === "monthly";
       const started = await provider.start({
@@ -1296,7 +1308,7 @@ export class AssistantService {
         billing: action.capability.billing,
         screening,
       });
-      return { ...started, method: provider.id, action: this.toView(action) };
+      return { ...started, method: provider.id, action: this.toView(action), guestToken };
     } catch (error) {
       if (error instanceof AssistantError) throw error;
       console.error(`${provider.label} checkout could not start:`, error instanceof Error ? error.message : error);

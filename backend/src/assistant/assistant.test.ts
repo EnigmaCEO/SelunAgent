@@ -1153,6 +1153,23 @@ test("a held-back answer, a failed request, or one stopped by the cost ceiling n
   assert.equal(llm.requests[0].maxOutputTokens, 700, "free answers are kept short");
 });
 
+test("a guest past the daily allowance limit who pays still gets the purchase's questions, and no free ones", async () => {
+  const { credits, service } = creditedService([...MARKET_SCRIPT(), answer("The market looks cautious right now.")], { guestsPerClientPerDay: 0 });
+  const reply = await service.chat({ message: "Give me a market update", clientKey: "shared-network" });
+  assert.equal(reply.guestToken, null, "no allowance today for this network");
+  const block = reply.blocks.find((entry) => entry.type === "action");
+  assert.ok(block?.type === "action");
+
+  const prepared = await service.prepareApproval(reply.conversationId, block.action.id);
+  assert.ok(prepared.guestToken, "paying opens an account for the purchase");
+  assert.deepEqual(credits.view(credits.find(prepared.guestToken)), { remaining: 0, free: 0, earned: 0, guestQuestions: 5 });
+  assert.equal((await service.prepareApproval(reply.conversationId, block.action.id)).guestToken, prepared.guestToken, "the same account on a retry");
+
+  await service.approveAndExecute(reply.conversationId, block.action.id, { approved: true, approvedPriceUsdc: "0.25", paymentSignature: signature() });
+  await waitForState(service, reply.conversationId, block.action.id, (view) => view.state === "completed");
+  assert.deepEqual(credits.view(credits.find(prepared.guestToken)), { remaining: 10, free: 0, earned: 10, guestQuestions: 5 });
+});
+
 test("a paid analysis adds ten questions once, and a paid month adds a hundred", async () => {
   const { credits, service } = creditedService([]);
   const first = await service.chat({ message: "What is DeFi?", clientKey: "c4" });

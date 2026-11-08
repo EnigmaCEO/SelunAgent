@@ -83,12 +83,15 @@ export function fetchAction(conversationId: string, actionId: string) {
   return request<{ action: ActionView }>(`actions/${actionId}`, { conversationId });
 }
 
-export function requestChallenge(conversationId: string, actionId: string) {
-  return request<{ paymentRequired: PaymentChallenge; action: ActionView }>(`actions/${actionId}/challenge`, {
+// Paying can open the account the purchase's questions go to, so the browser keeps whatever token comes back.
+export async function requestChallenge(conversationId: string, actionId: string) {
+  const reply = await request<{ paymentRequired: PaymentChallenge; action: ActionView; guestToken?: string | null }>(`actions/${actionId}/challenge`, {
     method: "POST",
     conversationId,
     body: {},
   });
+  saveGuestToken(reply.guestToken);
+  return reply;
 }
 
 export function executeAction(conversationId: string, actionId: string, approvedPriceUsdc: string, paymentSignature: string) {
@@ -99,12 +102,14 @@ export function executeAction(conversationId: string, actionId: string, approved
   });
 }
 
-export function startCheckout(conversationId: string, actionId: string, method: string, approvedPrice: string) {
-  return request<{ approveUrl: string; kind: "one_time" | "subscription"; method: string; purchaseToken: string; action: ActionView }>(`actions/${actionId}/checkout`, {
+export async function startCheckout(conversationId: string, actionId: string, method: string, approvedPrice: string) {
+  const reply = await request<{ approveUrl: string; kind: "one_time" | "subscription"; method: string; purchaseToken: string; action: ActionView; guestToken?: string | null }>(`actions/${actionId}/checkout`, {
     method: "POST",
     conversationId,
     body: { method, approved: true, approvedPrice },
   });
+  saveGuestToken(reply.guestToken);
+  return reply;
 }
 
 export function capturePurchase(provider: string, purchaseToken: string) {

@@ -198,9 +198,36 @@ function ReportActions({ reportToken, title, monthly, suggestedEmail }: { report
   );
 }
 
+type ReportGroup = { title: string; headline: string | null; tone?: Tone; sections: ResultSection[] };
+
+/**
+ * A report made of several analyses, split at its headings, so the summary comes first and each analysis opens on
+ * request. Each row shows its headline reading: the first highlight, or else the first figure. Null for a
+ * single analysis, which stays as it is. The PDF always has everything.
+ */
+function reportGroups(sections: ResultSection[]): ReportGroup[] | null {
+  if (!sections.some((section) => section.kind === "heading")) return null;
+  const groups: ReportGroup[] = [];
+  for (const section of sections) {
+    if (section.kind === "heading") groups.push({ title: section.text, headline: null, sections: [] });
+    else if (groups.length === 0) groups.push({ title: "Overview", headline: null, sections: [section] });
+    else groups[groups.length - 1].sections.push(section);
+  }
+  for (const group of groups) {
+    const highlight = group.sections.find((section) => section.kind === "highlight");
+    const metrics = group.sections.find((section) => section.kind === "metrics");
+    // Several assets have no single figure to lead with.
+    const single = group.sections.filter((section) => section.kind === "metrics").length === 1;
+    if (highlight?.kind === "highlight") Object.assign(group, { headline: highlight.value, tone: highlight.tone });
+    else if (metrics?.kind === "metrics" && metrics.items[0] && single) group.headline = `${metrics.items[0].label} ${metrics.items[0].value}`;
+  }
+  return groups;
+}
+
 function ResultCard({ document, reportToken, monthly = false, suggestedEmail = null, children }: { document: ResultDocument; reportToken?: string | null; monthly?: boolean; suggestedEmail?: string | null; children?: ReactNode }) {
   const { provenance } = document;
   const more = document.sections.filter((section) => section.more);
+  const groups = reportGroups(document.sections.filter((section) => !section.more));
   const snapshot = formatDate(document.snapshotAt);
   const tx = provenance.transactionHash ?? "";
   const shortTx = `${tx.slice(0, 8)}…${tx.slice(-6)}`;
@@ -215,10 +242,31 @@ function ResultCard({ document, reportToken, monthly = false, suggestedEmail = n
         </span>
       </header>
       {snapshot && <p className={styles.resultMeta}>Data as of {snapshot}</p>}
-      <div className={styles.resultBody}>
-        {document.sections.filter((section) => !section.more).map((section, index) => <SectionView key={index} section={section} />)}
-      </div>
-      {children}
+      {groups ? (
+        <>
+          {children}
+          <div className={styles.reportSections}>
+            {groups.map((group, index) => (
+              <details key={index} className={styles.reportSection}>
+                <summary>
+                  <span>{group.title}</span>
+                  {group.headline && <span className={`${styles.reportHeadline} ${group.tone ? TONE_CLASS[group.tone] : ""}`}>{group.headline}</span>}
+                </summary>
+                <div className={styles.resultBody}>
+                  {group.sections.map((section, inner) => <SectionView key={inner} section={section} />)}
+                </div>
+              </details>
+            ))}
+          </div>
+        </>
+      ) : (
+        <>
+          <div className={styles.resultBody}>
+            {document.sections.filter((section) => !section.more).map((section, index) => <SectionView key={index} section={section} />)}
+          </div>
+          {children}
+        </>
+      )}
       {more.length > 0 ? (
         <details className={styles.moreInfo}>
           <summary>Full analysis and methodology</summary>
@@ -402,7 +450,7 @@ function ActionCard(props: {
             <RichText text={action.explanation} />
           </div>
         )}
-        {action.explanationStatus === "unavailable" && <p className={styles.quietStatus}>A written summary isn&apos;t available right now, but the result above is complete.</p>}
+        {action.explanationStatus === "unavailable" && <p className={styles.quietStatus}>A written summary isn&apos;t available right now, but the result is complete.</p>}
         </ResultCard>
       </div>
     );

@@ -416,7 +416,7 @@ export function createAssistantRouter(injected?: AssistantDeps, injectedReports?
         approvedPrice: req.body?.approvedPrice,
       });
       res.set("Cache-Control", "no-store");
-      res.json({ success: true, approveUrl: started.approveUrl, kind: started.kind, method: started.method, purchaseToken: issuePurchaseToken(started.id, started.kind), action: started.action });
+      res.json({ success: true, approveUrl: started.approveUrl, kind: started.kind, method: started.method, purchaseToken: issuePurchaseToken(started.id, started.kind), action: started.action, guestToken: started.guestToken });
     } catch (error) {
       sendError(res, error);
     }
