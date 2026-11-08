@@ -1478,7 +1478,7 @@ test("a scorecard leads with five measures, and the PDF's record keeps everythin
   const lead = document.sections.filter((section) => !section.more);
   const metrics = lead.find((section) => section.kind === "metrics");
   assert.ok(metrics?.kind === "metrics");
-  assert.deepEqual(metrics.items.map((item) => item.label), ["Overall score", "Price risk (higher is riskier)", "Market standing", "Annualized volatility", "Largest drawdown"]);
+  assert.deepEqual(metrics.items.map((item) => item.label), ["Overall score", "Price risk", "Market standing", "Annualized volatility", "Largest drawdown"]);
   assert.ok(lead.some((section) => section.kind === "note" && /Measured from .*don't predict future prices/.test(section.text)));
   const labels = document.sections.flatMap((section) => section.kind === "metrics" ? section.items.map((item) => item.label) : []);
   for (const label of ["Now below period high", "Liquidity", "Market structure", "In Selun's model selection"]) assert.ok(labels.includes(label), label);

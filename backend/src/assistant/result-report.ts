@@ -178,7 +178,7 @@ function drawSection(layout: Layout, section: ResultSection, keepTogether: boole
       return;
     case "metrics":
       if (section.title) layout.heading(section.title);
-      for (const item of section.items) layout.row(item.label, item.value, item.tone ? { color: TONE_COLOR[item.tone] } : {});
+      for (const item of section.items) layout.row(item.hint ? `${item.label} (${item.hint})` : item.label, item.value, item.tone ? { color: TONE_COLOR[item.tone] } : {});
       return;
     case "table":
       if (section.title) layout.heading(section.title);

@@ -4,7 +4,7 @@ export type ResultSection = SectionBody & { more?: boolean };
 
 type SectionBody =
   | { kind: "highlight"; label: string; value: string; tone: Tone; detail?: string }
-  | { kind: "metrics"; title?: string; items: { label: string; value: string; tone?: Tone; meter?: number }[] }
+  | { kind: "metrics"; title?: string; items: { label: string; value: string; hint?: string; tone?: Tone; meter?: number }[] }
   | { kind: "table"; title?: string; columns: { key: string; label: string; numeric?: boolean }[]; rows: Record<string, string>[] }
   | { kind: "list"; title?: string; items: string[] }
   | { kind: "note"; text: string }

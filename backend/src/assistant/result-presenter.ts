@@ -19,7 +19,7 @@ export type ResultSection = SectionBody & { more?: boolean };
 
 type SectionBody =
   | { kind: "highlight"; label: string; value: string; tone: Tone; detail?: string }
-  | { kind: "metrics"; title?: string; items: { label: string; value: string; tone?: Tone; meter?: number }[] }
+  | { kind: "metrics"; title?: string; items: { label: string; value: string; hint?: string; tone?: Tone; meter?: number }[] }
   | { kind: "table"; title?: string; columns: { key: string; label: string; numeric?: boolean }[]; rows: Record<string, string>[] }
   | { kind: "list"; title?: string; items: string[] }
   | { kind: "note"; text: string }
@@ -76,10 +76,11 @@ function percent(value: unknown): string {
   return parsed === null ? "Not reported" : `${Math.round(parsed * 1000) / 10}%`;
 }
 
-function score(label: string, value: unknown): { label: string; value: string; meter?: number } {
+function score(label: string, value: unknown, hint?: string): { label: string; value: string; hint?: string; meter?: number } {
   const parsed = number(value);
-  if (parsed === null) return { label, value: "Not reported" };
-  return { label, value: `${Math.round(parsed * 100)} / 100`, meter: Math.max(0, Math.min(1, parsed)) };
+  const named = hint ? { label, hint } : { label };
+  if (parsed === null) return { ...named, value: "Not reported" };
+  return { ...named, value: `${Math.round(parsed * 100)} / 100`, meter: Math.max(0, Math.min(1, parsed)) };
 }
 
 function toneFor(value: unknown): Tone {
@@ -212,7 +213,7 @@ function presentScorecardV2(result: Json): ResultSection[] {
       title: `${text(card.name) ?? asset} (${asset})`,
       items: [
         measured ? score("Overall score", card.overallScore) : { label: "Overall score", value: "Not scored" },
-        measured ? score("Price risk (higher is riskier)", card.priceRiskScore) : { label: "Price risk", value: "Not measured" },
+        measured ? score("Price risk", card.priceRiskScore, "higher is riskier") : { label: "Price risk", value: "Not measured" },
         score("Market standing", card.qualityScore),
         { label: "Annualized volatility", value: pct(history.annualizedVolatilityPct) },
         { label: "Largest drawdown", value: pct(history.maxDrawdownPct) },
@@ -243,7 +244,7 @@ function presentScorecardV2(result: Json): ResultSection[] {
       title: `${text(entry.name) ?? asset} (${asset})`,
       items: [
         { label: "Overall score", value: "Not scored" },
-        measured ? score("Price risk (higher is riskier)", entry.priceRiskScore) : { label: "Price risk", value: "Not measured" },
+        measured ? score("Price risk", entry.priceRiskScore, "higher is riskier") : { label: "Price risk", value: "Not measured" },
         { label: "Annualized volatility", value: pct(history.annualizedVolatilityPct) },
         { label: "Largest drawdown", value: pct(history.maxDrawdownPct) },
         { label: "Now below period high", value: pct(history.currentDrawdownPct) },

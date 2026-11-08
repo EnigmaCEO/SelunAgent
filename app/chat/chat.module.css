@@ -942,6 +942,8 @@
 }
 
 .metric {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   padding: 10px 12px;
   border: 1px solid var(--line);
@@ -949,16 +951,29 @@
 }
 
 .metric dt {
+  flex: 1 0 auto;
   color: var(--muted);
   font-size: 12px;
   line-height: 1.3;
 }
 
+.metricHint {
+  display: block;
+  font-size: 11px;
+  opacity: 0.8;
+}
+
 .metric dd {
-  margin: 3px 0 0;
+  margin: 6px 0 0;
   color: var(--ink);
   font-size: 15px;
   font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.meterSpace {
+  visibility: hidden;
 }
 
 .meter {

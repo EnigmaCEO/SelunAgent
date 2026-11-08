@@ -51,25 +51,34 @@ function SectionView({ section }: { section: ResultSection }) {
           {section.detail && <span className={styles.highlightDetail}>{section.detail}</span>}
         </div>
       );
-    case "metrics":
+    case "metrics": {
+      // Labels wrap to different lengths, so each value sits at the foot of its tile, and tiles without a meter keep
+      // its space whenever another tile in the row has one: the figures line up however the labels fall.
+      const anyMeter = section.items.some((item) => item.meter !== undefined);
       return (
         <div className={styles.section}>
           {section.title && <h4 className={styles.sectionTitle}>{section.title}</h4>}
           <dl className={styles.metrics}>
             {section.items.map((item) => (
               <div key={item.label} className={styles.metric}>
-                <dt>{item.label}</dt>
+                <dt>
+                  {item.label}
+                  {item.hint && <span className={styles.metricHint}>{item.hint}</span>}
+                </dt>
                 <dd className={item.tone ? TONE_CLASS[item.tone] : undefined}>{item.value}</dd>
-                {item.meter !== undefined && (
+                {item.meter !== undefined ? (
                   <span className={styles.meter} aria-hidden>
                     <span style={{ width: `${Math.round(item.meter * 100)}%` }} />
                   </span>
-                )}
+                ) : anyMeter ? (
+                  <span className={`${styles.meter} ${styles.meterSpace}`} aria-hidden />
+                ) : null}
               </div>
             ))}
           </dl>
         </div>
       );
+    }
     case "table":
       return (
         <div className={styles.section}>
