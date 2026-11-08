@@ -27,6 +27,11 @@ export const SAGITTA_HOSTS = [
 
 const SKIPPED_PATH = /^\/(api|app|account|admin|auth|billing|checkout|dashboard|login|logout|signin|signup|register|portal|settings|wizard|plan|_next|static)(\/|$)/i;
 const SKIPPED_FILE = /\.(css|js|mjs|map|png|jpe?g|gif|svg|ico|webp|avif|woff2?|ttf|mp4|webm|xml|txt|json|pdf|zip|jfif)$/i;
+/**
+ * Pages whose contents change by the hour, such as Radar's public alert feed. A saved copy would be read back
+ * as if it were current, so they are never kept. Selun gives their address instead.
+ */
+const LIVE_PAGE = /^https:\/\/radar\.sagitta\.systems\/alerts(\/|$)/i;
 const MAX_PAGES_PER_HOST = 120;
 const MAX_PAGE_BYTES = 2_000_000;
 const CHUNK_CHARS = 900;
@@ -133,7 +138,8 @@ function allowedUrl(raw: string, host: string, disallowed: string[]): string | n
   if (url.protocol !== "https:" || url.hostname !== host) return null;
   if (SKIPPED_PATH.test(url.pathname) || SKIPPED_FILE.test(url.pathname)) return null;
   if (disallowed.some((rule) => url.pathname.startsWith(rule))) return null;
-  return `https://${host}${url.pathname.replace(/\/+$/, "") || "/"}`;
+  const address = `https://${host}${url.pathname.replace(/\/+$/, "") || "/"}`;
+  return LIVE_PAGE.test(address) ? null : address;
 }
 
 function chunkPage(url: string, site: string, title: string, blocks: PageBlock[]): SiteChunk[] {
@@ -270,10 +276,16 @@ function matchKey(chunk: SiteChunk): string {
 const PRICE_QUESTION = /\b(price|prices|pricing|cost|costs|fee|fees|how much|plans?)\b/i;
 const PRICE_BOOST = 1.6;
 
-/** Also applied to anything read from disk, so a copy from before an exclusion can't bring it back. */
+/** Also applied to anything read from disk, so a copy from before an exclusion can't bring it back. Live pages go too. */
 function withoutExcluded(corpus: SiteCorpus): SiteCorpus {
   const hosts = Object.fromEntries(Object.entries(corpus.hosts).filter(([host]) => !EXCLUDED_NAMES.test(host)));
-  const chunks = corpus.chunks.filter((chunk) => !EXCLUDED_NAMES.test(`${chunk.url} ${chunk.title} ${chunk.heading} ${chunk.text}`));
+  const chunks = corpus.chunks.filter((chunk) => !LIVE_PAGE.test(chunk.url) && !EXCLUDED_NAMES.test(`${chunk.url} ${chunk.title} ${chunk.heading} ${chunk.text}`));
+  // Dropped live pages leave the page count too, so a refresh without them doesn't look like a site shrinking.
+  const live = new Set(corpus.chunks.filter((chunk) => LIVE_PAGE.test(chunk.url)).map((chunk) => chunk.url));
+  for (const url of live) {
+    const host = new URL(url).hostname;
+    if (hosts[host]) hosts[host] = Math.max(hosts[host] - 1, 0);
+  }
   return { ...corpus, hosts, chunks };
 }
 

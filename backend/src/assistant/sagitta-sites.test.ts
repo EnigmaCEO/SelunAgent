@@ -540,3 +540,29 @@ test("the fact sheet links the whitepaper and the instructions rank the sources"
   assert.match(prompt, /the whitepaper governs/);
   assert.match(prompt, /Never infer legal status or regulatory authority/);
 });
+
+test("Radar's live alert pages are never kept, so old alerts can't be read back as current", () => {
+  const alertsChunks = SAGITTA_SITES_SNAPSHOT.chunks.filter((chunk) => chunk.url.startsWith("https://radar.sagitta.systems/alerts"));
+  assert.ok(alertsChunks.length > 0, "the bundled copy still holds alert pages for this test to mean anything");
+  const knowledge = new SiteKnowledge({ bundled: SAGITTA_SITES_SNAPSHOT });
+  const found = knowledge.search("Radar alerts Ethereum critical", "Give me the latest alerts for Ethereum");
+  assert.ok(found.length > 0);
+  assert.ok(found.every((match) => !match.url.startsWith("https://radar.sagitta.systems/alerts")));
+});
+
+test("a refresh without the live alert pages doesn't look like Radar's site shrinking", async () => {
+  const chunk = (url: string) => ({ url, site: "radar.sagitta.systems", title: "Radar", heading: "", text: `Text for ${url}` });
+  const before: SiteCorpus = { fetchedAt: "2026-01-01T00:00:00.000Z", pages: 4, hosts: { "radar.sagitta.systems": 4 }, chunks: [chunk("https://radar.sagitta.systems/"), chunk("https://radar.sagitta.systems/alerts"), chunk("https://radar.sagitta.systems/alerts/RADAR-1"), chunk("https://radar.sagitta.systems/alerts/RADAR-2")] };
+  const after: SiteCorpus = { fetchedAt: "2026-02-01T00:00:00.000Z", pages: 1, hosts: { "radar.sagitta.systems": 1 }, chunks: [{ ...chunk("https://radar.sagitta.systems/"), text: "Fresh Radar homepage" }] };
+  const knowledge = new SiteKnowledge({ bundled: before, crawl: async () => after });
+  await knowledge.refresh();
+  assert.equal(knowledge.fetchedAt, after.fetchedAt);
+  assert.ok(knowledge.search("Fresh Radar homepage", "").some((match) => match.text === "Fresh Radar homepage"));
+});
+
+test("the crawl skips Radar's live alert pages", async () => {
+  const { fetcher, asked } = site({ "/": page("Radar", '<p>Radar watches DeFi infrastructure.</p><a href="/alerts">Alerts</a><a href="/alerts/RADAR-1">One</a><a href="/pricing">Pricing</a>'), "/pricing": page("Pricing", "<p>Plans and prices for Radar.</p>"), "/alerts": page("Alerts", "<p>Critical alert now.</p>") });
+  const corpus = await crawlSagittaSites({ fetcher, hosts: ["radar.sagitta.systems"] });
+  assert.ok(!asked.some((url) => url.includes("/alerts")));
+  assert.ok(corpus.chunks.every((c) => !c.url.includes("/alerts")));
+});
