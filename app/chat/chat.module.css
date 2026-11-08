@@ -1353,6 +1353,11 @@
   gap: 8px;
 }
 
+/* Send keeps its size on phones too, where other ghost buttons fill the row. */
+.reportEmail > div > button {
+  flex: 0 0 auto;
+}
+
 .reportEmail input {
   flex: 1;
   min-width: 0;
