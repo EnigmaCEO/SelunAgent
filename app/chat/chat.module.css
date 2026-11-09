@@ -1698,3 +1698,78 @@
   font-size: 0.74rem;
   white-space: nowrap;
 }
+
+/* Live status: what SCE showed when the customer asked. */
+.liveSection {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.liveSection h4 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  margin: 0;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.liveList {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.liveList li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  padding: 6px 0;
+  font-size: 14px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.liveList a {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.liveMeta {
+  width: 100%;
+  color: #5b6b80;
+  font-size: 12.5px;
+}
+
+.liveUnavailable {
+  color: #8a4b00 !important;
+}
+
+.severityTag {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.severityHigh {
+  background: #fde8e8;
+  color: #9b1c1c;
+}
+
+.severityMedium {
+  background: #fff3d6;
+  color: #7a4d00;
+}
+
+.severityLow {
+  background: #e8eef6;
+  color: #3d4f66;
+}

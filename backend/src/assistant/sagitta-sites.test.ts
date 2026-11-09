@@ -608,9 +608,9 @@ test("old alerts can't come back through an index refresh, or the copy it saves"
   }
 });
 
-test("the prompt sends current alerts and latest incidents to Radar, and past incidents to Threat Case Relevance", () => {
+test("the prompt sends what's happening now to the live read, and past incidents to Threat Case Relevance", () => {
   const prompt = buildSystemPrompt("November 8, 2026");
-  assert.match(prompt, /latest alerts for Ethereum[^\n]*https:\/\/radar\.sagitta\.systems\/alerts/);
+  assert.match(prompt, /happening now[^\n]*call check_live_status[^\n]*never say there's nothing/);
   assert.match(prompt, /any recent incidents involving Aave\?[^\n]*propose_sce_case_relevance/);
   assert.match(prompt, /status with the date it was reported/);
 });

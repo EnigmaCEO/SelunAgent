@@ -20,6 +20,7 @@ import { ReportService, type ReportDeps } from "./report.service";
 import { SITES_REFRESH_CHECK_MS, getSiteKnowledge } from "./sagitta-sites.runtime";
 import { DEFAULT_SCREEN_PROFILE, SCREEN_WARM_MS, getScorecardPreflight } from "./scorecard-preflight.runtime";
 import { HttpX402Gateway } from "./x402-gateway";
+import { SceLiveIntel } from "./live-intel";
 
 const CONVERSATION_HEADER = "x-selun-conversation";
 
@@ -97,6 +98,8 @@ function createDefaultDeps(paypal: PayPalCommerceService | null, stripe: PayPalC
     limits: readAssistantLimits(),
     sites: getSiteKnowledge(),
     preflight: getScorecardPreflight(),
+    // Radar's public alerts and SCE's case library, read-only and without a key.
+    live: process.env.SELUN_LIVE_INTEL?.trim() === "off" ? null : new SceLiveIntel({ baseUrl: process.env.SCE_API_BASE_URL }),
     hostedPrices: prices,
     credits: process.env.SELUN_AI_CREDITS?.trim() === "off" ? null : new AiCredits(readCreditConfig(), process.env.SELUN_AI_CREDITS_FILE?.trim() || path.resolve(process.cwd(), process.cwd().endsWith("backend") ? "data" : "backend/data", "ai-credits.json")),
     checkoutProviders: stripe ? [hostedProvider(STRIPE_META, stripe)] : [],

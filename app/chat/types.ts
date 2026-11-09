@@ -128,6 +128,22 @@ export type SystemDetail = SystemSummary & { parent: string | null; availableTod
 
 export type SiteSource = { title: string; url: string; site: string };
 
+export type LiveAlert = {
+  id: string;
+  severity: string;
+  status: string;
+  monitorType: string;
+  summary: string;
+  whatHappened: string | null;
+  asset: string | null;
+  chain: string | null;
+  createdAt: string;
+  resolvedAt: string | null;
+  url: string;
+};
+
+export type Advisory = { id: string; title: string; severity: string; source: string; cve: string | null; updatedAt: string; url: string | null };
+
 export type Block =
   | { type: "sagitta_sources"; sources: SiteSource[]; readAt: string }
   | { type: "sagitta_directory"; systems: SystemSummary[] }
@@ -137,6 +153,15 @@ export type Block =
   | { type: "asset_choice"; query: string; reason: string; options: { symbol: string; label: string }[] }
   | { type: "handoff"; title: string; summary: string; href: string; prices: { label: string; priceUsdc: string }[]; note: string }
   | { type: "live_feed"; title: string; summary: string; href: string; linkLabel: string; note: string }
+  | {
+    type: "live_status";
+    title: string;
+    alerts: { state: "ok" | "unavailable"; asOf: string; scope: string | null; active: LiveAlert[]; latest: LiveAlert | null };
+    advisories: { state: "ok" | "unavailable"; asOf: string; windowDays: number; total: number; items: Advisory[] } | null;
+    href: string;
+    linkLabel: string;
+    note: string;
+  }
   | { type: "notice"; tone: "info" | "warning"; text: string };
 
 export type ChatItem =

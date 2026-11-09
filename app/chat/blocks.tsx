@@ -769,7 +769,82 @@ export function BlockView(props: {
           <p className={styles.approvalNote}>{block.note}</p>
         </article>
       );
+    case "live_status":
+      return <LiveStatusCard block={block} />;
     case "notice":
       return <p className={block.tone === "warning" ? styles.noticeWarning : styles.noticeInfo} role={block.tone === "warning" ? "alert" : "status"}>{block.text}</p>;
   }
+}
+
+function SeverityTag({ severity }: { severity: string }) {
+  const level = severity.toLowerCase();
+  const tone = level === "critical" || level === "high" ? styles.severityHigh : level === "warning" || level === "medium" ? styles.severityMedium : styles.severityLow;
+  return <span className={`${styles.severityTag} ${tone}`}>{level}</span>;
+}
+
+/** The card's times are UTC, so its dates are too. */
+function utcDay(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toLocaleDateString(undefined, { dateStyle: "medium", timeZone: "UTC" });
+}
+
+/** What SCE showed when the customer asked: Radar's alerts and recent advisories, each with the time it was read. */
+function LiveStatusCard({ block }: { block: Extract<Block, { type: "live_status" }> }) {
+  const { alerts, advisories } = block;
+  const scope = alerts.scope ? ` involving ${alerts.scope}` : "";
+  return (
+    <article className={styles.handoff} aria-label={block.title}>
+      <h3>{block.title}</h3>
+      <section className={styles.liveSection} aria-label="Radar alerts">
+        <h4>Radar alerts <span className={styles.statusAsOf}>as of {alerts.asOf}</span></h4>
+        {alerts.state === "unavailable" ? (
+          <p className={styles.liveUnavailable}>Radar&apos;s alert feed couldn&apos;t be reached, so this couldn&apos;t be checked.</p>
+        ) : alerts.active.length ? (
+          <ul className={styles.liveList}>
+            {alerts.active.map((alert) => (
+              <li key={alert.id}>
+                <SeverityTag severity={alert.severity} />
+                <a href={alert.url} target="_blank" rel="noopener noreferrer">{alert.summary}</a>
+                <span className={styles.liveMeta}>{alert.monitorType} · since {utcDay(alert.createdAt)}</span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <>
+            <p>No active alerts{scope}.</p>
+            {alerts.latest && (
+              <p className={styles.liveMeta}>
+                Most recent: <a href={alerts.latest.url} target="_blank" rel="noopener noreferrer">{alerts.latest.summary}</a>{" "}
+                ({alerts.latest.severity}, {alerts.latest.resolvedAt ? `resolved ${utcDay(alerts.latest.resolvedAt)}` : utcDay(alerts.latest.createdAt)})
+              </p>
+            )}
+          </>
+        )}
+      </section>
+      {advisories && (
+        <section className={styles.liveSection} aria-label="Security advisories">
+          <h4>Security advisories <span className={styles.statusAsOf}>past {advisories.windowDays} days</span></h4>
+          {advisories.state === "unavailable" ? (
+            <p className={styles.liveUnavailable}>SCE&apos;s case library couldn&apos;t be reached, so this couldn&apos;t be checked.</p>
+          ) : advisories.items.length ? (
+            <ul className={styles.liveList}>
+              {advisories.items.map((item) => (
+                <li key={item.id}>
+                  <SeverityTag severity={item.severity} />
+                  {item.url ? <a href={item.url} target="_blank" rel="noopener noreferrer">{item.title}</a> : <span>{item.title}</span>}
+                  <span className={styles.liveMeta}>{[item.cve, item.source, `updated ${utcDay(item.updatedAt)}`].filter(Boolean).join(" · ")}</span>
+                </li>
+              ))}
+              {advisories.total > advisories.items.length && <li className={styles.liveMeta}>{advisories.total - advisories.items.length} more in SCE&apos;s case library.</li>}
+            </ul>
+          ) : (
+            <p>No crypto-related advisories found.</p>
+          )}
+        </section>
+      )}
+      <a href={block.href} target="_blank" rel="noopener noreferrer" className={styles.approveButton}>{block.linkLabel}</a>
+      <p className={styles.approvalNote}>{block.note}</p>
+    </article>
+  );
 }

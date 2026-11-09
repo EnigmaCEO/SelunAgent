@@ -31,6 +31,7 @@ import {
 } from "./commerce";
 import { LlmError, type ChatMessage, type ChatTool, type LlmClient, type LlmUsage } from "./openai-client";
 import { presentResult, type ResultDocument } from "./result-presenter";
+import { RADAR_ALERTS_URL, advisoriesText, alertsText, asOf, liveFacts, scopeOf, type Advisory, type AdvisoryRead, type AlertRead, type LiveAlert, type LiveIntel } from "./live-intel";
 import { lookupSagitta, type SystemDetail, type SystemSummary } from "./sagitta-directory";
 import { citedSections, type FactSheet } from "./sagitta-facts";
 import { OFFICIAL_HEADING, namesSagitta, sourceType, whitepaperTopics } from "./sagitta-sites";
@@ -104,6 +105,15 @@ export type Block =
   | { type: "asset_choice"; query: string; reason: string; options: { symbol: string; label: string }[] }
   | { type: "handoff"; title: string; summary: string; href: string; prices: { label: string; priceUsdc: string }[]; note: string }
   | { type: "live_feed"; title: string; summary: string; href: string; linkLabel: string; note: string }
+  | {
+    type: "live_status";
+    title: string;
+    alerts: { state: "ok" | "unavailable"; asOf: string; scope: string | null; active: LiveAlert[]; latest: LiveAlert | null };
+    advisories: { state: "ok" | "unavailable"; asOf: string; windowDays: number; total: number; items: Advisory[] } | null;
+    href: string;
+    linkLabel: string;
+    note: string;
+  }
   | { type: "notice"; tone: "info" | "warning"; text: string };
 
 export type PublicCapability = Pick<Capability, "id" | "title" | "summary" | "outputType" | "duration" | "limitations" | "execution" | "priceUsdc" | "currency" | "billing">;
@@ -159,6 +169,8 @@ type TurnBudget = {
   free?: boolean;
   /** The only services this turn may propose, when the question names which ones fit. */
   onlyServices?: ReadonlySet<string>;
+  /** Read what SCE shows now before the model answers, and give it the facts. */
+  liveStatus?: boolean;
 };
 
 /** Tools that answer general or Sagitta questions, which aren't offered once questions run out. */
@@ -268,6 +280,8 @@ export type AssistantDeps = {
   sites?: { search(query: string, question?: string): SiteMatch[]; fetchedAt: string; facts?: FactSheet | null } | null;
   /** Confirms an Asset Scorecard can deliver its score before it's offered. */
   preflight?: Pick<ScorecardPreflight, "check">;
+  /** What SCE publishes now: Radar's public alerts and recent security advisories. Absent, Selun links to Radar instead. */
+  live?: LiveIntel | null;
   limits?: Partial<AssistantLimits>;
   now?: () => Date;
 };
@@ -310,8 +324,8 @@ Rules you must never break:
 
 Choosing services (propose only what each rule names, never extra services the customer didn't ask about):
 - "What can you do" or "what services": call list_capabilities. A card shows the list, so reply with one short sentence and do not repeat the list.
-- Alerts, warnings, or monitoring for a token, network, protocol, or pool, such as "latest alerts for Ethereum", "any alerts on Aave right now?" (live status happening now): Selun has no live alert feed, but Sagitta Radar publishes a free public page of the last 24 hours of alerts at https://radar.sagitta.systems/alerts, with alert history and delivery on its paid plans. Call lookup_sagitta for Radar and give that address in full. Lead with what Radar shows and where, then say briefly that you can't see the alerts yourself. Selun can't see the alerts themselves, so never list or describe any, and don't mention passages or what you searched. If a token was named, you may also mention its risk analysis as historical risk, not alerts, but don't propose it unless they ask.
-- Current warning signs, red flags, or risks right now, such as "any warning signs on Ethereum right now?": broader than alerts, since it could mean infrastructure incidents, price risk, or market conditions. A compact card linking to Radar's live infrastructure alerts (bridges, oracles, and liquidity pools, past 24 hours) is added for you, so don't search, don't call lookup_sagitta, and don't write the Radar address. For a named token: resolve_asset, then propose_asset_scorecard for its historical price risk (volatility, drawdowns, and market standing). With no token named, propose_market_regime. Propose nothing else. Open with what you can help them check, for example: "I can help you look into warning signs for Ethereum. For current infrastructure incidents involving bridges, oracles, and liquidity pools, Radar publishes alerts from the past 24 hours. For Ethereum's historical price risk, I can prepare a risk analysis covering volatility, drawdowns, and market standing." Say neither includes live prices or news.
+- Alerts, warnings, monitoring, or security advisories for a token, network, protocol, or pool, happening now, such as "is anything wrong with Chainlink on Base?": call check_live_status with what they named. It reads Radar's active alerts and SCE's recent security advisories and shows a card. Report only what it returned, with its time: how many active alerts (or none), the most recent one if there are none, saying it was resolved if it was, and the top advisory if any. If a read is unavailable, say you couldn't check it; never say there's nothing. Add that Radar watches specific oracles, bridges, and liquidity pools, so no alert doesn't mean no risk. Don't write the Radar address; the card links to it. If a token was named, you may mention its risk analysis as historical risk, but don't propose it unless they ask.
+- Current warning signs, red flags, or risks right now, such as "any warning signs on Ethereum right now?": broader than alerts, since it could mean infrastructure incidents, security flaws, price risk, or market conditions. Radar's alerts and SCE's advisories have already been read for you (the check_live_status result) and their card is shown, so don't call it again, don't search, and don't call lookup_sagitta. Start with what that result says, in a sentence or two with its time, saying the most recent alert was resolved if it was, and naming the top security advisory if one is rated critical or high. For a named token: resolve_asset, then propose_asset_scorecard for its historical price risk (volatility, drawdowns, and market standing). With no token named, propose_market_regime. Propose nothing else. For example: "As of 3:10 PM UTC, Radar shows no active alerts involving Ethereum; the most recent was resolved on Nov 7. For Ethereum's historical price risk, I can prepare a risk analysis covering volatility, drawdowns, and market standing." Say the analysis doesn't include live prices or news.
 - Any request about a named token, such as "tell me about BTC" or "analyze the risks of Ethereum": resolve_asset, then propose_asset_scorecard. If the result says not_offered, follow its instruction.
 - A market update or assessment naming a token, such as "market update on Bitcoin": resolve_asset, then propose_asset_scorecard (that token) and propose_market_regime (the whole market). Open with what you can help them understand, not with what's for sale, for example: "I can help you understand Bitcoin's historical risk and broader crypto market conditions. I have two analyses available: a Bitcoin risk assessment and an overall market conditions report. Which would you prefer?" Also say that neither includes live prices or news. Don't say "quote card" here.
 - Market update with no token named, or how the market is doing: propose_market_regime. Say plainly that it covers the whole crypto market.
@@ -328,7 +342,7 @@ Choosing services (propose only what each rule names, never extra services the c
 Questions about Sagitta itself. Sagitta's own websites are the source of truth, so never answer these from your own knowledge:
 - Anything about Sagitta, such as who builds it, how something works, pricing, plans, roadmap, careers, news, security, or the whitepaper: if the Sagitta facts at the end of these instructions fully answer it, answer from them without searching. Otherwise always call search_sagitta_sites first, with the key terms, and name the system in the query. If the passages don't answer it, search again with different words before saying so. Answer only from the facts or passages. Answer the question that was asked, and completely: give every plan and price, every step, every role by its name, or every item in a list that the passages contain, and every date or duration they state. When asked who develops or founded Sagitta, name the founder as well as Sagitta Systems. When the passages define something, use their definition, not your own summary. Sources are listed for the customer automatically, so don't offer to look something up that you could search now. This is free and information only.
 - When someone asks for a page, account, link, or how to reach Sagitta, give the exact address from the passages in full, such as a whole https:// link or email address. For a general contact, lead with the one on www.sagitta.systems.
-- Which source governs: for how the Sagitta Protocol operates or what it legally is, the whitepaper governs (passages with source_type whitepaper). For what is live now, the status page and the statuses in the facts govern, as of the date they were read. Selun has no live connection to these systems, so never say you've verified one. Other website pages can explain benefits and access, but never override either. If they disagree, follow the governing source and say they differ.
+- Which source governs: for how the Sagitta Protocol operates or what it legally is, the whitepaper governs (passages with source_type whitepaper). For what is live now, the status page and the statuses in the facts govern, as of the date they were read. Apart from check_live_status, which reads Radar's alerts and SCE's advisories, Selun has no live connection to these systems, so never say you've verified one is running. Other website pages can explain benefits and access, but never override either. If they disagree, follow the governing source and say they differ.
 - The whitepaper describes a design. Say "the whitepaper says" or "is designed to", never that something is running or that funds are safe. When a question touches protection, guarantees, insurance, or deposits, also give the Protocol's current status from the facts, without explaining why you're adding it.
 - Never infer legal status or regulatory authority from marketing copy or a product's name. State only what the whitepaper's Scope & Non-Banking Clarification says, and name it. If no regulator is named, say the whitepaper and sites don't name one, and stop: never say it has no regulator, isn't regulated, or is governed instead of regulated. There, "insurance" means a protocol-level reserve mechanism, not an insurance contract or FDIC coverage, and "deposits" mean protocol-level capital contributions. Say so when asked about protection or legal status.
 - Sagitta Protocol, Sagitta Banking, and institutional integrations are separate. What's true of one isn't true of another.
@@ -350,7 +364,31 @@ If a tool reports an error or that a service is unavailable, say so plainly and 
 After proposing, end with one or two sentences: what they will get and that the card shows the exact price for their approval. Don't mention default settings such as risk profile, horizon, or segment unless the customer asked about them. The cards name these for customers, so use the same names: an Asset Scorecard is a "Bitcoin risk analysis" (with the asset's name), and Market Regime is a "market conditions report". Do not write lists of the card's details. Use short paragraphs and only simple **bold** or "- " lists. Do not include links, except an address someone asked for or the Radar alerts page.`;
 }
 
-export const RADAR_ALERTS_URL = "https://radar.sagitta.systems/alerts";
+export { RADAR_ALERTS_URL };
+
+/** Security advisories and vulnerabilities, which SCE's case library tracks. "Incidents" or "exploits" mean a protocol's history instead. */
+const ADVISORY_WORDS = /\b(vulnerabilit(y|ies)|cves?|security (advisor(y|ies)|flaws?|bugs?|issues?|holes?)|advisories|malicious (packages?|code|libraries))\b/i;
+export function asksAboutAdvisories(message: string): boolean {
+  return ADVISORY_WORDS.test(message);
+}
+
+/** One card with everything the reads returned, including a read that failed. */
+export function liveStatusBlock(alerts: AlertRead, advisories: AdvisoryRead | null): Block {
+  return {
+    type: "live_status",
+    title: alerts.scope ? `Live status: ${alerts.scope}` : "Live status",
+    alerts: alerts.state === "ok"
+      ? { state: "ok", asOf: asOf(alerts.fetchedAt), scope: alerts.scope, active: alerts.active.slice(0, 5), latest: alerts.latest }
+      : { state: "unavailable", asOf: asOf(alerts.fetchedAt), scope: alerts.scope, active: [], latest: null },
+    advisories: !advisories ? null : advisories.state === "ok"
+      ? { state: "ok", asOf: asOf(advisories.fetchedAt), windowDays: advisories.windowDays, total: advisories.total, items: advisories.items }
+      : { state: "unavailable", asOf: asOf(advisories.fetchedAt), windowDays: advisories.windowDays, total: 0, items: [] },
+    href: RADAR_ALERTS_URL,
+    linkLabel: "Open Radar alerts",
+    note: "Read from Sagitta's Continuity Engine when you asked. Radar watches specific oracles, bridges, and liquidity pools, so no alert doesn't mean no risk.",
+  };
+}
+
 /**
  * Live operational status, not incident history: "recent" or "incidents" alone mean a protocol's past,
  * which Threat Case Relevance covers, so neither sends a question here.
@@ -588,22 +626,32 @@ export class AssistantService {
         // Current risk in general: the token's risk analysis, or the market report, and nothing else.
         const currentRisk = !live && classified.intent !== "transaction" && asksAboutCurrentRisk(message);
         if (currentRisk) session.turn.onlyServices = CURRENT_RISK_SERVICES;
-        const fixed = live ? LIVE_ALERTS_TEXT
+        // Read live where SCE can be read: alerts for an alerts question, the case library for a vulnerabilities one, both for warning signs.
+        const advisoryQuestion = !live && !currentRisk && classified.intent !== "transaction" && Boolean(this.deps.live) && asksAboutAdvisories(message);
+        if (advisoryQuestion) session.turn.free = true;
+        if (currentRisk && this.deps.live) session.turn.liveStatus = true;
+        const answered = live || advisoryQuestion ? await this.liveAnswer(message, live ? "alerts" : "advisories") : null;
+        const fixed = answered ? answered.text
+          : live ? LIVE_ALERTS_TEXT
           : !session.turn.limited ? null
           : !commerce ? (classified.intent === "result_followup" ? RESULT_KEPT : OUT_OF_QUESTIONS)(credits!.config.purchaseGrant)
           : classified.listing ? PRICES_SHOWN
           : !this.takeZeroCreditTurn(account?.id ?? `client:${input.clientKey ?? "unknown"}`) ? (classified.intent === "transaction" ? PAYMENT_HELP : SERVICE_INSTEAD(credits!.config.purchaseGrant))
           : null;
         const served = fixed === null;
-        const reply = served ? await this.runModel(session) : { text: fixed, blocks: (live ? [RADAR_LIVE_FEED] : []) as Block[] };
+        const reply = served ? await this.runModel(session) : { text: fixed, blocks: (answered ? answered.blocks : live ? [RADAR_LIVE_FEED] : []) as Block[] };
         if (!served) session.messages.push({ role: "assistant", content: reply.text });
         // Listing pages under "the sites don't say that" would suggest they do.
         // Unless a page governs the question: "the whitepaper doesn't name a regulator" is an answer from that page.
         let blocks = saysNotCovered(reply.text) && !whitepaperTopics(message).length ? reply.blocks.filter((block) => block.type !== "sagitta_sources") : reply.blocks;
         // Current risk in general: Radar's live alerts as one compact card first, without the website cards, then the services offered.
-        if (currentRisk) blocks = [RADAR_INFRASTRUCTURE_FEED, ...blocks.filter((block) => block.type !== "sagitta_system" && block.type !== "sagitta_sources" && block.type !== "live_feed")];
+        // With a live read, its card leads; without one, the link to Radar does.
+        if (currentRisk) {
+          const status = blocks.find((block) => block.type === "live_status");
+          blocks = [status ?? RADAR_INFRASTRUCTURE_FEED, ...blocks.filter((block) => block.type !== "sagitta_system" && block.type !== "sagitta_sources" && block.type !== "live_feed" && block.type !== "live_status")];
+        }
         // After that, so a fact the reply does state from the sheet still shows its page.
-        if (!session.turn.limited && !live && !currentRisk) this.citeFacts(message, reply.text, blocks);
+        if (!session.turn.limited && !live && !currentRisk && !answered) this.citeFacts(message, reply.text, blocks);
         if (!credits) return { conversationId: session.id, text: reply.text, blocks };
 
         const turn = session.turn;
@@ -723,6 +771,30 @@ export class AssistantService {
   }
 
   /** An answer from the fact sheet still shows which pages it came from. */
+  /** A free answer written from the live read alone, without a model call. */
+  private async liveAnswer(message: string, kind: "alerts" | "advisories"): Promise<{ text: string; blocks: Block[] } | null> {
+    const live = this.deps.live;
+    if (!live) return null;
+    const scope = scopeOf(message);
+    if (kind === "alerts") {
+      const alerts = await live.alerts(scope);
+      return { text: alertsText(alerts), blocks: [liveStatusBlock(alerts, null)] };
+    }
+    const [alerts, advisories] = await Promise.all([live.alerts(scope), live.advisories(scope)]);
+    return { text: advisoriesText(advisories), blocks: [liveStatusBlock(alerts, advisories)] };
+  }
+
+  /** Reads alerts and advisories for the question, shows the card, and gives the model only the facts. */
+  private async toolLiveStatus(args: unknown, fallback: string, blocks: Block[]) {
+    const live = this.deps.live;
+    if (!live) return { error: "unavailable", message: "Live status can't be read here. Point to Radar's alerts page instead." };
+    const about = typeof (args as { about?: unknown })?.about === "string" ? (args as { about: string }).about : "";
+    const scope = scopeOf(about.trim() || fallback);
+    const [alerts, advisories] = await Promise.all([live.alerts(scope), live.advisories(scope)]);
+    if (!blocks.some((block) => block.type === "live_status")) blocks.push(liveStatusBlock(alerts, advisories));
+    return liveFacts(alerts, advisories);
+  }
+
   private citeFacts(question: string, text: string, blocks: Block[]) {
     const sites = this.deps.sites;
     if (!sites?.facts || blocks.some((block) => block.type === "action" || block.type === "handoff")) return;
@@ -806,7 +878,9 @@ export class AssistantService {
     const asked = customerMessage?.role === "user" ? customerMessage.content : "";
     // A request that can only mean the report or the subscription gets that quote, not whatever the model picks.
     const earlier = session.messages.slice(0, -1).filter((message) => message.role === "user").map((message) => message.content).join("\n");
-    const route = explicitPurchase(asked, earlier);
+    // Warning signs with the live read in hand: the model reports it and stops, so the service that fits is quoted in any case.
+    const riskRoute = session.turn?.liveStatus ? { capabilityId: session.turnAssets.size ? "asset_scorecard" : "market_regime", needsAssets: false } : null;
+    const route: { capabilityId: string; needsAssets: boolean } | null = explicitPurchase(asked, earlier) ?? riskRoute;
     const forced = route && tools.some((tool) => tool.function.name === `propose_${route.capabilityId}`) ? route : null;
     if (forced?.needsAssets) {
       const text = forced.capabilityId === "monthly_intelligence" ? ASK_SUBSCRIPTION_ASSETS : ASK_REPORT_ASSETS;
@@ -821,6 +895,13 @@ export class AssistantService {
       session.messages.push({ role: "assistant", content: null, tool_calls: [{ id, type: "function", function: { name: "search_sagitta_sites", arguments: JSON.stringify(args) } }] });
       session.messages.push({ role: "tool", tool_call_id: id, content: JSON.stringify(this.toolSearchSites(session, args, blocks)) });
     }
+    // Warning signs now: what SCE shows is read first, so the answer starts from it.
+    if (session.turn?.liveStatus && this.deps.live) {
+      const id = `call_live_${session.messages.length}`;
+      const args = { about: scopeOf(asked).label ?? "" };
+      session.messages.push({ role: "assistant", content: null, tool_calls: [{ id, type: "function", function: { name: "check_live_status", arguments: JSON.stringify(args) } }] });
+      session.messages.push({ role: "tool", tool_call_id: id, content: JSON.stringify(await this.toolLiveStatus(args, asked, blocks)) });
+    }
 
     try {
       for (let round = 0; round < this.limits.maxToolRounds; round += 1) {
@@ -834,7 +915,7 @@ export class AssistantService {
         correction = null;
         if (response.toolCalls.length === 0) {
           // "The sites don't say" is only true once they've been searched.
-          const unsearched = !blocks.some((block) => block.type === "sagitta_sources" || block.type === "action" || block.type === "handoff");
+          const unsearched = !blocks.some((block) => block.type === "sagitta_sources" || block.type === "action" || block.type === "handoff" || block.type === "live_status");
           const facts = this.deps.sites?.facts;
           const grounded = facts ? citedSections(facts, response.content ?? "").length > 0 : blocks.some((block) => block.type === "sagitta_system" || block.type === "sagitta_directory");
           if (this.deps.sites && !limited && !searchNudged && unsearched && (saysNotCovered(response.content ?? "") || OFFERS_TO_SEARCH.test(response.content ?? "") || (namesSagitta(question) && !grounded))) {
@@ -953,6 +1034,20 @@ export class AssistantService {
           },
         },
       },
+      ...(this.deps.live
+        ? [{
+          type: "function" as const,
+          function: {
+            name: "check_live_status",
+            description: "Read what Sagitta's Continuity Engine shows right now: Radar's active alerts on oracles, bridges, and liquidity pools, and recent crypto security advisories from SCE's case library. Free. Also shows the customer a card. Use for anything happening now with a token, network, or protocol.",
+            parameters: {
+              type: "object",
+              properties: { about: { type: "string", description: "The token, network, or protocol asked about, such as 'Ethereum' or 'Aave'. Empty for everything." } },
+              additionalProperties: false,
+            },
+          },
+        }]
+        : []),
       {
         type: "function",
         function: {
@@ -978,6 +1073,10 @@ export class AssistantService {
       if (name === "lookup_sagitta") return this.toolLookupSagitta(session, args, blocks);
       if (name === "search_sagitta_sites") return this.toolSearchSites(session, args, blocks);
       if (name === "open_portfolio_plan") return await this.toolOpenPlan(blocks);
+      if (name === "check_live_status") {
+        const asked = [...session.messages].reverse().find((message) => message.role === "user");
+        return await this.toolLiveStatus(args, asked?.role === "user" ? asked.content : "", blocks);
+      }
       if (name.startsWith("propose_")) return await this.toolPropose(session, name.slice("propose_".length), args, blocks);
       return { error: "unknown_tool", message: `There is no tool named ${name}.` };
     } catch (error) {
