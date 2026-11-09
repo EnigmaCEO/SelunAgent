@@ -7,9 +7,9 @@ import { appendReferralParam } from "@/app/lib/referral";
 import { useReferralCapture } from "@/app/lib/use-referral-capture";
 import { PaymentLogos } from "./payment-logos";
 import { ApiError, cancelSubscription, capturePurchase, declineAction, executeAction, fetchAction, fetchPurchaseStatus, fetchStatus, requestChallenge, sendChat, startCheckout, updateSubscriptionAssets, fetchCredits } from "./api";
-import { BlockView, RichText, type ApprovalPhase } from "./blocks";
+import { BlockView, RichText, type ApprovalPhase, type WalletMethod, type WalletPairing } from "./blocks";
 import type { ActionView, AssistantStatus, Block, ChatItem, Conversation, PaymentMethodId, PaymentOption, PayPalStatusView, CreditView } from "./types";
-import { assertWalletAvailable, signX402Challenge, toBaseUnits, WalletError } from "./wallet";
+import { assertWalletAvailable, connectPhoneWallet, PHONE_WALLET_PROJECT_ID, qrDataUrl, signX402Challenge, toBaseUnits, WalletError, type PhoneWallet } from "./wallet";
 import styles from "./chat.module.css";
 
 const STORAGE_KEY = "selun.chat.v1";
@@ -499,7 +499,38 @@ export default function ChatApp() {
     }
   }, [active?.serverId, checkQuote]);
 
-  const handleApprove = useCallback(async (action: ActionView, option: PaymentOption) => {
+  const [walletPairings, setWalletPairings] = useState<Record<string, WalletPairing | null>>({});
+  // A phone wallet stays connected for the next purchase, so it's scanned once.
+  const phoneWalletRef = useRef<PhoneWallet | null>(null);
+  const pairingCancels = useRef<Record<string, () => void>>({});
+  const handleCancelPairing = useCallback((action: ActionView) => pairingCancels.current[action.id]?.(), []);
+
+  /** The connected phone wallet for this network, or a new connection by QR code. */
+  const phoneWalletFor = useCallback(async (actionId: string, network: string): Promise<PhoneWallet> => {
+    if (phoneWalletRef.current?.network === network) return phoneWalletRef.current;
+    await phoneWalletRef.current?.disconnect();
+    phoneWalletRef.current = null;
+    let cancel: () => void = () => undefined;
+    const cancelled = new Promise<never>((_, reject) => {
+      cancel = () => reject(new WalletError("rejected", "You cancelled connecting a wallet. You have not been charged."));
+    });
+    pairingCancels.current[actionId] = cancel;
+    try {
+      const wallet = await Promise.race([
+        connectPhoneWallet(network, (uri) => {
+          void qrDataUrl(uri).then((dataUrl) => setWalletPairings((previous) => ({ ...previous, [actionId]: { dataUrl, uri } })));
+        }),
+        cancelled,
+      ]);
+      phoneWalletRef.current = wallet;
+      return wallet;
+    } finally {
+      delete pairingCancels.current[actionId];
+      setWalletPairings((previous) => ({ ...previous, [actionId]: null }));
+    }
+  }, []);
+
+  const handleApprove = useCallback(async (action: ActionView, option: PaymentOption, walletMethod: WalletMethod = "browser") => {
     const serverId = active?.serverId;
     if (!serverId) return;
     const setPhase = (phase: ApprovalPhase) => setPhases((previous) => ({ ...previous, [action.id]: phase }));
@@ -529,13 +560,21 @@ export default function ChatApp() {
 
     let signed = false;
     try {
-      assertWalletAvailable();
+      if (walletMethod === "browser") assertWalletAvailable();
       setPhase("preparing");
       const { paymentRequired, action: fresh } = await requestChallenge(serverId, action.id);
       applyActionView(fresh);
 
+      let phone: PhoneWallet | undefined;
+      if (walletMethod === "phone") {
+        const network = paymentRequired.accepts.find((accept) => accept.network.startsWith("eip155:"))?.network;
+        if (!network) throw new WalletError("wrong_network", "This payment can't be signed from a phone wallet. You have not been charged.");
+        setPhase("connecting");
+        phone = await phoneWalletFor(action.id, network);
+      }
+
       setPhase("signing");
-      const { paymentSignature } = await signX402Challenge(paymentRequired, toBaseUnits(fresh.priceUsdc));
+      const { paymentSignature } = await signX402Challenge(paymentRequired, toBaseUnits(fresh.priceUsdc), phone);
       signed = true;
 
       setPhase("submitting");
@@ -547,6 +586,11 @@ export default function ChatApp() {
         return;
       }
       if (error instanceof ApiError && error.action) applyActionView(error.action);
+      // A phone session that failed for any reason but a "no" is dropped, so the next try shows a fresh QR code.
+      if (walletMethod === "phone" && !signed && !(error instanceof WalletError && error.code === "rejected")) {
+        void phoneWalletRef.current?.disconnect();
+        phoneWalletRef.current = null;
+      }
       // A repeated request lost the race to the first one, which is running fine.
       if (error instanceof ApiError && error.code === "action_not_payable" && (error.action?.state === "executing" || error.action?.state === "completed")) return;
       const message = error instanceof WalletError || error instanceof ApiError
@@ -556,7 +600,7 @@ export default function ChatApp() {
     } finally {
       setPhase("idle");
     }
-  }, [active?.serverId, activeId, applyActionView, replaceQuote]);
+  }, [active?.serverId, activeId, applyActionView, phoneWalletFor, replaceQuote]);
 
   const handleCancelSubscription = useCallback(async (action: ActionView) => {
     const token = action.paypal?.token;
@@ -797,6 +841,9 @@ export default function ChatApp() {
                             onNewQuote={handleNewQuote}
                             previousFor={previousFor}
                             onApprove={handleApprove}
+                            walletPairing={block.type === "action" ? walletPairings[block.action.id] ?? null : null}
+                            phoneWalletAvailable={Boolean(PHONE_WALLET_PROJECT_ID)}
+                            onCancelPairing={handleCancelPairing}
                             onDecline={handleDecline}
                             onCancelSubscription={handleCancelSubscription}
                             onUpdateAssets={handleUpdateAssets}

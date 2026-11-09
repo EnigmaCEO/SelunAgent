@@ -1,10 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { Fragment, useState, type FormEvent, type ReactNode } from "react";
+import { Fragment, useState, useSyncExternalStore, type FormEvent, type ReactNode } from "react";
 import { ApiError, downloadReport, emailReport } from "./api";
 import type { ActionView, Block, CoverageItem, PaymentOption, PublicCapability, ResultDocument, ResultSection, SiteSource, SystemDetail, SystemSummary, Tone } from "./types";
+import { hasBrowserWallet } from "./wallet";
 import styles from "./chat.module.css";
+
+/** A browser wallet is injected before the page runs and isn't watched for changes. */
+const noSubscription = () => () => undefined;
 
 export function formatUsdc(amount: string): string {
   const value = Number(amount);
@@ -292,13 +296,18 @@ function ResultCard({ document, reportToken, monthly = false, suggestedEmail = n
   );
 }
 
-export type ApprovalPhase = "idle" | "preparing" | "signing" | "submitting" | "redirecting";
+export type ApprovalPhase = "idle" | "preparing" | "connecting" | "signing" | "submitting" | "redirecting";
+/** Which wallet signs a crypto payment: one in this browser, or one on a phone, connected by QR code. */
+export type WalletMethod = "browser" | "phone";
+/** A QR code waiting for a phone wallet to scan it. */
+export type WalletPairing = { dataUrl: string; uri: string };
 
 const TERMS_UP_FRONT = new Set(["comprehensive_report", "monthly_intelligence"]);
 
 const PHASE_LABEL: Record<ApprovalPhase, string> = {
   idle: "",
   preparing: "Confirming price…",
+  connecting: "Waiting for your wallet…",
   redirecting: "Opening checkout…",
   signing: "Check your wallet…",
   submitting: "Sending approval…",
@@ -361,14 +370,21 @@ function ActionCard(props: {
   error: string | null;
   onCheckQuote: (action: ActionView) => Promise<ActionView | null>;
   onNewQuote: (action: ActionView) => void;
-  onApprove: (action: ActionView, option: PaymentOption) => void;
+  onApprove: (action: ActionView, option: PaymentOption, wallet?: WalletMethod) => void;
   onDecline: (action: ActionView) => void;
   onCancelSubscription: (action: ActionView) => void;
   onUpdateAssets: (action: ActionView, assets: string[]) => void;
   onAsk: (text: string) => void;
   previous?: PreviousPurchase | null;
+  walletPairing?: WalletPairing | null;
+  phoneWalletAvailable?: boolean;
+  onCancelPairing?: (action: ActionView) => void;
 }) {
-  const { previous, action, phase, error, onCheckQuote, onNewQuote, onApprove, onDecline, onCancelSubscription, onUpdateAssets, onAsk } = props;
+  const { previous, action, phase, error, onCheckQuote, onNewQuote, onApprove, onDecline, onCancelSubscription, onUpdateAssets, onAsk, walletPairing, phoneWalletAvailable, onCancelPairing } = props;
+  // Read after the first render, since the server can't see the browser's wallet.
+  const browserWallet = useSyncExternalStore(noSubscription, hasBrowserWallet, () => null);
+  const [walletChoice, setWalletChoice] = useState<WalletMethod | null>(null);
+  const walletMethod: WalletMethod = walletChoice ?? (browserWallet === false && phoneWalletAvailable ? "phone" : "browser");
   const busy = phase !== "idle";
   const options = action.paymentOptions ?? [];
   const retryOption = options.find((option) => option.flow === "wallet_signature");
@@ -388,7 +404,7 @@ function ActionCard(props: {
   };
   const pay = (option: PaymentOption) => {
     setChosen(option);
-    onApprove(action, option);
+    onApprove(action, option, option.flow === "wallet_signature" ? walletMethod : undefined);
   };
   const subscription = action.paypal?.kind === "subscription" ? action.paypal : null;
   const subscriptionRow = subscription && subscription.subscriptionStatus && subscription.subscriptionStatus !== "created" && (
@@ -556,6 +572,17 @@ function ActionCard(props: {
         <p className={styles.inlineError} role="alert">{error ?? action.paypal?.message}</p>
       )}
 
+      {busy && phase === "connecting" && walletPairing && (
+        <div className={styles.walletQr} role="group" aria-label="Connect a phone wallet">
+          {/* eslint-disable-next-line @next/next/no-img-element -- a data URL drawn in this browser */}
+          <img src={walletPairing.dataUrl} alt="QR code to connect your wallet" width={220} height={220} />
+          <p>Scan with your wallet app, such as Coinbase Wallet, MetaMask, or Rainbow. You&apos;ll approve the exact amount there.</p>
+          <div className={styles.walletQrActions}>
+            <a href={walletPairing.uri} className={styles.textButton}>Open wallet app on this phone</a>
+            <button type="button" className={styles.textButton} onClick={() => onCancelPairing?.(action)}>Cancel</button>
+          </div>
+        </div>
+      )}
       {busy ? (
         <div className={styles.actionButtons}>
           <button type="button" className={styles.approveButton} disabled>{PHASE_LABEL[phase]}</button>
@@ -588,6 +615,19 @@ function ActionCard(props: {
               </label>
             ))}
           </fieldset>
+          {selected?.flow === "wallet_signature" && phoneWalletAvailable && (
+            <fieldset className={styles.walletChoice} disabled={checking}>
+              <legend>Sign with</legend>
+              <label>
+                <input type="radio" name={`wallet-${action.id}`} checked={walletMethod === "browser"} onChange={() => setWalletChoice("browser")} />
+                {browserWallet === false ? "A wallet in this browser (none found)" : "A wallet in this browser"}
+              </label>
+              <label>
+                <input type="radio" name={`wallet-${action.id}`} checked={walletMethod === "phone"} onChange={() => setWalletChoice("phone")} />
+                A phone wallet (scan a QR code)
+              </label>
+            </fieldset>
+          )}
           <div className={styles.actionButtons}>
             <button type="button" className={styles.approveButton} disabled={!selected || checking} onClick={() => void continueToPay()}>
               {checking ? "Checking…" : selected ? `Continue with ${selected.shortLabel}` : "Choose a payment method"}
@@ -717,18 +757,21 @@ export function BlockView(props: {
   referralHref: (href: string) => string;
   onCheckQuote: (action: ActionView) => Promise<ActionView | null>;
   onNewQuote: (action: ActionView) => void;
-  onApprove: (action: ActionView, option: PaymentOption) => void;
+  onApprove: (action: ActionView, option: PaymentOption, wallet?: WalletMethod) => void;
   onDecline: (action: ActionView) => void;
   onCancelSubscription: (action: ActionView) => void;
   onUpdateAssets: (action: ActionView, assets: string[]) => void;
   onAsk: (text: string) => void;
   previousFor?: (action: ActionView) => PreviousPurchase | null;
   disabled: boolean;
+  walletPairing?: WalletPairing | null;
+  phoneWalletAvailable?: boolean;
+  onCancelPairing?: (action: ActionView) => void;
 }) {
   const { block } = props;
   switch (block.type) {
     case "action":
-      return <ActionCard action={block.action} phase={props.phase} error={props.actionError} onUpdateAssets={props.onUpdateAssets} onCheckQuote={props.onCheckQuote} onNewQuote={props.onNewQuote} previous={props.previousFor?.(block.action) ?? null} onApprove={props.onApprove} onDecline={props.onDecline} onCancelSubscription={props.onCancelSubscription} onAsk={props.onAsk} />;
+      return <ActionCard action={block.action} phase={props.phase} error={props.actionError} onUpdateAssets={props.onUpdateAssets} onCheckQuote={props.onCheckQuote} onNewQuote={props.onNewQuote} previous={props.previousFor?.(block.action) ?? null} onApprove={props.onApprove} onDecline={props.onDecline} onCancelSubscription={props.onCancelSubscription} onAsk={props.onAsk} walletPairing={props.walletPairing} phoneWalletAvailable={props.phoneWalletAvailable} onCancelPairing={props.onCancelPairing} />;
     case "sagitta_sources":
       return <SourcesCard sources={block.sources} readAt={block.readAt} />;
     case "sagitta_system":
