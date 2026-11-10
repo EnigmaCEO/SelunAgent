@@ -67,5 +67,6 @@
     "tailwindcss": "^4.1.18",
     "tsx": "4.21.0",
     "typescript": "^5"
-  }
+  },
+  "license": "Apache-2.0"
 }

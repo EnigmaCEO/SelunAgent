@@ -8,6 +8,51 @@ This repo combines:
 - an Express backend for agent payment flows, x402 resources, treasury operations, and referral persistence
 - retail and agent-facing payment paths, including card checkout, onchain USDC settlement, promo codes, and referrals
 
+## Selun AI: PayPal, AI, and AG Grid
+
+Selun AI is a crypto intelligence assistant for beginners. Ask in plain language ("Tell me more about Bitcoin", then "What are the risks?"). Selun explains, picks the right analysis, and shows its exact price. Pay with PayPal, and the analysis runs and comes back as a readable result with an AI-written summary and a PDF. Buy a second analysis, and an AG Grid compares them; ask "Compare Bitcoin and Ethereum", and Selun explains the difference from your own purchased results.
+
+Live demo: https://selun.sagitta.systems/ (PayPal sandbox during judging).
+
+### How PayPal is used
+
+All PayPal calls are server-side REST calls, in `backend/src/assistant/paypal-client.ts` and `backend/src/assistant/paypal-commerce.service.ts`:
+
+- **Orders API v2** (`/v2/checkout/orders`, create and capture): one-time purchase of an analysis or report. The customer approves at PayPal; Selun captures the payment, then runs the analysis.
+- **Subscriptions API** with **Catalog Products** and **Billing Plans**: the monthly intelligence report. Selun creates the product and plan, starts the subscription, reads its status and renewal transactions, and supports cancellation.
+- **Payments API**: reads captures and issues refunds (`/v2/payments/captures/{id}/refund`, `/v1/payments/sale/{id}/refund`).
+- **Webhooks** with signature verification (`/v1/notifications/verify-webhook-signature`) at `POST /assistant/paypal/webhook`: captures completed, pending, declined, refunded, or reversed; orders approved; subscriptions activated, updated, or failed; subscription payments.
+- **Disputes API**: reads a dispute so access to a disputed purchase can be revoked.
+- **OAuth 2.0** client credentials.
+
+Only a verified capture or a verified webhook event unlocks a paid result. Purchases are recorded durably, so a result survives a restart. See [backend/docs/paypal-boundary.md](backend/docs/paypal-boundary.md).
+
+### How AI is used
+
+- **OpenAI Chat Completions with tool calling** (`backend/src/assistant/openai-client.ts`, `assistant.service.ts`). The model understands the question in context, explains concepts, and calls tools to find a service, resolve an asset, show a quote card, read Sagitta Radar's live alerts, or compare purchased analyses.
+- The model **cannot charge or run anything**. Its tools only show quotes; the customer pays in PayPal, and the server verifies the payment before the analysis runs.
+- **Every figure comes from code.** Result cards are built by `result-presenter.ts`, not the model. The model's plain-language summary is checked against the result, and `claim-guard.ts` blocks prices with no source and investment advice.
+- **Comparisons** (`compare_analyses`): the browser sends only signed report tokens for its purchases. The server reads each verified result, refusing refunded or forged ones, and works out which asset leads each measure before the model explains it.
+
+### How AG Grid is used
+
+`app/chat/AssetGrid.tsx` uses **AG Grid Community** (`ag-grid-community` and `ag-grid-react` 36.2.0, MIT) to compare every asset the customer has analyzed: overall score, price risk, volatility, largest drop, market standing, and the date of each analysis. Columns sort (unmeasured values always last), scores show as bars, header tooltips explain each measure, and **Download CSV** exports with units. A one-line finding above the grid ("Ethereum had the higher price risk (55 vs 38) and the deeper largest drop…") is computed from the grid's own rows. The grid appears under a result once there's something to compare, and in chat when Selun answers a comparison question. It loads on demand, so the first page stays light.
+
+### Run it locally with the PayPal sandbox
+
+1. Create a sandbox REST app at https://developer.paypal.com (Apps & Credentials, Sandbox), and a sandbox personal account under Testing Tools to pay with.
+2. Install and copy the env templates (see Local Setup below).
+3. In `backend/.env`, set at least:
+   - `PAYPAL_ENV=sandbox`, `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` (from the sandbox app)
+   - `PAYPAL_RETURN_BASE_URL=http://localhost:3000` (the default)
+   - `OPENAI_API_KEY` and `OPENAI_MODEL`
+   - `SELUN_REFERRAL_INTERNAL_TOKEN`: any long random string, which signs report tokens for PDFs and comparisons. Use the same value in the frontend `.env.local`.
+   - `PAYPAL_WEBHOOK_ID` is optional locally: purchases are confirmed by capture on return. To receive webhooks, expose `/assistant/paypal/webhook` through a tunnel and register it in the sandbox app.
+   - Running the analyses themselves uses the backend's x402 service settings, described in `backend/README.md`.
+4. `npm run backend:dev` and `npm run dev`, then open http://localhost:3000 and pay with the sandbox personal account.
+
+Tests: `npm run backend:test` (416 backend tests, including PayPal webhook, capture, refund, and dispute handling, and the comparison tool).
+
 ## What Lives Here
 
 Selun currently supports four primary product surfaces:
@@ -231,9 +276,7 @@ Selun AI also answers questions about Sagitta, for free and with no commerce, fr
 
 Routing check: `npm run assistant:routing-eval -- --runs=3` sends those requests to the configured model and reports any that reach the wrong service. It uses model tokens, but nothing is paid for or run. If a customer names a token and the model quotes only Market Regime, the server adds that token's Asset Scorecard quote.
 
-Integration points, defined but not implemented, are in `backend/src/assistant/commerce.ts`:
-
-- `CheckoutProvider` and `EntitlementVerifier` for PayPal purchases and subscriptions. The x402 routes need an entitlement-based entry point before these can authorize execution.
+Hosted checkouts (PayPal, and Stripe for cards) implement `CheckoutProvider` in `backend/src/assistant/commerce.ts`. Once the payment is verified, the backend runs the same paid service a wallet purchase would, and records the result.
 
 Paid chat results have a PDF download and an email option on their card, served by `backend/src/assistant/report.service.ts`. A report is built only from the paid route's stored result and frozen on first use in `backend/data/report-fulfillment.json`, so it needs that volume to persist. The browser sends only a signed report token. The next payment rail's records and entry point are described in [backend/docs/paypal-boundary.md](backend/docs/paypal-boundary.md).
 
@@ -276,4 +319,4 @@ Backend-only referral helpers live under `backend/package.json`, including commi
 
 ## License
 
-MIT
+Licensed under the [Apache License, Version 2.0](LICENSE). See [NOTICE](NOTICE).
