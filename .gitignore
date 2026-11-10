@@ -41,3 +41,4 @@ backend/data/
 backend/src/scripts/seed-referral-wallets.ts
 backend/src/scripts/simulate-agent-referrals.ts
 backend/src/scripts/backfill-referral-commissions.ts
+docs/NARRATIVE.md
