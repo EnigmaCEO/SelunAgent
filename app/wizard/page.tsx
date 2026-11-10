@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Fragment, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { appendBuilderCode } from "@/app/lib/builder-code";
+import { qrDataUrl } from "@/app/chat/wallet";
 import {
   ACTIVE_REFERRAL_CODE_STORAGE_KEY,
   isAgentProgramReferrerId,
@@ -4643,9 +4644,10 @@ function SelunAllocationWizard() {
       provider.on?.("display_uri", (uri: unknown) => {
         if (typeof uri !== "string") return;
         setWalletConnectUri(uri);
-        setWalletConnectQrDataUrl(
-          `https://api.qrserver.com/v1/create-qr-code/?size=280x280&data=${encodeURIComponent(uri)}`,
-        );
+        // The pairing link holds the session key, so the QR code is drawn locally, never by another service.
+        void qrDataUrl(uri)
+          .then(setWalletConnectQrDataUrl)
+          .catch(() => setWalletConnectQrDataUrl(null));
       });
 
       await provider.connect?.({
