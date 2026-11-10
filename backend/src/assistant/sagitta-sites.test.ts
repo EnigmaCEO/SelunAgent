@@ -611,6 +611,8 @@ test("old alerts can't come back through an index refresh, or the copy it saves"
 test("the prompt sends what's happening now to the live read, and past incidents to Threat Case Relevance", () => {
   const prompt = buildSystemPrompt("November 8, 2026");
   assert.match(prompt, /happening now[^\n]*call check_live_status[^\n]*never say there's nothing/);
+  // Curiosity gets a free answer first; a quote waits until they ask for analysis.
+  assert.match(prompt, /Curiosity about a named token[^\n]*tell me about Bitcoin[^\n]*general education[^\n]*Don't propose a service yet/);
   assert.match(prompt, /any recent incidents involving Aave\?[^\n]*propose_sce_case_relevance/);
   assert.match(prompt, /status with the date it was reported/);
 });
