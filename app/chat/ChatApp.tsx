@@ -493,8 +493,10 @@ export default function ChatApp() {
     setActionErrors((previous) => ({ ...previous, [action.id]: null }));
     try {
       return await checkQuote(active?.serverId ?? null, action);
-    } catch {
-      setActionErrors((previous) => ({ ...previous, [action.id]: "We couldn't reach checkout. You have not been charged. Please try again." }));
+    } catch (error) {
+      // A security check or restart has its own advice; keep it instead of a generic line.
+      const known = error instanceof ApiError && ["security_check", "service_unavailable", "network_error"].includes(error.code);
+      setActionErrors((previous) => ({ ...previous, [action.id]: known ? error.message : "We couldn't reach checkout. You have not been charged. Please try again." }));
       return null;
     }
   }, [active?.serverId, checkQuote]);
