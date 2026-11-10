@@ -1840,3 +1840,138 @@
   justify-content: center;
   gap: 4px 16px;
 }
+
+/* Asset comparison (AG Grid) */
+.gridCard {
+  margin: 14px 0 4px;
+  padding: 14px;
+  border: 1px solid #dbe6f1;
+  border-radius: 12px;
+  background: #f7fafd;
+}
+
+.gridHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.gridHeader h4 {
+  margin: 0;
+  font-size: 0.98rem;
+}
+
+.gridHeader p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.gridHeader button {
+  flex: none;
+  white-space: nowrap;
+}
+
+.gridFrame {
+  width: 100%;
+  min-width: 0;
+}
+
+.gridFrame :global(.ag-row).gridCurrentRow {
+  background-color: #eaf4fc;
+}
+
+.gridAsset {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 0;
+  line-height: 1.25;
+}
+
+.gridAsset strong span {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.gridAsset small {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.gridAsset small.gridCurrent {
+  color: var(--brand);
+  font-weight: 700;
+}
+
+.gridScore {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+}
+
+.gridScore strong {
+  min-width: 2ch;
+  text-align: right;
+}
+
+.gridBar {
+  flex: 1;
+  max-width: 64px;
+  height: 5px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: #e4edf6;
+}
+
+.gridBar span {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+}
+
+.gridGood {
+  background: var(--positive);
+}
+
+.gridFair {
+  background: #c98a1b;
+}
+
+.gridWeak {
+  background: var(--negative);
+}
+
+.gridEmpty {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+@media (max-width: 640px) {
+  .gridCard {
+    padding: 10px;
+  }
+
+  .gridHeader {
+    flex-direction: column;
+    gap: 6px;
+  }
+}
+
+/* Rows decide the height: no empty space under a short list. */
+.gridFrame :global(.ag-grid-scrolling-rows.ag-layout-auto-height) {
+  min-height: 0;
+  /* The horizontal scrollbar sits over the bottom of this area; keep the last row clear of it. */
+  padding-bottom: 16px;
+}
+
+.gridFrame :global(.ag-cell) {
+  display: flex;
+  align-items: center;
+}
+
+.gridFrame :global(.ag-right-aligned-cell) {
+  justify-content: flex-end;
+}

@@ -1,14 +1,18 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { Fragment, useState, useSyncExternalStore, type FormEvent, type ReactNode } from "react";
 import { ApiError, downloadReport, emailReport } from "./api";
-import type { ActionView, Block, CoverageItem, PaymentOption, PublicCapability, ResultDocument, ResultSection, SiteSource, SystemDetail, SystemSummary, Tone } from "./types";
+import type { ActionView, Block, ComparisonRow, CoverageItem, PaymentOption, PublicCapability, ResultDocument, ResultSection, SiteSource, SystemDetail, SystemSummary, Tone } from "./types";
 import { hasBrowserWallet } from "./wallet";
 import styles from "./chat.module.css";
 
 /** A browser wallet is injected before the page runs and isn't watched for changes. */
 const noSubscription = () => () => undefined;
+
+/** AG Grid loads only when a result has something to compare. */
+const AssetGrid = dynamic(() => import("./AssetGrid"), { ssr: false, loading: () => <p className={styles.quietStatus}>Loading the comparison…</p> });
 
 export function formatUsdc(amount: string): string {
   const value = Number(amount);
@@ -228,7 +232,7 @@ function reportGroups(sections: ResultSection[]): ReportGroup[] | null {
   return groups;
 }
 
-function ResultCard({ document, reportToken, monthly = false, suggestedEmail = null, children }: { document: ResultDocument; reportToken?: string | null; monthly?: boolean; suggestedEmail?: string | null; children?: ReactNode }) {
+function ResultCard({ document, reportToken, monthly = false, suggestedEmail = null, comparison = null, children }: { document: ResultDocument; reportToken?: string | null; monthly?: boolean; suggestedEmail?: string | null; comparison?: ComparisonRow[] | null; children?: ReactNode }) {
   const { provenance } = document;
   const more = document.sections.filter((section) => section.more);
   const groups = reportGroups(document.sections.filter((section) => !section.more));
@@ -271,6 +275,7 @@ function ResultCard({ document, reportToken, monthly = false, suggestedEmail = n
           {children}
         </>
       )}
+      {comparison && <AssetGrid rows={comparison} title={comparison.some((row) => !row.current) ? "Compare with your other analyses" : "Compare these assets"} />}
       {more.length > 0 ? (
         <details className={styles.moreInfo}>
           <summary>Full analysis and methodology</summary>
@@ -376,11 +381,12 @@ function ActionCard(props: {
   onUpdateAssets: (action: ActionView, assets: string[]) => void;
   onAsk: (text: string) => void;
   previous?: PreviousPurchase | null;
+  comparison?: ComparisonRow[] | null;
   walletPairing?: WalletPairing | null;
   phoneWalletAvailable?: boolean;
   onCancelPairing?: (action: ActionView) => void;
 }) {
-  const { previous, action, phase, error, onCheckQuote, onNewQuote, onApprove, onDecline, onCancelSubscription, onUpdateAssets, onAsk, walletPairing, phoneWalletAvailable, onCancelPairing } = props;
+  const { previous, comparison, action, phase, error, onCheckQuote, onNewQuote, onApprove, onDecline, onCancelSubscription, onUpdateAssets, onAsk, walletPairing, phoneWalletAvailable, onCancelPairing } = props;
   // Read after the first render, since the server can't see the browser's wallet.
   const browserWallet = useSyncExternalStore(noSubscription, hasBrowserWallet, () => null);
   const [walletChoice, setWalletChoice] = useState<WalletMethod | null>(null);
@@ -458,7 +464,7 @@ function ActionCard(props: {
     return (
       <div className={styles.stack} id={`result-${action.id}`}>
         {subscriptionRow}
-        <ResultCard document={action.document} reportToken={action.reportToken} monthly={Boolean(subscription)} suggestedEmail={action.paypal?.payerEmail ?? null}>
+        <ResultCard document={action.document} reportToken={action.reportToken} monthly={Boolean(subscription)} suggestedEmail={action.paypal?.payerEmail ?? null} comparison={comparison}>
         {action.explanationStatus === "pending" && <p className={styles.quietStatus} role="status"><span className={styles.spinner} aria-hidden />Writing a plain-language summary…</p>}
         {action.explanation && (
           <div className={styles.explanation}>
@@ -763,6 +769,7 @@ export function BlockView(props: {
   onUpdateAssets: (action: ActionView, assets: string[]) => void;
   onAsk: (text: string) => void;
   previousFor?: (action: ActionView) => PreviousPurchase | null;
+  comparisonFor?: (action: ActionView) => ComparisonRow[] | null;
   disabled: boolean;
   walletPairing?: WalletPairing | null;
   phoneWalletAvailable?: boolean;
@@ -771,7 +778,7 @@ export function BlockView(props: {
   const { block } = props;
   switch (block.type) {
     case "action":
-      return <ActionCard action={block.action} phase={props.phase} error={props.actionError} onUpdateAssets={props.onUpdateAssets} onCheckQuote={props.onCheckQuote} onNewQuote={props.onNewQuote} previous={props.previousFor?.(block.action) ?? null} onApprove={props.onApprove} onDecline={props.onDecline} onCancelSubscription={props.onCancelSubscription} onAsk={props.onAsk} walletPairing={props.walletPairing} phoneWalletAvailable={props.phoneWalletAvailable} onCancelPairing={props.onCancelPairing} />;
+      return <ActionCard action={block.action} phase={props.phase} error={props.actionError} onUpdateAssets={props.onUpdateAssets} onCheckQuote={props.onCheckQuote} onNewQuote={props.onNewQuote} previous={props.previousFor?.(block.action) ?? null} comparison={props.comparisonFor?.(block.action) ?? null} onApprove={props.onApprove} onDecline={props.onDecline} onCancelSubscription={props.onCancelSubscription} onAsk={props.onAsk} walletPairing={props.walletPairing} phoneWalletAvailable={props.phoneWalletAvailable} onCancelPairing={props.onCancelPairing} />;
     case "sagitta_sources":
       return <SourcesCard sources={block.sources} readAt={block.readAt} />;
     case "sagitta_system":

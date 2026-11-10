@@ -360,6 +360,24 @@ test("assets outside the screen and unknown assets are each explained", () => {
   }
 });
 
+test("a result carries the card's figures as numbers for comparing, and nothing it didn't measure", () => {
+  const noHistory = { ...V2_CARD, asset: "NEW", name: "New", overallScore: null, priceRiskScore: null, priceHistory: { status: "insufficient", source: "coingecko", closes: 40, reason: "Too few closes." } };
+  const response = paid({ ...v2Result([V2_CARD, noHistory]).result, unscreenedAssets: [{ asset: "DOGE", name: "Dogecoin", priceRiskScore: 0.54, priceHistory: measured(65.2, 62) }] });
+  const { assets } = presentResult("asset_scorecard", "Asset Scorecard", response)!;
+  assert.deepEqual(assets?.[0], {
+    asset: "BTC", name: "Bitcoin", overallScore: 66, priceRisk: 37, marketStanding: 91, liquidity: 100, structure: 94,
+    volatilityPct: 43.8, maxDrawdownPct: 44.7, belowHighPct: 10, category: "Large cap crypto", measuredThrough: "2026-11-05",
+  });
+  assert.equal(assets?.[1].overallScore, null, "no history, no overall score");
+  assert.equal(assets?.[1].priceRisk, null);
+  assert.equal(assets?.[1].volatilityPct, null);
+  assert.deepEqual([assets?.[2].asset, assets?.[2].overallScore, assets?.[2].marketStanding, assets?.[2].priceRisk], ["DOGE", null, null, 54], "outside the screen: price risk only");
+
+  const report = presentResult("comprehensive_report", "Comprehensive Intelligence Report", paid({ marketRegime: {}, policyEnvelope: {}, assetScorecard: v2Result([V2_CARD]).result }))!;
+  assert.equal(report.assets?.[0].overallScore, 66, "a report's asset scores compare too");
+  assert.equal(presentResult("asset_scorecard", "Asset Scorecard", paid({ assetsRequested: ["BTC"], scorecards: [LEGACY_CARD] }))!.assets, undefined, "the first method's scores aren't comparable");
+});
+
 test("the quote discloses the price history before anyone pays", () => {
   const spec = getToolSpec("asset_scorecard")!;
   assert.deepEqual(spec.dataCoverage.map((item) => [item.label, item.included]), [["Price history", true], ["Live prices", false], ["Current news", false], ["Real-time market data", false]]);

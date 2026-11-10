@@ -25,12 +25,33 @@ type SectionBody =
   | { kind: "note"; text: string }
   | { kind: "heading"; text: string };
 
+/**
+ * One asset's figures as numbers, so they can be sorted and compared across analyses.
+ * Scores are 0 to 100 as the card shows them; percentages are as measured. Null means not measured.
+ */
+export type AssetFigures = {
+  asset: string;
+  name: string;
+  overallScore: number | null;
+  priceRisk: number | null;
+  marketStanding: number | null;
+  liquidity: number | null;
+  structure: number | null;
+  volatilityPct: number | null;
+  maxDrawdownPct: number | null;
+  belowHighPct: number | null;
+  category: string | null;
+  measuredThrough: string | null;
+};
+
 export type ResultDocument = {
   schemaVersion: "selun.result.v1";
   capabilityId: string;
   title: string;
   snapshotAt: string | null;
   sections: ResultSection[];
+  /** Asset analyses only: the same figures as the sections, as numbers. */
+  assets?: AssetFigures[];
   coverage: DataCoverageItem[];
   notice: string;
   provenance: {
@@ -286,6 +307,39 @@ function presentScorecardV2(result: Json): ResultSection[] {
   return sections;
 }
 
+const score100 = (value: unknown): number | null => {
+  const parsed = number(value);
+  return parsed === null ? null : Math.round(parsed * 100);
+};
+
+/** The scorecard's figures as numbers, read from the same fields its sections show. Current method only. */
+export function assetFigures(capabilityId: string, result: Json): AssetFigures[] {
+  const scorecard = capabilityId === "comprehensive_report" ? record(result.assetScorecard) : capabilityId === "asset_scorecard" ? result : null;
+  if (!scorecard || !isV2Scorecard(scorecard)) return [];
+  const row = (entry: Json, screened: boolean): AssetFigures => {
+    const history = record(entry.priceHistory);
+    const measured = history.status === "measured" || history.status === "partial";
+    const asset = text(entry.asset) ?? "?";
+    return {
+      asset,
+      name: text(entry.name) ?? asset,
+      overallScore: screened && measured ? score100(entry.overallScore) : null,
+      priceRisk: measured ? score100(entry.priceRiskScore) : null,
+      marketStanding: screened ? score100(entry.qualityScore) : null,
+      liquidity: screened ? score100(entry.liquidityScore) : null,
+      structure: screened ? score100(entry.structuralScore) : null,
+      volatilityPct: number(history.annualizedVolatilityPct),
+      maxDrawdownPct: number(history.maxDrawdownPct),
+      belowHighPct: number(history.currentDrawdownPct),
+      category: screened && text(entry.riskClass) ? humanize(entry.riskClass) : null,
+      measuredThrough: text(history.windowEnd),
+    };
+  };
+  const cards = Array.isArray(scorecard.scorecards) ? scorecard.scorecards.map(record) : [];
+  const unscreened = Array.isArray(scorecard.unscreenedAssets) ? scorecard.unscreenedAssets.map(record) : [];
+  return [...cards.map((card) => row(card, true)), ...unscreened.map((entry) => row(entry, false))];
+}
+
 /** Results paid for under the first method keep the labels and notes they were sold with. */
 function presentScorecard(result: Json): ResultSection[] {
   if (isV2Scorecard(result)) return presentScorecardV2(result);
@@ -530,6 +584,8 @@ export function presentResult(capabilityId: string, title: string, data: Json): 
   const presenter = PRESENTERS[capabilityId];
   if (!presenter) return null;
   const body = record(result);
+  const figures = assetFigures(capabilityId, body);
+  const assets = figures.length > 0 ? { assets: figures } : {};
   if (paypal) {
     return {
       schemaVersion: "selun.result.v1",
@@ -537,6 +593,7 @@ export function presentResult(capabilityId: string, title: string, data: Json): 
       title,
       snapshotAt: text(body.snapshotAt),
       sections: presenter(body),
+      ...assets,
       coverage: coverageFor(capabilityId, body),
       notice: ANALYSIS_NOTICE,
       provenance: {
@@ -559,6 +616,7 @@ export function presentResult(capabilityId: string, title: string, data: Json): 
     title,
     snapshotAt: text(body.snapshotAt) ?? text(body.validUntil),
     sections: presenter(body),
+    ...assets,
     coverage: coverageFor(capabilityId, body),
     notice: ANALYSIS_NOTICE,
     provenance: {

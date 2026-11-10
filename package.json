@@ -40,6 +40,8 @@
     "@x402/extensions": "2.22.0",
     "@x402/fetch": "2.22.0",
     "@x402/svm": "2.22.0",
+    "ag-grid-community": "36.2.0",
+    "ag-grid-react": "36.2.0",
     "decimal.js": "10.6.0",
     "dijkstrajs": "1.0.3",
     "dotenv": "17.3.1",

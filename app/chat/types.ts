@@ -12,12 +12,32 @@ type SectionBody =
 
 export type CoverageItem = { label: string; included: boolean; note: string };
 
+/** One asset's figures from a paid analysis, as numbers. Scores are 0 to 100; null means not measured. */
+export type AssetFigures = {
+  asset: string;
+  name: string;
+  overallScore: number | null;
+  priceRisk: number | null;
+  marketStanding: number | null;
+  liquidity: number | null;
+  structure: number | null;
+  volatilityPct: number | null;
+  maxDrawdownPct: number | null;
+  belowHighPct: number | null;
+  category: string | null;
+  measuredThrough: string | null;
+};
+
+/** A row in the comparison grid: an asset's figures, and which analysis they're from. */
+export type ComparisonRow = AssetFigures & { key: string; source: string; current: boolean };
+
 export type ResultDocument = {
   schemaVersion: "selun.result.v1";
   capabilityId: string;
   title: string;
   snapshotAt: string | null;
   sections: ResultSection[];
+  assets?: AssetFigures[];
   coverage?: CoverageItem[];
   notice?: string;
   provenance: {

@@ -8,7 +8,7 @@ import { useReferralCapture } from "@/app/lib/use-referral-capture";
 import { PaymentLogos } from "./payment-logos";
 import { ApiError, cancelSubscription, capturePurchase, declineAction, executeAction, fetchAction, fetchPurchaseStatus, fetchStatus, requestChallenge, sendChat, startCheckout, updateSubscriptionAssets, fetchCredits } from "./api";
 import { BlockView, RichText, type ApprovalPhase, type WalletMethod, type WalletPairing } from "./blocks";
-import type { ActionView, AssistantStatus, Block, ChatItem, Conversation, PaymentMethodId, PaymentOption, PayPalStatusView, CreditView } from "./types";
+import type { ActionView, AssetFigures, AssistantStatus, Block, ChatItem, ComparisonRow, Conversation, PaymentMethodId, PaymentOption, PayPalStatusView, CreditView } from "./types";
 import { assertWalletAvailable, connectPhoneWallet, PHONE_WALLET_PROJECT_ID, qrDataUrl, signX402Challenge, toBaseUnits, WalletError, type PhoneWallet } from "./wallet";
 import styles from "./chat.module.css";
 
@@ -93,6 +93,12 @@ function hasOpenPayPalWork(action: ActionView): boolean {
 }
 
 /** The server no longer holds this quote, for example after it restarted or the conversation expired. */
+/** "Nov 9", by the UTC day the data is from. */
+function shortDay(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+}
+
 function isQuoteGone(error: unknown): boolean {
   return error instanceof ApiError && (error.code === "conversation_not_found" || error.code === "action_not_found");
 }
@@ -247,6 +253,37 @@ export default function ChatApp() {
     }
     return found;
   }, [conversations]);
+
+  // Each asset's latest figures from the analyses this browser holds, to compare a new result against.
+  const analyzed = useMemo(() => {
+    const latest = new Map<string, { figures: AssetFigures; at: string | null; actionId: string }>();
+    for (const conversation of conversations) {
+      for (const item of conversation.items) {
+        if (item.role !== "assistant") continue;
+        for (const block of item.blocks) {
+          if (block.type !== "action" || block.action.state !== "completed" || !block.action.document?.assets) continue;
+          const at = block.action.document.snapshotAt;
+          for (const figures of block.action.document.assets) {
+            const known = latest.get(figures.asset);
+            if (!known || (at ?? "") > (known.at ?? "")) latest.set(figures.asset, { figures, at, actionId: block.action.id });
+          }
+        }
+      }
+    }
+    return latest;
+  }, [conversations]);
+
+  const comparisonFor = useCallback((action: ActionView): ComparisonRow[] | null => {
+    const own = action.document?.assets ?? [];
+    if (own.length === 0) return null;
+    const mine = new Set(own.map((figures) => figures.asset));
+    const rows: ComparisonRow[] = own.map((figures) => ({ ...figures, key: `${action.id}:${figures.asset}`, source: "This analysis", current: true }));
+    for (const [asset, earlier] of analyzed) {
+      if (mine.has(asset) || earlier.actionId === action.id) continue;
+      rows.push({ ...earlier.figures, key: `${earlier.actionId}:${asset}`, source: earlier.at ? `Earlier · ${shortDay(earlier.at)}` : "Earlier", current: false });
+    }
+    return rows.length >= 2 ? rows : null;
+  }, [analyzed]);
 
   const previousFor = useCallback((action: ActionView) => {
     if (action.state !== "awaiting_approval" || action.expired) return null;
@@ -842,6 +879,7 @@ export default function ChatApp() {
                             onCheckQuote={handleCheckQuote}
                             onNewQuote={handleNewQuote}
                             previousFor={previousFor}
+                            comparisonFor={comparisonFor}
                             onApprove={handleApprove}
                             walletPairing={block.type === "action" ? walletPairings[block.action.id] ?? null : null}
                             phoneWalletAvailable={Boolean(PHONE_WALLET_PROJECT_ID)}
