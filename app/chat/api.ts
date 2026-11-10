@@ -14,6 +14,21 @@ export class ApiError extends Error {
 
 const OFFLINE_MESSAGE = "We can't reach Selun right now. Check your connection and try again.";
 
+/**
+ * A reply that isn't Selun's JSON came from the hosting edge, not from Selun: a browser security check,
+ * a timeout, or a restart. A security check is passed by reloading the page, which a background request can't do.
+ */
+function nonJsonError(response: Response): ApiError {
+  const mitigated = response.headers.get("x-vercel-mitigated");
+  if (mitigated === "challenge" || response.status === 403 || response.status === 429) {
+    return new ApiError("security_check", response.status, "Your browser needs to pass a quick security check. Reload this page, then try again. Nothing was charged.");
+  }
+  if (response.status >= 502 && response.status <= 504) {
+    return new ApiError("service_unavailable", response.status, "Selun took too long to answer or is restarting. Please try again in a moment. Nothing was charged.");
+  }
+  return new ApiError("unknown_error", response.status, "Something went wrong. Please try again.");
+}
+
 async function request<T>(path: string, init: { method?: "GET" | "POST"; conversationId?: string | null; body?: unknown } = {}): Promise<T> {
   let response: Response;
   try {
@@ -30,6 +45,7 @@ async function request<T>(path: string, init: { method?: "GET" | "POST"; convers
     throw new ApiError("network_error", 0, OFFLINE_MESSAGE);
   }
   const payload = (await response.json().catch(() => null)) as (Record<string, unknown> & { action?: ActionView }) | null;
+  if (!payload && !response.ok) throw nonJsonError(response);
   if (!response.ok || !payload || payload.success === false) {
     throw new ApiError(
       typeof payload?.code === "string" ? payload.code : "unknown_error",
