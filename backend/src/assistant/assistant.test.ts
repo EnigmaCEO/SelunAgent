@@ -14,6 +14,7 @@ import { buildRegistry, getToolSpec, TOOL_CAPABILITY_IDS, type CapabilityCatalog
 import { SpendLedger } from "./commerce";
 import { LlmError, OpenAiClient, readOpenAiConfig, type ChatMessage, type LlmClient, type LlmRequest, type LlmResponse } from "./openai-client";
 import { presentResult } from "./result-presenter";
+import { SCORECARD_METHODOLOGY } from "../services/asset-scorecard-v2";
 import { AiCredits, readCreditConfig } from "./ai-credits";
 import { replyIssues } from "./claim-guard";
 import { classifyIntent, explicitPurchase, type Intent } from "./intent";
@@ -1184,7 +1185,6 @@ test("a paid analysis adds ten questions once, and a paid month adds a hundred",
 });
 
 test("comparing assets reads the customer's purchased analyses on the server and shows them in a grid", async () => {
-  const { SCORECARD_METHODOLOGY } = await import("../services/asset-scorecard-v2");
   const history = (vol: number, drawdown: number) => ({ status: "measured", source: "coingecko", closes: 365, windowStart: "2025-11-09", windowEnd: "2026-11-09", annualizedVolatilityPct: vol, maxDrawdownPct: drawdown, currentDrawdownPct: 10, badPrintsExcluded: 0 });
   const card = (asset: string, name: string, overall: number, priceRisk: number, vol: number, drawdown: number) => ({ asset, name, role: "core", riskClass: "large_cap_crypto", selected: true, tokenCategory: "core", qualityScore: 0.95, liquidityScore: 1, structuralScore: 0.94, overallScore: overall, priceRiskScore: priceRisk, priceHistory: history(vol, drawdown) });
   const paid = (decisionId: string, snapshotAt: string, cards: unknown[]) => presentResult("asset_scorecard", "Asset Scorecard", {
