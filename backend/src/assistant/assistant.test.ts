@@ -1196,6 +1196,7 @@ test("comparing assets reads the customer's purchased analyses on the server and
     "token-bitcoin-0000000000": paid("btc-1", "2026-11-09T14:00:00Z", [card("BTC", "Bitcoin", 0.66, 0.38, 44.1, 31.6)]),
     "token-ethereum-000000000": paid("eth-1", "2026-11-10T08:00:00Z", [card("ETH", "Ethereum", 0.49, 0.55, 63.2, 52.9)]),
   };
+  documents["token-bitcoin-0000000000"].charts = [{ asset: "BTC", name: "Bitcoin", closes: [["2025-11-09", 100000], ["2026-05-01", 61000], ["2026-11-09", 80000]], largestDrawdown: null }];
   const read: string[] = [];
   const analyses = {
     async documentFor(token: string) {
@@ -1213,6 +1214,10 @@ test("comparing assets reads the customer's purchased analyses on the server and
   const grid = reply.blocks.find((block) => block.type === "comparison");
   assert.ok(grid && grid.type === "comparison");
   assert.deepEqual(grid.rows.map((row) => [row.asset, row.priceRisk, row.maxDrawdownPct, row.analyzedAt]), [["BTC", 38, 31.6, "2026-11-09T14:00:00Z"], ["ETH", 55, 52.9, "2026-11-10T08:00:00Z"]]);
+  assert.deepEqual(grid.rows[0].trend, { closes: [100000, 61000, 80000], from: "2025-11-09", to: "2026-11-09", changePct: -20 }, "the grid row carries the charted shape");
+  assert.equal(grid.rows[1].trend, undefined, "an analysis without a chart has no trend");
+  const toolContent = String(llm.requests[1].messages.find((message) => message.role === "tool")?.content);
+  assert.ok(!toolContent.includes("61000") && !toolContent.includes("trend"), "the model gets the figures, not the closes");
   const result = JSON.parse(String(llm.requests[1].messages.find((message) => message.role === "tool")?.content));
   assert.equal(result.highest.price_risk, "Ethereum", "the leader is worked out in code, not by the model");
   assert.equal(result.highest.largest_drawdown, "Ethereum");

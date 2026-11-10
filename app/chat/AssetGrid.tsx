@@ -34,6 +34,7 @@ const CSV_UNITS: Partial<Record<keyof ComparisonRow, string>> = {
   overallScore: " (0-100)", priceRisk: " (0-100, higher is riskier)", marketStanding: " (0-100)", liquidity: " (0-100)",
   volatilityPct: " (%)", maxDrawdownPct: " (%)", belowHighPct: " (%)",
 };
+const CSV_HEADERS: Record<string, string> = { trend: "Price change, first to last close (%)" };
 
 /** Not measured always sorts last, whichever way the column is sorted. */
 function nullsLast(left: number | null, right: number | null, _a: unknown, _b: unknown, descending: boolean): number {
@@ -62,6 +63,32 @@ function AssetCell({ data, compact }: CustomCellRendererProps<ComparisonRow> & {
       {compact ? <strong>{data.asset}</strong> : <strong>{data.name} <span>({data.asset})</span></strong>}
       {/* The narrow phone column keeps just the date, such as "Nov 10". */}
       <small className={data.current ? styles.gridCurrent : undefined}>{compact && !data.current ? data.source.split(" · ").pop()?.replace(/, \d{4}$/, "") : data.source}</small>
+    </span>
+  );
+}
+
+const SPARK = { width: 84, height: 28, pad: 3 };
+
+/** The closes this row's analysis measured, first to last, and the change between them. */
+function TrendCell({ data }: CustomCellRendererProps<ComparisonRow>) {
+  const trend = data?.trend;
+  if (!trend) return <span className={styles.gridEmpty} title="Analyses bought before charts were added have no price history to draw.">Not charted</span>;
+  const low = Math.min(...trend.closes);
+  const high = Math.max(...trend.closes);
+  const points = trend.closes.map((close, index) => [
+    SPARK.pad + (index / (trend.closes.length - 1)) * (SPARK.width - SPARK.pad * 2),
+    SPARK.pad + (1 - (close - low) / (high - low || 1)) * (SPARK.height - SPARK.pad * 2),
+  ]);
+  const path = points.map(([x, y], index) => `${index === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`).join("");
+  const [endX, endY] = points[points.length - 1];
+  const change = `${trend.changePct > 0 ? "+" : trend.changePct < 0 ? "−" : ""}${Math.abs(trend.changePct).toFixed(1)}%`;
+  return (
+    <span className={styles.gridTrend} title={`${utcDate(trend.from)} to ${utcDate(trend.to)}: ${change}`}>
+      <svg width={SPARK.width} height={SPARK.height} aria-hidden>
+        <path d={path} className={styles.gridTrendLine} />
+        <circle cx={endX} cy={endY} r={2.5} className={styles.gridTrendDot} />
+      </svg>
+      <span>{change}</span>
     </span>
   );
 }
@@ -137,18 +164,32 @@ export default function AssetGrid({ rows, title }: { rows: ComparisonRow[]; titl
   const finding = useMemo(() => comparisonFinding(rows), [rows]);
   // On a phone the pinned column shows only the symbol, leaving room for the figures.
   const narrow = useSyncExternalStore(watchNarrow, () => window.matchMedia(NARROW).matches, () => false);
-  const columns = useMemo<ColDef<ComparisonRow>[]>(() => [
-    { field: "name", headerName: "Asset", pinned: "left", cellRenderer: AssetCell, cellRendererParams: { compact: narrow }, ...(narrow ? { width: 92, minWidth: 92, maxWidth: 92, flex: 0 } : { minWidth: 136 }), comparator: (left: string, right: string) => left.localeCompare(right) },
-    { ...score("overallScore", "Overall", "Market standing reduced by measured price risk. Higher is better."), sort: "desc" },
-    score("priceRisk", "Price risk", "From volatility and drawdowns over the past year. Higher is riskier.", false),
-    measure("volatilityPct", "Volatility", "Annualized volatility of daily prices."),
-    { ...measure("maxDrawdownPct", "Largest drop", "Largest fall from a high during the period."), minWidth: 124 },
-    { ...score("marketStanding", "Market standing", "From trading volume, market size, and category."), minWidth: 146 },
-    measure("belowHighPct", "Below high", "How far the last price was below the period's high."),
-    score("liquidity", "Liquidity", "From trading volume and market size."),
-    { field: "category", headerName: "Category", valueFormatter: ({ value }) => value ?? "Not screened", minWidth: 130 },
-    { field: "measuredThrough", headerName: "Data through", minWidth: 120, valueFormatter: ({ value }) => utcDate(value) },
-  ], [narrow]);
+  const columns = useMemo<ColDef<ComparisonRow>[]>(() => {
+    const trend: ColDef<ComparisonRow> = {
+      colId: "trend",
+      headerName: "Price trend",
+      headerTooltip: "Daily closes the analysis measured, and the change from the first to the last.",
+      valueGetter: ({ data }) => data?.trend?.changePct ?? null,
+      comparator: nullsLast,
+      cellRenderer: TrendCell,
+      minWidth: 150,
+    };
+    return [
+      { field: "name", headerName: "Asset", pinned: "left", cellRenderer: AssetCell, cellRendererParams: { compact: narrow }, ...(narrow ? { width: 92, minWidth: 92, maxWidth: 92, flex: 0 } : { minWidth: 136 }), comparator: (left: string, right: string) => left.localeCompare(right) },
+      // On a phone the scores come first, so the trend doesn't push them off screen.
+      ...(narrow ? [] : [trend]),
+      { ...score("overallScore", "Overall", "Market standing reduced by measured price risk. Higher is better."), sort: "desc" },
+      score("priceRisk", "Price risk", "From volatility and drawdowns over the past year. Higher is riskier.", false),
+      ...(narrow ? [trend] : []),
+      measure("volatilityPct", "Volatility", "Annualized volatility of daily prices."),
+      { ...measure("maxDrawdownPct", "Largest drop", "Largest fall from a high during the period."), minWidth: 124 },
+      { ...score("marketStanding", "Market standing", "From trading volume, market size, and category."), minWidth: 146 },
+      measure("belowHighPct", "Below high", "How far the last price was below the period's high."),
+      score("liquidity", "Liquidity", "From trading volume and market size."),
+      { field: "category", headerName: "Category", valueFormatter: ({ value }) => value ?? "Not screened", minWidth: 130 },
+      { field: "measuredThrough", headerName: "Data through", minWidth: 120, valueFormatter: ({ value }) => utcDate(value) },
+    ];
+  }, [narrow]);
 
   return (
     <section className={styles.gridCard} aria-label={title}>
@@ -163,7 +204,7 @@ export default function AssetGrid({ rows, title }: { rows: ComparisonRow[]; titl
           className={styles.textButton}
           onClick={() => grid.current?.api.exportDataAsCsv({
             fileName: "selun-asset-comparison.csv",
-            processHeaderCallback: ({ column }) => `${column.getColDef().headerName ?? column.getColId()}${CSV_UNITS[column.getColId() as keyof ComparisonRow] ?? ""}`,
+            processHeaderCallback: ({ column }) => CSV_HEADERS[column.getColId()] ?? `${column.getColDef().headerName ?? column.getColId()}${CSV_UNITS[column.getColId() as keyof ComparisonRow] ?? ""}`,
             processCellCallback: ({ value, column, node }) => {
               if (column.getColId() === "name" && node?.data) return `${node.data.name} (${node.data.asset})`;
               return value === null || value === undefined ? "" : String(value);

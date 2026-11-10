@@ -29,7 +29,10 @@ export type AssetFigures = {
 };
 
 /** A row in the comparison grid: an asset's figures, and which analysis they're from. */
-export type ComparisonRow = AssetFigures & { key: string; source: string; current: boolean };
+/** The shape of the closes an asset was scored on, thinned for a grid row. */
+export type PriceTrend = { closes: number[]; from: string; to: string; changePct: number };
+
+export type ComparisonRow = AssetFigures & { key: string; source: string; current: boolean; trend?: PriceTrend };
 
 /** The daily closes an asset was scored on, as [UTC day, USD close], oldest first. */
 export type PriceChart = {
@@ -174,7 +177,7 @@ export type LiveAlert = {
 export type Advisory = { id: string; title: string; severity: string; source: string; cve: string | null; updatedAt: string; url: string | null };
 
 /** An asset's figures from one purchased analysis, as Selun read them for a comparison. */
-export type ComparedAsset = AssetFigures & { decisionId: string; analyzedAt: string | null };
+export type ComparedAsset = AssetFigures & { decisionId: string; analyzedAt: string | null; trend?: PriceTrend };
 
 export type Block =
   | { type: "comparison"; title: string; rows: ComparedAsset[] }

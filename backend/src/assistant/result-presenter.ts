@@ -395,6 +395,23 @@ export function priceCharts(capabilityId: string, result: Json): PriceChart[] {
   });
 }
 
+/** The shape of the closes an asset was scored on, thinned for a grid row. Prices only, no new figures. */
+export type PriceTrend = { closes: number[]; from: string; to: string; changePct: number };
+
+const TREND_POINTS = 60;
+
+/** Keeps the first and last close, so the shape starts and ends where the chart does. */
+export function priceTrend(document: Pick<ResultDocument, "charts">, asset: string): PriceTrend | undefined {
+  const closes = document.charts?.find((chart) => chart.asset === asset)?.closes;
+  if (!closes || closes.length < 2) return undefined;
+  const step = Math.max(1, Math.ceil((closes.length - 1) / (TREND_POINTS - 1)));
+  const picked = closes.filter((_, index) => index % step === 0);
+  if (picked.at(-1) !== closes.at(-1)) picked.push(closes.at(-1)!);
+  const first = closes[0][1];
+  const last = closes[closes.length - 1][1];
+  return { closes: picked.map(([, close]) => close), from: closes[0][0], to: closes[closes.length - 1][0], changePct: Math.round((last / first - 1) * 1000) / 10 };
+}
+
 /** Results paid for under the first method keep the labels and notes they were sold with. */
 function presentScorecard(result: Json): ResultSection[] {
   if (isV2Scorecard(result)) return presentScorecardV2(result);

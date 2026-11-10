@@ -2192,3 +2192,28 @@
     gap: 8px;
   }
 }
+
+/* Price trend in a grid row: the shape of the closes the analysis measured. */
+.gridTrend {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.gridTrend svg {
+  flex: none;
+  overflow: visible;
+}
+
+.gridTrendLine {
+  fill: none;
+  stroke: var(--brand);
+  stroke-width: 1.75;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.gridTrendDot {
+  fill: var(--brand);
+}

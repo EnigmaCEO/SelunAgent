@@ -8,7 +8,8 @@ import { useReferralCapture } from "@/app/lib/use-referral-capture";
 import { PaymentLogos } from "./payment-logos";
 import { ApiError, cancelSubscription, capturePurchase, declineAction, executeAction, fetchAction, fetchPurchaseStatus, fetchStatus, requestChallenge, sendChat, startCheckout, updateSubscriptionAssets, fetchCredits } from "./api";
 import { BlockView, RichText, type ApprovalPhase, type WalletMethod, type WalletPairing } from "./blocks";
-import type { ActionView, AssetFigures, AssistantStatus, Block, ChatItem, ComparisonRow, Conversation, PaymentMethodId, PaymentOption, PayPalStatusView, CreditView } from "./types";
+import type { ActionView, AssetFigures, AssistantStatus, Block, ChatItem, ComparisonRow, Conversation, PaymentMethodId, PaymentOption, PayPalStatusView, PriceTrend, CreditView } from "./types";
+import { trendOf } from "./trend";
 import { assertWalletAvailable, connectPhoneWallet, PHONE_WALLET_PROJECT_ID, qrDataUrl, signX402Challenge, toBaseUnits, WalletError, type PhoneWallet } from "./wallet";
 import styles from "./chat.module.css";
 
@@ -256,7 +257,7 @@ export default function ChatApp() {
 
   // Each asset's latest figures from the analyses this browser holds, to compare a new result against.
   const analyzed = useMemo(() => {
-    const latest = new Map<string, { figures: AssetFigures; at: string | null; actionId: string }>();
+    const latest = new Map<string, { figures: AssetFigures; at: string | null; actionId: string; trend?: PriceTrend }>();
     for (const conversation of conversations) {
       for (const item of conversation.items) {
         if (item.role !== "assistant") continue;
@@ -265,7 +266,7 @@ export default function ChatApp() {
           const at = block.action.document.snapshotAt;
           for (const figures of block.action.document.assets) {
             const known = latest.get(figures.asset);
-            if (!known || (at ?? "") > (known.at ?? "")) latest.set(figures.asset, { figures, at, actionId: block.action.id });
+            if (!known || (at ?? "") > (known.at ?? "")) latest.set(figures.asset, { figures, at, actionId: block.action.id, trend: trendOf(block.action.document, figures.asset) });
           }
         }
       }
@@ -292,13 +293,13 @@ export default function ChatApp() {
     const own = action.document?.assets ?? [];
     if (own.length === 0) return null;
     const mine = new Set(own.map((figures) => figures.asset));
-    const rows: ComparisonRow[] = own.map((figures) => ({ ...figures, key: `${action.id}:${figures.asset}`, source: "This analysis", current: true }));
+    const rows: ComparisonRow[] = own.map((figures) => ({ ...figures, key: `${action.id}:${figures.asset}`, source: "This analysis", current: true, trend: trendOf(action.document, figures.asset) }));
     for (const [asset, earlier] of analyzed) {
       if (mine.has(asset) || earlier.actionId === action.id) continue;
       // Named by when its data is from, relative to this analysis: either one may have been bought first.
       const thisAt = action.document?.snapshotAt ?? "";
       const when = !earlier.at ? "Other analysis" : earlier.at < thisAt ? `Earlier · ${shortDay(earlier.at)}` : earlier.at > thisAt ? `Later · ${shortDay(earlier.at)}` : `Same day · ${shortDay(earlier.at)}`;
-      rows.push({ ...earlier.figures, key: `${earlier.actionId}:${asset}`, source: when, current: false });
+      rows.push({ ...earlier.figures, key: `${earlier.actionId}:${asset}`, source: when, current: false, trend: earlier.trend });
     }
     return rows.length >= 2 ? rows : null;
   }, [analyzed]);

@@ -17,7 +17,7 @@ import {
 } from "../services/asset-scorecard-v2";
 import { resolveAsset } from "./asset-resolver";
 import { getToolSpec } from "./capability-registry";
-import { presentResult } from "./result-presenter";
+import { presentResult, priceTrend } from "./result-presenter";
 
 const DAY = 86_400_000;
 const NOW = Date.UTC(2026, 10, 5, 21, 35);
@@ -438,4 +438,16 @@ test("a result charts only measured closes, and the summary model never reads th
 
   assert.equal(presentResult("asset_scorecard", "Asset Scorecard", v2Result([V2_CARD]))!.charts, undefined, "results from before charts have none");
   assert.equal(presentResult("asset_scorecard", "Asset Scorecard", paid({ assetsRequested: ["BTC"], scorecards: [LEGACY_CARD] }))!.charts, undefined);
+});
+
+test("a grid trend is a thinned copy of the chart that keeps its first and last close", () => {
+  const closes = Array.from({ length: 365 }, (_, index): [string, number] => [new Date(TODAY - (365 - index) * DAY).toISOString().slice(0, 10), 100 + index]);
+  const trend = priceTrend({ charts: [{ asset: "BTC", name: "Bitcoin", closes, largestDrawdown: null }] }, "BTC")!;
+  assert.ok(trend.closes.length <= 61);
+  assert.equal(trend.closes[0], 100);
+  assert.equal(trend.closes.at(-1), 464);
+  assert.deepEqual([trend.from, trend.to], [closes[0][0], closes[364][0]]);
+  assert.equal(trend.changePct, 364);
+  assert.equal(priceTrend({ charts: [] }, "BTC"), undefined);
+  assert.equal(priceTrend({}, "BTC"), undefined);
 });

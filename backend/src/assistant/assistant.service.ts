@@ -30,7 +30,7 @@ import {
   type SpendLimits,
 } from "./commerce";
 import { LlmError, type ChatMessage, type ChatTool, type LlmClient, type LlmUsage } from "./openai-client";
-import { presentResult, type AssetFigures, type ResultDocument } from "./result-presenter";
+import { presentResult, priceTrend, type AssetFigures, type PriceTrend, type ResultDocument } from "./result-presenter";
 import { RADAR_ALERTS_URL, advisoriesText, alertsText, asOf, liveFacts, scopeOf, type Advisory, type AdvisoryRead, type AlertRead, type LiveAlert, type LiveIntel } from "./live-intel";
 import { lookupSagitta, type SystemDetail, type SystemSummary } from "./sagitta-directory";
 import { citedSections, type FactSheet } from "./sagitta-facts";
@@ -118,7 +118,7 @@ export type Block =
   | { type: "notice"; tone: "info" | "warning"; text: string };
 
 /** One asset's figures from a purchased analysis, with which analysis and day they're from. */
-export type ComparedAsset = AssetFigures & { decisionId: string; analyzedAt: string | null };
+export type ComparedAsset = AssetFigures & { decisionId: string; analyzedAt: string | null; trend?: PriceTrend };
 
 /** Most purchased analyses read for one comparison. */
 const MAX_COMPARED_ANALYSES = 12;
@@ -1172,7 +1172,8 @@ export class AssistantService {
       for (const figures of document.assets ?? []) {
         const known = latest.get(figures.asset);
         if (!known || (document.snapshotAt ?? "") > (known.analyzedAt ?? "")) {
-          latest.set(figures.asset, { ...figures, decisionId: document.provenance.decisionId, analyzedAt: document.snapshotAt });
+          const trend = priceTrend(document, figures.asset);
+          latest.set(figures.asset, { ...figures, decisionId: document.provenance.decisionId, analyzedAt: document.snapshotAt, ...(trend ? { trend } : {}) });
         }
       }
     }
