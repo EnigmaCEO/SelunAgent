@@ -392,13 +392,14 @@ function ActionCard(props: {
   const [walletChoice, setWalletChoice] = useState<WalletMethod | null>(null);
   const walletMethod: WalletMethod = walletChoice ?? (browserWallet === false && phoneWalletAvailable ? "phone" : "browser");
   const busy = phase !== "idle";
-  const options = action.paymentOptions ?? [];
+  // PayPal leads, and starts selected: the customer still approves the exact amount at PayPal before anything is charged.
+  const options = [...(action.paymentOptions ?? [])].sort((left, right) => Number(right.id === "paypal") - Number(left.id === "paypal"));
   const retryOption = options.find((option) => option.flow === "wallet_signature");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [chosen, setChosen] = useState<PaymentOption | null>(null);
   const [checking, setChecking] = useState(false);
-  // Nothing is preselected unless there is only one method to pick.
-  const selected = options.length === 1 ? options[0] : options.find((option) => option.id === selectedId) ?? null;
+  const preferred = options.find((option) => option.id === "paypal") ?? null;
+  const selected = options.length === 1 ? options[0] : options.find((option) => option.id === selectedId) ?? preferred;
   const continueToPay = async () => {
     if (!selected) return;
     setChecking(true);
