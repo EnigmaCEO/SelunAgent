@@ -45,6 +45,7 @@ export const SCORECARD_METHODOLOGY = {
 } as const;
 
 export type DailyClose = { timestamp: number; close: number };
+export type PriceSeriesPoint = [day: string, close: number];
 export type PriceHistorySource = "coingecko" | "coinbase";
 
 export type PriceHistoryMeasure =
@@ -58,6 +59,10 @@ export type PriceHistoryMeasure =
       maxDrawdownPct: number;
       currentDrawdownPct: number;
       badPrintsExcluded: number;
+      /** The closes measured, as [UTC day, USD close], so a chart shows exactly what was scored. */
+      series?: PriceSeriesPoint[];
+      /** Where the largest drawdown ran from and to. Absent when the price never fell below a prior high. */
+      largestDrawdown?: { fromDay: string; fromClose: number; toDay: string; toClose: number };
     }
   | { status: "insufficient"; source: PriceHistorySource; closes: number; reason: string }
   | { status: "unavailable"; reason: string };
@@ -135,7 +140,9 @@ export function measurePriceHistory(rows: DailyClose[], source: PriceHistorySour
   }
   const returns: number[] = [];
   let peak = 0;
+  let peakIndex = 0;
   let maxDrawdown = 0;
+  let drop: { from: number; to: number } | null = null;
   for (const [index, row] of window.entries()) {
     const previous = window[index - 1];
     if (previous) {
@@ -144,22 +151,34 @@ export function measurePriceHistory(rows: DailyClose[], source: PriceHistorySour
       }
       returns.push(Math.log(row.close / previous.close));
     }
-    peak = Math.max(peak, row.close);
-    maxDrawdown = Math.max(maxDrawdown, 1 - row.close / peak);
+    if (row.close > peak) {
+      peak = row.close;
+      peakIndex = index;
+    }
+    if (1 - row.close / peak > maxDrawdown) {
+      maxDrawdown = 1 - row.close / peak;
+      drop = { from: peakIndex, to: index };
+    }
   }
+  // A close stamped 00:00 UTC ends the day before, and that's the day these name.
+  const day = (row: DailyClose) => isoDate(row.timestamp - DAY_MS);
+  const price = (close: number) => Number(close.toPrecision(6));
   const mean = returns.reduce((sum, value) => sum + value, 0) / returns.length;
   const variance = returns.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (returns.length - 1);
   return {
     status: window.length >= FULL_WINDOW_CLOSES ? "measured" : "partial",
     source,
     closes: window.length,
-    // A close stamped 00:00 UTC ends the day before, and that's the day these name.
-    windowStart: isoDate(window[0].timestamp - DAY_MS),
-    windowEnd: isoDate(last.timestamp - DAY_MS),
+    windowStart: day(window[0]),
+    windowEnd: day(last),
     annualizedVolatilityPct: round(Math.sqrt(variance * 365) * 100, 1),
     maxDrawdownPct: round(maxDrawdown * 100, 1),
     currentDrawdownPct: round((1 - last.close / peak) * 100, 1),
     badPrintsExcluded: clean.excluded,
+    series: window.map((row): PriceSeriesPoint => [day(row), price(row.close)]),
+    ...(drop
+      ? { largestDrawdown: { fromDay: day(window[drop.from]), fromClose: price(window[drop.from].close), toDay: day(window[drop.to]), toClose: price(window[drop.to].close) } }
+      : {}),
   };
 }
 

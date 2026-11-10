@@ -1810,7 +1810,8 @@ export class AssistantService {
 
   private async explainResult(session: Session, action: Action, document: ResultDocument) {
     const callId = `verified_${action.id.replaceAll("-", "")}`;
-    const { provenance: _provenance, ...resultForModel } = document;
+    // The chart's daily closes aren't figures the summary may cite, and they would crowd out the ones it may.
+    const { provenance: _provenance, charts: _charts, ...resultForModel } = document;
     session.messages.push(
       { role: "assistant", content: null, tool_calls: [{ id: callId, type: "function", function: { name: "verified_result", arguments: "{}" } }] },
       {

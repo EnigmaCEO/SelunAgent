@@ -31,6 +31,14 @@ export type AssetFigures = {
 /** A row in the comparison grid: an asset's figures, and which analysis they're from. */
 export type ComparisonRow = AssetFigures & { key: string; source: string; current: boolean };
 
+/** The daily closes an asset was scored on, as [UTC day, USD close], oldest first. */
+export type PriceChart = {
+  asset: string;
+  name: string;
+  closes: [string, number][];
+  largestDrawdown: { pct: number; fromDay: string; fromClose: number; toDay: string; toClose: number } | null;
+};
+
 export type ResultDocument = {
   schemaVersion: "selun.result.v1";
   capabilityId: string;
@@ -38,6 +46,7 @@ export type ResultDocument = {
   snapshotAt: string | null;
   sections: ResultSection[];
   assets?: AssetFigures[];
+  charts?: PriceChart[];
   coverage?: CoverageItem[];
   notice?: string;
   provenance: {

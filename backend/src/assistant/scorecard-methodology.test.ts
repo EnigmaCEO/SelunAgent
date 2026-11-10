@@ -408,3 +408,34 @@ test("the window names the days its closes ended, not the stamps on them", () =>
   assert.equal(history.windowEnd, new Date(TODAY - DAY).toISOString().slice(0, 10));
   assert.equal(history.windowStart, new Date(TODAY - 365 * DAY).toISOString().slice(0, 10));
 });
+
+test("the measurement keeps the closes it scored and where the largest drop ran", () => {
+  const closes = Array.from({ length: 365 }, (_, index) => (index < 100 ? 100 + index : index < 200 ? 40 : 80));
+  const history = measurePriceHistory(series(closes), "coingecko", NOW);
+  if (history.status !== "measured") return assert.fail("expected a measurement");
+  assert.equal(history.series?.length, 365);
+  assert.deepEqual(history.series?.[0], [history.windowStart, 100], "named by the day each close ended");
+  assert.deepEqual(history.series?.at(-1), [history.windowEnd, 80]);
+  const day = (index: number) => new Date(TODAY - (365 - index) * DAY).toISOString().slice(0, 10);
+  assert.deepEqual(history.largestDrawdown, { fromDay: day(99), fromClose: 199, toDay: day(100), toClose: 40 }, "from the last high to the low after it");
+  assert.equal(history.maxDrawdownPct, Math.round((1 - 40 / 199) * 1000) / 10, "the span matches the figure");
+
+  const rising = measurePriceHistory(series(Array.from({ length: 365 }, (_, index) => 100 + index)), "coingecko", NOW);
+  assert.ok(rising.status === "measured" && rising.largestDrawdown === undefined, "no drop, no span");
+});
+
+test("a result charts only measured closes, and the summary model never reads them", () => {
+  const closes = Array.from({ length: 365 }, (_, index) => (index < 100 ? 100 : index < 200 ? 40 : 80));
+  const history = measurePriceHistory(series(closes), "coingecko", NOW);
+  const noHistory = { ...V2_CARD, asset: "NEW", name: "New", overallScore: null, priceRiskScore: null, priceHistory: { status: "insufficient", source: "coingecko", closes: 40, reason: "Too few closes." } };
+  const forged = { ...V2_CARD, asset: "BAD", priceHistory: { ...measured(10, 10), series: [["yesterday", 5], ["2026-11-01", -3], ["2026-11-02", "7"]] } };
+  const { charts } = presentResult("asset_scorecard", "Asset Scorecard", v2Result([{ ...V2_CARD, priceHistory: history }, noHistory, forged]))!;
+  assert.equal(charts?.length, 1, "nothing drawn without measured, well-formed closes");
+  assert.equal(charts?.[0].asset, "BTC");
+  assert.equal(charts?.[0].closes.length, 365);
+  assert.equal(charts?.[0].largestDrawdown?.pct, 60);
+  assert.equal(charts?.[0].largestDrawdown?.toClose, 40);
+
+  assert.equal(presentResult("asset_scorecard", "Asset Scorecard", v2Result([V2_CARD]))!.charts, undefined, "results from before charts have none");
+  assert.equal(presentResult("asset_scorecard", "Asset Scorecard", paid({ assetsRequested: ["BTC"], scorecards: [LEGACY_CARD] }))!.charts, undefined);
+});

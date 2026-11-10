@@ -44,6 +44,18 @@ export type AssetFigures = {
   measuredThrough: string | null;
 };
 
+/**
+ * The daily closes an asset was scored from, for a chart on the card. Kept out of
+ * what the model reads: it may cite only the figures in the sections.
+ */
+export type PriceChart = {
+  asset: string;
+  name: string;
+  /** [UTC day, USD close], oldest first. */
+  closes: [string, number][];
+  largestDrawdown: { pct: number; fromDay: string; fromClose: number; toDay: string; toClose: number } | null;
+};
+
 export type ResultDocument = {
   schemaVersion: "selun.result.v1";
   capabilityId: string;
@@ -52,6 +64,8 @@ export type ResultDocument = {
   sections: ResultSection[];
   /** Asset analyses only: the same figures as the sections, as numbers. */
   assets?: AssetFigures[];
+  /** Asset analyses run after charts were added. Older results have none. */
+  charts?: PriceChart[];
   coverage: DataCoverageItem[];
   notice: string;
   provenance: {
@@ -340,6 +354,47 @@ export function assetFigures(capabilityId: string, result: Json): AssetFigures[]
   return [...cards.map((card) => row(card, true)), ...unscreened.map((entry) => row(entry, false))];
 }
 
+const MAX_CHART_POINTS = 400;
+
+function chartPoints(value: unknown): [string, number][] {
+  if (!Array.isArray(value)) return [];
+  const points = value.flatMap((row): [string, number][] =>
+    Array.isArray(row) && typeof row[0] === "string" && /^\d{4}-\d{2}-\d{2}$/.test(row[0]) && typeof row[1] === "number" && Number.isFinite(row[1]) && row[1] > 0
+      ? [[row[0], row[1]]]
+      : [],
+  );
+  return points.slice(-MAX_CHART_POINTS);
+}
+
+/** One chart per measured asset, from the closes it was scored on. Nothing is drawn from estimates. */
+export function priceCharts(capabilityId: string, result: Json): PriceChart[] {
+  const scorecard = capabilityId === "comprehensive_report" ? record(result.assetScorecard) : capabilityId === "asset_scorecard" ? result : null;
+  if (!scorecard || !isV2Scorecard(scorecard)) return [];
+  const entries = [
+    ...(Array.isArray(scorecard.scorecards) ? scorecard.scorecards.map(record) : []),
+    ...(Array.isArray(scorecard.unscreenedAssets) ? scorecard.unscreenedAssets.map(record) : []),
+  ];
+  return entries.flatMap((entry): PriceChart[] => {
+    const history = record(entry.priceHistory);
+    if (history.status !== "measured" && history.status !== "partial") return [];
+    const closes = chartPoints(history.series);
+    if (closes.length < 2) return [];
+    const asset = text(entry.asset) ?? "?";
+    const drop = record(history.largestDrawdown);
+    const pct = number(history.maxDrawdownPct);
+    const fromDay = text(drop.fromDay);
+    const toDay = text(drop.toDay);
+    const fromClose = number(drop.fromClose);
+    const toClose = number(drop.toClose);
+    return [{
+      asset,
+      name: text(entry.name) ?? asset,
+      closes,
+      largestDrawdown: pct !== null && pct > 0 && fromDay && toDay && fromClose !== null && toClose !== null ? { pct, fromDay, fromClose, toDay, toClose } : null,
+    }];
+  });
+}
+
 /** Results paid for under the first method keep the labels and notes they were sold with. */
 function presentScorecard(result: Json): ResultSection[] {
   if (isV2Scorecard(result)) return presentScorecardV2(result);
@@ -585,7 +640,8 @@ export function presentResult(capabilityId: string, title: string, data: Json): 
   if (!presenter) return null;
   const body = record(result);
   const figures = assetFigures(capabilityId, body);
-  const assets = figures.length > 0 ? { assets: figures } : {};
+  const charts = priceCharts(capabilityId, body);
+  const assets = { ...(figures.length > 0 ? { assets: figures } : {}), ...(charts.length > 0 ? { charts } : {}) };
   if (paypal) {
     return {
       schemaVersion: "selun.result.v1",

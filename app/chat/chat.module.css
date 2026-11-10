@@ -1982,3 +1982,213 @@
   font-size: 0.88rem;
   font-weight: 600;
 }
+
+/* Price history chart on a result card: the closes the analysis measured. */
+.priceCharts {
+  display: grid;
+  gap: 12px;
+  margin: 14px 0 4px;
+}
+
+.priceChart {
+  margin: 0;
+  padding: 14px 14px 10px;
+  border: 1px solid #dbe6f1;
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.priceChartHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.priceChartHeader h4 {
+  margin: 0;
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.priceChartHeader p {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.priceChartHeader p.priceChartDrop {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: #fdf1f2;
+  color: var(--ink);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.priceChartDrop strong {
+  font-size: 13.5px;
+}
+
+.priceChartDropDays {
+  color: var(--muted);
+}
+
+.priceChartKey {
+  width: 12px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--negative);
+}
+
+.priceChartFrame {
+  position: relative;
+  width: 100%;
+}
+
+.priceChartFrame svg {
+  display: block;
+  overflow: visible;
+  outline: none;
+  touch-action: pan-y;
+}
+
+.priceChartFrame svg:focus-visible {
+  border-radius: 6px;
+  box-shadow: 0 0 0 2px #0f6fb455;
+}
+
+.priceChartGrid {
+  stroke: #e6eef6;
+  stroke-width: 1;
+}
+
+.priceChartAxis {
+  fill: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.priceChartBand {
+  fill: var(--negative);
+  opacity: 0.07;
+}
+
+.priceChartArea {
+  fill: var(--brand);
+  opacity: 0.1;
+}
+
+.priceChartLine {
+  fill: none;
+  stroke: var(--brand);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.priceChartFall {
+  fill: none;
+  stroke: var(--negative);
+  stroke-width: 2.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.priceChartMarker {
+  fill: var(--negative);
+  stroke: #ffffff;
+  stroke-width: 2;
+}
+
+.priceChartLabel {
+  fill: var(--ink);
+  font-size: 11.5px;
+  font-weight: 700;
+  paint-order: stroke;
+  stroke: #ffffff;
+  stroke-width: 4px;
+  stroke-linejoin: round;
+  font-variant-numeric: tabular-nums;
+}
+
+.priceChartCrosshair {
+  stroke: #8aa4bf;
+  stroke-width: 1;
+}
+
+.priceChartDot {
+  fill: var(--brand);
+  stroke: #ffffff;
+  stroke-width: 2;
+}
+
+.priceChartTip {
+  position: absolute;
+  transform: translateX(-50%);
+  display: grid;
+  gap: 1px;
+  padding: 6px 10px;
+  border: 1px solid #dbe6f1;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: var(--shadow);
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.priceChartTip strong {
+  color: var(--ink);
+  font-size: 13.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.priceChartFooter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.priceChartCsv {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--brand-deep);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.priceChartCsv:hover {
+  text-decoration: underline;
+}
+
+.priceChartLoading {
+  height: 290px;
+  border: 1px solid #dbe6f1;
+  border-radius: 12px;
+  background: #f7fafd;
+}
+
+@media (max-width: 640px) {
+  .priceChart {
+    padding: 12px 10px 8px;
+  }
+
+  .priceChartHeader {
+    flex-direction: column;
+    gap: 8px;
+  }
+}

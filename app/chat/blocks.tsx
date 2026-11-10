@@ -13,6 +13,7 @@ const noSubscription = () => () => undefined;
 
 /** AG Grid loads only when a result has something to compare. */
 const AssetGrid = dynamic(() => import("./AssetGrid"), { ssr: false, loading: () => <p className={styles.quietStatus}>Loading the comparison…</p> });
+const PriceChart = dynamic(() => import("./PriceChart"), { ssr: false, loading: () => <div className={styles.priceChartLoading} aria-hidden /> });
 
 export function formatUsdc(amount: string): string {
   const value = Number(amount);
@@ -240,6 +241,9 @@ function ResultCard({ document, reportToken, monthly = false, suggestedEmail = n
   const tx = provenance.transactionHash ?? "";
   const shortTx = `${tx.slice(0, 8)}…${tx.slice(-6)}`;
   const paypalReference = provenance.paypal?.saleId ?? provenance.paypal?.captureId ?? null;
+  const charts = document.charts?.length
+    ? <div className={styles.priceCharts}>{document.charts.map((chart) => <PriceChart key={chart.asset} chart={chart} />)}</div>
+    : null;
   return (
     <article className={styles.resultCard} aria-label={`${document.title} result`}>
       <header className={styles.resultHeader}>
@@ -253,6 +257,7 @@ function ResultCard({ document, reportToken, monthly = false, suggestedEmail = n
       {groups ? (
         <>
           {children}
+          {charts}
           <div className={styles.reportSections}>
             {groups.map((group, index) => (
               <details key={index} className={styles.reportSection}>
@@ -272,6 +277,7 @@ function ResultCard({ document, reportToken, monthly = false, suggestedEmail = n
           <div className={styles.resultBody}>
             {document.sections.filter((section) => !section.more).map((section, index) => <SectionView key={index} section={section} />)}
           </div>
+          {charts}
           {children}
         </>
       )}
