@@ -60,7 +60,8 @@ function AssetCell({ data, compact }: CustomCellRendererProps<ComparisonRow> & {
   return (
     <span className={styles.gridAsset} title={compact ? data.name : undefined}>
       {compact ? <strong>{data.asset}</strong> : <strong>{data.name} <span>({data.asset})</span></strong>}
-      <small className={data.current ? styles.gridCurrent : undefined}>{data.source}</small>
+      {/* The narrow phone column keeps just the date, such as "Nov 10". */}
+      <small className={data.current ? styles.gridCurrent : undefined}>{compact && !data.current ? data.source.split(" · ").pop()?.replace(/, \d{4}$/, "") : data.source}</small>
     </span>
   );
 }

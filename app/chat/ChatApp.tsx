@@ -295,7 +295,10 @@ export default function ChatApp() {
     const rows: ComparisonRow[] = own.map((figures) => ({ ...figures, key: `${action.id}:${figures.asset}`, source: "This analysis", current: true }));
     for (const [asset, earlier] of analyzed) {
       if (mine.has(asset) || earlier.actionId === action.id) continue;
-      rows.push({ ...earlier.figures, key: `${earlier.actionId}:${asset}`, source: earlier.at ? `Earlier · ${shortDay(earlier.at)}` : "Earlier", current: false });
+      // Named by when its data is from, relative to this analysis: either one may have been bought first.
+      const thisAt = action.document?.snapshotAt ?? "";
+      const when = !earlier.at ? "Other analysis" : earlier.at < thisAt ? `Earlier · ${shortDay(earlier.at)}` : earlier.at > thisAt ? `Later · ${shortDay(earlier.at)}` : `Same day · ${shortDay(earlier.at)}`;
+      rows.push({ ...earlier.figures, key: `${earlier.actionId}:${asset}`, source: when, current: false });
     }
     return rows.length >= 2 ? rows : null;
   }, [analyzed]);
