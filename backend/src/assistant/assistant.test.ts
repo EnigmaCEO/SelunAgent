@@ -1182,3 +1182,52 @@ test("a paid analysis adds ten questions once, and a paid month adds a hundred",
   assert.equal(summary.metered.answers, 1);
   assert.equal(summary.accountsWithPurchases, 1);
 });
+
+test("comparing assets reads the customer's purchased analyses on the server and shows them in a grid", async () => {
+  const { SCORECARD_METHODOLOGY } = await import("../services/asset-scorecard-v2");
+  const history = (vol: number, drawdown: number) => ({ status: "measured", source: "coingecko", closes: 365, windowStart: "2025-11-09", windowEnd: "2026-11-09", annualizedVolatilityPct: vol, maxDrawdownPct: drawdown, currentDrawdownPct: 10, badPrintsExcluded: 0 });
+  const card = (asset: string, name: string, overall: number, priceRisk: number, vol: number, drawdown: number) => ({ asset, name, role: "core", riskClass: "large_cap_crypto", selected: true, tokenCategory: "core", qualityScore: 0.95, liquidityScore: 1, structuralScore: 0.94, overallScore: overall, priceRiskScore: priceRisk, priceHistory: history(vol, drawdown) });
+  const paid = (decisionId: string, snapshotAt: string, cards: unknown[]) => presentResult("asset_scorecard", "Asset Scorecard", {
+    status: "completed", endpoint: "/agent/x402/asset-scorecard", decisionId,
+    payment: { verified: true, transactionHash: `0x${"d".repeat(64)}`, chargedAmountUsdc: "1.5", network: "eip155:84532", fromAddress: "0xabc" },
+    result: { snapshotAt, assetsRequested: [], scoringMethodology: SCORECARD_METHODOLOGY, scorecards: cards },
+  })!;
+  const documents: Record<string, ReturnType<typeof paid>> = {
+    "token-bitcoin-0000000000": paid("btc-1", "2026-11-09T14:00:00Z", [card("BTC", "Bitcoin", 0.66, 0.38, 44.1, 31.6)]),
+    "token-ethereum-000000000": paid("eth-1", "2026-11-10T08:00:00Z", [card("ETH", "Ethereum", 0.49, 0.55, 63.2, 52.9)]),
+  };
+  const read: string[] = [];
+  const analyses = {
+    async documentFor(token: string) {
+      read.push(token);
+      // A refunded purchase, or a forged token, is refused by the report store.
+      if (!documents[token]) throw new AssistantError("report_not_authorized", 403, "No.");
+      return documents[token];
+    },
+  };
+  const llm = new ScriptedLlm([{ content: null, toolCalls: [toolCall("compare_analyses", { assets: ["Bitcoin", "Ethereum", "Solana"] })] }, answer("Ethereum had the higher price risk.")]);
+  const service = new AssistantService({ llm, gateway: new FakeGateway(), loadCatalog: async () => catalog(), limits: { catalogTtlMs: 0 }, analyses });
+  const reply = await service.chat({ message: "Compare Bitcoin and Ethereum. Which had the greater historical risk?", analyses: ["token-bitcoin-0000000000", "token-ethereum-000000000", "token-refunded-000000000", 42, "<script>"] });
+
+  assert.deepEqual(read.sort(), ["token-bitcoin-0000000000", "token-ethereum-000000000", "token-refunded-000000000"], "only well-formed tokens are read, and each is checked");
+  const grid = reply.blocks.find((block) => block.type === "comparison");
+  assert.ok(grid && grid.type === "comparison");
+  assert.deepEqual(grid.rows.map((row) => [row.asset, row.priceRisk, row.maxDrawdownPct, row.analyzedAt]), [["BTC", 38, 31.6, "2026-11-09T14:00:00Z"], ["ETH", 55, 52.9, "2026-11-10T08:00:00Z"]]);
+  const result = JSON.parse(String(llm.requests[1].messages.find((message) => message.role === "tool")?.content));
+  assert.equal(result.highest.price_risk, "Ethereum", "the leader is worked out in code, not by the model");
+  assert.equal(result.highest.largest_drawdown, "Ethereum");
+  assert.equal(result.highest.overall_score, "Bitcoin");
+  assert.deepEqual(result.missing, ["SOL"], "an asset never analyzed is named");
+  const quoted = reply.blocks.find((block) => block.type === "action");
+  assert.ok(quoted && quoted.type === "action" && quoted.action.capabilityId === "asset_scorecard", "and quoted, so the comparison is one purchase away");
+
+  const none = new ScriptedLlm([{ content: null, toolCalls: [toolCall("compare_analyses", { assets: ["Bitcoin"] })] }, answer("You haven't analyzed Bitcoin yet.")]);
+  const empty = await new AssistantService({ llm: none, gateway: new FakeGateway(), loadCatalog: async () => catalog(), limits: { catalogTtlMs: 0 }, analyses }).chat({ message: "Compare Bitcoin" });
+  assert.ok(!empty.blocks.some((block) => block.type === "comparison"), "nothing bought, no grid");
+  assert.ok(empty.blocks.some((block) => block.type === "action"), "but a quote for it");
+  assert.equal(JSON.parse(String(none.requests[1].messages.find((message) => message.role === "tool")?.content)).status, "no_analyses");
+
+  const plain = new ScriptedLlm([answer()]);
+  await new AssistantService({ llm: plain, gateway: new FakeGateway(), loadCatalog: async () => catalog(), limits: { catalogTtlMs: 0 } }).chat({ message: "Compare Bitcoin and Ethereum" });
+  assert.ok(!plain.requests[0].tools?.some((tool) => tool.function.name === "compare_analyses"), "not offered without the report store");
+});

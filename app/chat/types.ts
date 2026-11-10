@@ -164,7 +164,11 @@ export type LiveAlert = {
 
 export type Advisory = { id: string; title: string; severity: string; source: string; cve: string | null; updatedAt: string; url: string | null };
 
+/** An asset's figures from one purchased analysis, as Selun read them for a comparison. */
+export type ComparedAsset = AssetFigures & { decisionId: string; analyzedAt: string | null };
+
 export type Block =
+  | { type: "comparison"; title: string; rows: ComparedAsset[] }
   | { type: "sagitta_sources"; sources: SiteSource[]; readAt: string }
   | { type: "sagitta_directory"; systems: SystemSummary[] }
   | { type: "sagitta_system"; system: SystemDetail }

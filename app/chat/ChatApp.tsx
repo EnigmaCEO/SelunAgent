@@ -273,6 +273,21 @@ export default function ChatApp() {
     return latest;
   }, [conversations]);
 
+  // Report tokens for the purchased asset analyses, newest first, sent with each message so Selun can compare them.
+  const analysisTokens = useMemo(() => {
+    const found: { token: string; at: string }[] = [];
+    for (const conversation of conversations) {
+      for (const item of conversation.items) {
+        if (item.role !== "assistant") continue;
+        for (const block of item.blocks) {
+          const action = block.type === "action" ? block.action : null;
+          if (action?.state === "completed" && action.reportToken && action.document?.assets?.length) found.push({ token: action.reportToken, at: action.document.snapshotAt ?? "" });
+        }
+      }
+    }
+    return [...new Set(found.sort((left, right) => right.at.localeCompare(left.at)).map((entry) => entry.token))].slice(0, 12);
+  }, [conversations]);
+
   const comparisonFor = useCallback((action: ActionView): ComparisonRow[] | null => {
     const own = action.document?.assets ?? [];
     if (own.length === 0) return null;
@@ -480,7 +495,7 @@ export default function ChatApp() {
     }));
 
     const attempt = async (id: string | null) => {
-      const reply = await sendChat(id, text);
+      const reply = await sendChat(id, text, analysisTokens);
       if (reply.credits) setCredits(reply.credits);
       updateConversation(conversationId, (conversation) => ({
         ...conversation,
@@ -516,7 +531,7 @@ export default function ChatApp() {
       setThinking(false);
       composerRef.current?.focus();
     }
-  }, [active, thinking, updateConversation]);
+  }, [active, thinking, updateConversation, analysisTokens]);
 
   // Asks again in the customer's own words, since the old conversation is gone.
   const handleNewQuote = useCallback((action: ActionView) => {

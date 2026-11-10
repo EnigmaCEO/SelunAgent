@@ -821,6 +821,13 @@ export function BlockView(props: {
       );
     case "live_status":
       return <LiveStatusCard block={block} />;
+    case "comparison":
+      return (
+        <AssetGrid
+          title={block.title}
+          rows={block.rows.map((row) => ({ ...row, key: `${row.decisionId}:${row.asset}`, source: row.analyzedAt ? `Analysis · ${utcDay(row.analyzedAt) ?? "date not reported"}` : "Your analysis", current: false }))}
+        />
+      );
     case "notice":
       return <p className={block.tone === "warning" ? styles.noticeWarning : styles.noticeInfo} role={block.tone === "warning" ? "alert" : "status"}>{block.text}</p>;
   }

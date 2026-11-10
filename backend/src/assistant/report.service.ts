@@ -132,6 +132,11 @@ export class ReportService {
     return this.recordFor(token);
   }
 
+  /** A purchased result, for comparing. The same checks as a download: a valid token, and a purchase that still stands. */
+  async documentFor(token: unknown): Promise<ResultDocument> {
+    return (await this.authorized(token)).document;
+  }
+
   async download(token: unknown): Promise<{ filename: string; bytes: Uint8Array; recordHash: string }> {
     const record = await this.authorized(token);
     const bytes = await renderResultPdf(record.document, record.frozenAt, record.reportLayout);

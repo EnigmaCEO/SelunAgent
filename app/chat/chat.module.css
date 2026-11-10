@@ -1975,3 +1975,10 @@
 .gridFrame :global(.ag-right-aligned-cell) {
   justify-content: flex-end;
 }
+
+.gridHeader p.gridFinding {
+  margin-top: 6px;
+  color: var(--ink);
+  font-size: 0.88rem;
+  font-weight: 600;
+}

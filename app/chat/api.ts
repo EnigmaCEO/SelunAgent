@@ -81,11 +81,15 @@ function saveGuestToken(token: string | null | undefined) {
   }
 }
 
-export async function sendChat(conversationId: string | null, message: string) {
+/**
+ * `analyses` are report tokens for this browser's purchased asset analyses, so Selun can compare them.
+ * The server verifies each one and reads the figures itself; the browser never supplies figures.
+ */
+export async function sendChat(conversationId: string | null, message: string, analyses: string[] = []) {
   const reply = await request<{ conversationId: string; text: string; blocks: Block[]; credits?: CreditView | null; guestToken?: string | null }>("chat", {
     method: "POST",
     conversationId,
-    body: { message },
+    body: analyses.length > 0 ? { message, analyses } : { message },
   });
   saveGuestToken(reply.guestToken);
   return reply;

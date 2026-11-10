@@ -71,7 +71,43 @@ function utcDate(value: string | null | undefined): string {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
 }
 
-const percent =({ value }: { value: number | null }) => (value === null || value === undefined ? "Not measured" : `${value}%`);
+/**
+ * The comparison's main finding in one or two sentences, from the rows themselves, so it always matches the grid:
+ * which asset had the higher price risk and the deeper largest drop, and whether the rows' data ends on different days.
+ */
+export function comparisonFinding(rows: ComparisonRow[]): string | null {
+  const ranked = (pick: (row: ComparisonRow) => number | null) =>
+    rows.filter((row) => pick(row) !== null).sort((left, right) => pick(right)! - pick(left)!);
+  // Each clause names its leader, so two led by the same asset read as one sentence.
+  const clauses: { leader: string | null; text: string }[] = [];
+  const describe = (pick: (row: ComparisonRow) => number | null, what: string, unit: string, two: string) => {
+    const list = ranked(pick);
+    if (list.length < 2) return;
+    const [top, bottom] = [list[0], list[list.length - 1]];
+    const value = (row: ComparisonRow) => `${pick(row)}${unit}`;
+    if (pick(top) === pick(bottom)) clauses.push({ leader: null, text: `${list.length === 2 ? "Both" : "All"} had the same ${what} (${value(top)}).` });
+    else if (list.length === 2) clauses.push({ leader: top.name, text: `the ${two} (${value(top)} vs ${value(bottom)})` });
+    else clauses.push({ leader: null, text: `${top.name} had the highest ${what} (${value(top)}), and ${bottom.name} the lowest (${value(bottom)}).` });
+  };
+  describe((row) => row.priceRisk, "price risk", "", "higher price risk");
+  describe((row) => row.maxDrawdownPct, "largest drop", "%", "deeper largest drop");
+  if (clauses.length === 0) return null;
+  const sentences: string[] = [];
+  for (let index = 0; index < clauses.length; index += 1) {
+    const clause = clauses[index];
+    const next = clauses[index + 1];
+    if (!clause.leader) sentences.push(clause.text);
+    else if (next?.leader === clause.leader) {
+      sentences.push(`${clause.leader} had ${clause.text} and ${next.text}.`);
+      index += 1;
+    } else sentences.push(`${clause.leader} had ${clause.text}.`);
+  }
+  const days = new Set(rows.map((row) => row.measuredThrough).filter(Boolean));
+  if (days.size > 1) sentences.push("Some rows use data through different days, so check each row's date.");
+  return sentences.join(" ");
+}
+
+const percent = ({ value }: { value: number | null }) => (value === null || value === undefined ? "Not measured" : `${value}%`);
 const score = (field: keyof ComparisonRow, headerName: string, headerTooltip: string, higherIsBetter = true): ColDef<ComparisonRow> => ({
   field,
   headerName,
@@ -97,6 +133,7 @@ const measure = (field: keyof ComparisonRow, headerName: string, headerTooltip: 
  */
 export default function AssetGrid({ rows, title }: { rows: ComparisonRow[]; title: string }) {
   const grid = useRef<AgGridReact<ComparisonRow>>(null);
+  const finding = useMemo(() => comparisonFinding(rows), [rows]);
   // On a phone the pinned column shows only the symbol, leaving room for the figures.
   const narrow = useSyncExternalStore(watchNarrow, () => window.matchMedia(NARROW).matches, () => false);
   const columns = useMemo<ColDef<ComparisonRow>[]>(() => [
@@ -117,7 +154,8 @@ export default function AssetGrid({ rows, title }: { rows: ComparisonRow[]; titl
       <header className={styles.gridHeader}>
         <div>
           <h4>{title}</h4>
-          <p>Tap a column to sort, and scroll sideways for more. Earlier rows are analyses you bought before, dated by their data.</p>
+          {finding && <p className={styles.gridFinding}>{finding}</p>}
+          <p>Tap a column to sort, and scroll sideways for more. Each row says which analysis it&apos;s from; figures are historical.</p>
         </div>
         <button
           type="button"

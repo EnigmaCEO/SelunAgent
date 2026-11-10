@@ -613,6 +613,8 @@ test("the prompt sends what's happening now to the live read, and past incidents
   assert.match(prompt, /happening now[^\n]*call check_live_status[^\n]*never say there's nothing/);
   // Curiosity gets a free answer first; a quote waits until they ask for analysis.
   assert.match(prompt, /Curiosity about a named token[^\n]*tell me about Bitcoin[^\n]*general education[^\n]*Don't propose a service yet/);
+  // Comparisons use only purchased analyses, with the leaders worked out in code.
+  assert.match(prompt, /Comparing tokens[^\n]*call compare_analyses[^\n]*"highest" fields[^\n]*Never compare tokens from your own knowledge/);
   assert.match(prompt, /any recent incidents involving Aave\?[^\n]*propose_sce_case_relevance/);
   assert.match(prompt, /status with the date it was reported/);
 });

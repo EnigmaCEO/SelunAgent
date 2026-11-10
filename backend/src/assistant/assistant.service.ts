@@ -30,7 +30,7 @@ import {
   type SpendLimits,
 } from "./commerce";
 import { LlmError, type ChatMessage, type ChatTool, type LlmClient, type LlmUsage } from "./openai-client";
-import { presentResult, type ResultDocument } from "./result-presenter";
+import { presentResult, type AssetFigures, type ResultDocument } from "./result-presenter";
 import { RADAR_ALERTS_URL, advisoriesText, alertsText, asOf, liveFacts, scopeOf, type Advisory, type AdvisoryRead, type AlertRead, type LiveAlert, type LiveIntel } from "./live-intel";
 import { lookupSagitta, type SystemDetail, type SystemSummary } from "./sagitta-directory";
 import { citedSections, type FactSheet } from "./sagitta-facts";
@@ -114,7 +114,14 @@ export type Block =
     linkLabel: string;
     note: string;
   }
+  | { type: "comparison"; title: string; rows: ComparedAsset[] }
   | { type: "notice"; tone: "info" | "warning"; text: string };
+
+/** One asset's figures from a purchased analysis, with which analysis and day they're from. */
+export type ComparedAsset = AssetFigures & { decisionId: string; analyzedAt: string | null };
+
+/** Most purchased analyses read for one comparison. */
+const MAX_COMPARED_ANALYSES = 12;
 
 export type PublicCapability = Pick<Capability, "id" | "title" | "summary" | "outputType" | "duration" | "limitations" | "execution" | "priceUsdc" | "currency" | "billing">;
 
@@ -171,6 +178,8 @@ type TurnBudget = {
   onlyServices?: ReadonlySet<string>;
   /** Read what SCE shows now before the model answers, and give it the facts. */
   liveStatus?: boolean;
+  /** Report tokens for the customer's purchased analyses, sent by their browser. Each is verified before use. */
+  analyses?: string[];
 };
 
 /** Tools that answer general or Sagitta questions, which aren't offered once questions run out. */
@@ -282,12 +291,45 @@ export type AssistantDeps = {
   preflight?: Pick<ScorecardPreflight, "check">;
   /** What SCE publishes now: Radar's public alerts and recent security advisories. Absent, Selun links to Radar instead. */
   live?: LiveIntel | null;
+  /** Reads a purchased result by its report token, refusing a forged, refunded, or revoked one. */
+  analyses?: { documentFor(token: string): Promise<ResultDocument> } | null;
   limits?: Partial<AssistantLimits>;
   now?: () => Date;
 };
 
 
 export { AssistantError };
+
+/** Report tokens from the browser, shape-checked only. Each is verified when it's read. */
+function reportTokens(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((entry): entry is string => typeof entry === "string" && /^[A-Za-z0-9._~-]{16,2000}$/.test(entry)))].slice(0, MAX_COMPARED_ANALYSES);
+}
+
+/** "Nov 9, 2026", the UTC day an analysis's data is from. */
+function analysisDay(value: string | null): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
+}
+
+/** Which asset is highest on each measure, worked out here rather than left to the model. */
+function comparisonLeaders(rows: ComparedAsset[]): Record<string, string | null> {
+  const top = (pick: (row: ComparedAsset) => number | null) => {
+    const measured = rows.filter((row) => pick(row) !== null);
+    if (measured.length < 2) return null;
+    const best = Math.max(...measured.map((row) => pick(row)!));
+    const leaders = measured.filter((row) => pick(row) === best);
+    return leaders.length === 1 ? leaders[0].name : "tied";
+  };
+  return {
+    overall_score: top((row) => row.overallScore),
+    price_risk: top((row) => row.priceRisk),
+    annualized_volatility: top((row) => row.volatilityPct),
+    largest_drawdown: top((row) => row.maxDrawdownPct),
+    market_standing: top((row) => row.marketStanding),
+  };
+}
 
 const UNCONFIRMED_RETRY_MESSAGE =
   "We couldn't confirm this request. If your wallet shows a charge, please contact support with the request ID below so we can make it right.";
@@ -329,6 +371,7 @@ Choosing services (propose only what each rule names, never extra services the c
 - Curiosity about a named token, such as "tell me about Bitcoin", "tell me more about Solana", or "what is Ethereum?": resolve_asset, then answer it yourself as general education in two to four short sentences: what it is, how it works, and what people use it for. No prices, market conditions, risk levels, forecasts, or news. End with one sentence offering to look at its historical risk, such as "If you'd like, I can analyze Bitcoin's historical risk: its volatility, major price declines, and market standing." Don't propose a service yet, and don't call it a purchase. If they then ask for that, propose it.
 - A request to analyze a named token, or about its risk, safety, or whether it's a good investment, such as "analyze the risks of Ethereum" or "is Solana risky?": resolve_asset, then propose_asset_scorecard. If the result says not_offered, follow its instruction.
 - A market update or assessment naming a token, such as "market update on Bitcoin": resolve_asset, then propose_asset_scorecard (that token) and propose_market_regime (the whole market). Open with what you can help them understand, not with what's for sale, for example: "I can help you understand Bitcoin's historical risk and broader crypto market conditions. I have two analyses available: a Bitcoin risk assessment and an overall market conditions report. Which would you prefer?" Also say that neither includes live prices or news. Don't say "quote card" here.
+- Comparing tokens, or which had more risk, volatility, or decline, such as "compare Bitcoin and Ethereum" or "how does Ethereum's risk compare with Bitcoin?": call compare_analyses with the tokens named. It reads the risk analyses the customer already bought and shows an interactive grid, so don't list every figure. In two to four sentences, say which had the higher price risk and the deeper largest drop, with the figures, using its "highest" fields rather than working it out yourself, and say these are historical figures from each analysis's date. Name the dates if they differ. If it lists missing tokens, it has already shown a quote for them: say they haven't been analyzed yet and the card covers them. Never compare tokens from your own knowledge.
 - Market update with no token named, or how the market is doing: propose_market_regime. Say plainly that it covers the whole crypto market.
 - Whether it is safe to use DeFi in general: propose_sce_continuity_mode.
 - Whether a named protocol such as Aave or Uniswap is safe to use: propose_sce_risk_evaluate. The AAVE or UNI token itself is a token, so use the scorecard.
@@ -577,7 +620,7 @@ export class AssistantService {
     this.dailyTurns.count += 1;
   }
 
-  async chat(input: { conversationId?: string; message: unknown; guestToken?: string | null; clientKey?: string }) {
+  async chat(input: { conversationId?: string; message: unknown; guestToken?: string | null; clientKey?: string; analyses?: unknown }) {
     if (!this.deps.llm) {
       throw new AssistantError("assistant_not_configured", 503, "Selun AI is not available right now.");
     }
@@ -610,6 +653,7 @@ export class AssistantService {
         usage: { requests: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0 },
         suppressed: false,
         capped: false,
+        analyses: reportTokens(input.analyses),
       };
       try {
         const actions = [...session.actions.values()];
@@ -1049,6 +1093,20 @@ export class AssistantService {
           },
         }]
         : []),
+      ...(this.deps.analyses
+        ? [{
+          type: "function" as const,
+          function: {
+            name: "compare_analyses",
+            description: "Compare assets using the risk analyses this customer has already bought: overall score, price risk, volatility, largest drop, and market standing, with each analysis's date. Free. Also shows the customer an interactive comparison grid. Use when they ask to compare assets or which had more risk, volatility, or decline.",
+            parameters: {
+              type: "object",
+              properties: { assets: { type: "array", items: { type: "string" }, description: "The tokens to compare, such as ['Bitcoin', 'Ethereum']. Empty for everything they've analyzed." } },
+              additionalProperties: false,
+            },
+          },
+        }]
+        : []),
       {
         type: "function",
         function: {
@@ -1078,6 +1136,7 @@ export class AssistantService {
         const asked = [...session.messages].reverse().find((message) => message.role === "user");
         return await this.toolLiveStatus(args, asked?.role === "user" ? asked.content : "", blocks);
       }
+      if (name === "compare_analyses") return await this.toolCompareAnalyses(session, args, blocks);
       if (name.startsWith("propose_")) return await this.toolPropose(session, name.slice("propose_".length), args, blocks);
       return { error: "unknown_tool", message: `There is no tool named ${name}.` };
     } catch (error) {
@@ -1087,6 +1146,65 @@ export class AssistantService {
       }
       throw error;
     }
+  }
+
+  /**
+   * Reads the customer's purchased analyses on the server, by their report tokens, so every figure compared is one
+   * Selun issued and the purchase still stands. The browser only says which purchases are theirs.
+   */
+  private async toolCompareAnalyses(session: Session, args: unknown, blocks: Block[]) {
+    const raw = (args as { assets?: unknown } | null)?.assets;
+    const asked = Array.isArray(raw) ? raw.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0).slice(0, 10) : [];
+    const symbols = asked.map((query) => {
+      const resolved = resolveAsset(query);
+      return resolved.status === "resolved" ? resolved.asset.symbol : query.trim().toUpperCase();
+    });
+    const tokens = new Set(session.turn?.analyses ?? []);
+    for (const action of session.actions.values()) if (action.state === "completed" && action.reportToken) tokens.add(action.reportToken);
+    const reader = this.deps.analyses;
+    const read = reader ? await Promise.allSettled([...tokens].slice(0, MAX_COMPARED_ANALYSES).map((token) => reader.documentFor(token))) : [];
+
+    // An asset in several analyses compares by its most recent one.
+    const latest = new Map<string, ComparedAsset>();
+    for (const outcome of read) {
+      if (outcome.status !== "fulfilled") continue;
+      const document = outcome.value;
+      for (const figures of document.assets ?? []) {
+        const known = latest.get(figures.asset);
+        if (!known || (document.snapshotAt ?? "") > (known.analyzedAt ?? "")) {
+          latest.set(figures.asset, { ...figures, decisionId: document.provenance.decisionId, analyzedAt: document.snapshotAt });
+        }
+      }
+    }
+    const rows = symbols.length > 0 ? symbols.map((symbol) => latest.get(symbol)).filter((row): row is ComparedAsset => Boolean(row)) : [...latest.values()];
+    const missing = symbols.filter((symbol) => !latest.has(symbol));
+    if (rows.length > 0) blocks.push({ type: "comparison", title: rows.length > 1 ? "Your analyses compared" : `Your ${rows[0].name} analysis`, rows });
+    // Assets never analyzed get one risk analysis quote, so a comparison is a tap away.
+    const quote = missing.length > 0 ? await this.toolPropose(session, "asset_scorecard", { assets: missing }, blocks) : null;
+    if (rows.length === 0) {
+      return { status: "no_analyses", missing, message: "The customer hasn't bought a risk analysis for these assets, so there is nothing to compare yet. A quote card for one is shown.", quote };
+    }
+    return {
+      status: "ok",
+      shown_to_customer: true,
+      note: "Historical figures from each purchased analysis, as of its date. Scores are 0 to 100; price risk is higher for riskier assets; percentages are as measured.",
+      assets: rows.map((row) => ({
+        asset: `${row.name} (${row.asset})`,
+        analyzed: analysisDay(row.analyzedAt),
+        overall_score: row.overallScore,
+        price_risk: row.priceRisk,
+        market_standing: row.marketStanding,
+        annualized_volatility_pct: row.volatilityPct,
+        largest_drawdown_pct: row.maxDrawdownPct,
+        below_period_high_pct: row.belowHighPct,
+      })),
+      highest: rows.length > 1 ? comparisonLeaders(rows) : null,
+      ...(rows.length === 1 && missing.length > 0
+        ? { only_one: `Only ${rows[0].name} has figures, so nothing can be compared yet. Don't say whether ${missing.join(" or ")} is riskier, safer, higher, or lower; Selun has no figures for it.` }
+        : {}),
+      missing,
+      ...(quote ? { quote, quote_note: "A quote card for the missing assets is shown. Say they haven't been analyzed yet and that the card covers them; don't call propose_asset_scorecard again." } : {}),
+    };
   }
 
   private async toolListCapabilities(blocks: Block[]) {

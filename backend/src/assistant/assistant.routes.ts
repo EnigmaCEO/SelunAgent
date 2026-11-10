@@ -256,7 +256,9 @@ export function createAssistantRouter(injected?: AssistantDeps, injectedReports?
     if (service) return service;
     const current = getPayPal();
     const config = injected ? null : readPayPalConfig() ?? readStripeConfig();
-    return (service = new AssistantService(injected ?? createDefaultDeps(current, injected ? null : getStripe(), config ? { reportUsd: config.reportPriceUsd, subscriptionUsd: config.subscriptionPriceUsd } : null)));
+    // Comparisons read purchased results through the report store, which checks each token and purchase.
+    const analyses = { documentFor: (token: string) => getReports().documentFor(token) };
+    return (service = new AssistantService(injected ?? { ...createDefaultDeps(current, injected ? null : getStripe(), config ? { reportUsd: config.reportPriceUsd, subscriptionUsd: config.subscriptionPriceUsd } : null), analyses }));
   };
 
   // A wallet purchase staff refund takes back its unused questions, as a hosted refund does.
@@ -360,7 +362,7 @@ export function createAssistantRouter(injected?: AssistantDeps, injectedReports?
 
   router.post("/chat", limited(chatLimiter), async (req, res) => {
     try {
-      const reply = await getService().chat({ conversationId: conversationId(req), message: req.body?.message, guestToken: req.get(GUEST_HEADER)?.trim() || null, clientKey: clientKey(req) });
+      const reply = await getService().chat({ conversationId: conversationId(req), message: req.body?.message, guestToken: req.get(GUEST_HEADER)?.trim() || null, clientKey: clientKey(req), analyses: req.body?.analyses });
       res.set("Cache-Control", "no-store");
       res.json({ success: true, ...reply });
     } catch (error) {
