@@ -164,6 +164,11 @@ export default function ChatApp() {
   const [phases, setPhases] = useState<Record<string, ApprovalPhase>>({});
   const [actionErrors, setActionErrors] = useState<Record<string, string | null>>({});
   const [payPalNotice, setPayPalNotice] = useState<string | null>(null);
+  // The site's firewall can challenge background checks, and only a page load passes the challenge.
+  const [securityCheck, setSecurityCheck] = useState(false);
+  const noteBlocked = useCallback((error: unknown) => {
+    if (error instanceof ApiError && error.code === "security_check") setSecurityCheck(true);
+  }, []);
 
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
@@ -389,9 +394,13 @@ export default function ChatApp() {
         fetchAction(conversationId, action.id)
           .then(({ action: view }) => {
             pollFailures.current[action.id] = 0;
+            setSecurityCheck(false);
             applyActionView(view);
           })
           .catch((error: unknown) => {
+            noteBlocked(error);
+            // Blocked by the firewall, not lost: the job is still on the server, so it never counts toward giving up.
+            if (error instanceof ApiError && error.code === "security_check") return;
             const lost = error instanceof ApiError && (error.status === 404);
             const failures = (pollFailures.current[action.id] ?? 0) + 1;
             pollFailures.current[action.id] = failures;
@@ -421,12 +430,16 @@ export default function ChatApp() {
     const token = action.paypal?.token;
     if (!token) return;
     fetchPurchaseStatus(action.paypal?.method ?? "paypal", token)
-      .then((view) => applyActionView(applyPayPalView(action, token, view)))
+      .then((view) => {
+        setSecurityCheck(false);
+        applyActionView(applyPayPalView(action, token, view));
+      })
       .catch((error: unknown) => {
+        noteBlocked(error);
         // The purchase stays recorded on the server. A failed check changes nothing on screen.
         console.warn("Purchase status check failed:", error instanceof ApiError ? error.code : error);
       });
-  }, [applyActionView]);
+  }, [applyActionView, noteBlocked]);
 
   const openPayPal = useMemo(() => {
     const open: ActionView[] = [];
@@ -780,7 +793,17 @@ export default function ChatApp() {
       Selun AI is offline right now. You can still <Link href={referralHref("/plan")}>build a portfolio plan</Link> or <Link href="/capabilities">browse our services</Link>.
     </p>
   );
-  const payPalBanner = payPalNotice && <p className={styles.offlineNotice} role="alert">{payPalNotice}</p>;
+  const payPalBanner = (
+    <>
+      {payPalNotice && <p className={styles.offlineNotice} role="alert">{payPalNotice}</p>}
+      {securityCheck && (
+        <p className={styles.offlineNotice} role="alert">
+          Selun can&apos;t show updates until your browser passes a quick security check. Your purchases are safe and results are kept on Selun&apos;s server.{" "}
+          <button type="button" className={styles.noticeButton} onClick={() => window.location.reload()}>Reload to continue</button>
+        </p>
+      )}
+    </>
+  );
 
   return (
     <div className={styles.app}>
