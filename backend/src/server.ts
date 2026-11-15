@@ -560,6 +560,8 @@ app.get("/.well-known/x402", async (req, res) => {
   try {
     const document = await buildWellKnownX402Document(req);
     res.setHeader("Content-Type", "application/json; charset=utf-8");
+    // A public discovery document: readable from any origin, never with credentials.
+    res.setHeader("Access-Control-Allow-Origin", "*");
     return res.status(200).json(document);
   } catch (error) {
     return res.status(500).json({
@@ -574,6 +576,8 @@ app.get("/.well-known/x402.json", async (req, res) => {
   try {
     const document = await buildWellKnownX402Document(req);
     res.setHeader("Content-Type", "application/json; charset=utf-8");
+    // A public discovery document: readable from any origin, never with credentials.
+    res.setHeader("Access-Control-Allow-Origin", "*");
     return res.status(200).json(document);
   } catch (error) {
     return res.status(500).json({
