@@ -23,6 +23,16 @@ const nextConfig: NextConfig = {
     "@zerodev/ecdsa-validator",
     "clanker-sdk",
   ],
+  // The x402 discovery documents are public and meant for agents. The backend
+  // sets this header too, but Vercel does not pass it through the rewrite, so
+  // it is set here for the paths this site serves.
+  async headers() {
+    const discoveryHeaders = [{ key: "Access-Control-Allow-Origin", value: "*" }];
+    return [
+      { source: "/.well-known/x402", headers: discoveryHeaders },
+      { source: "/.well-known/x402.json", headers: discoveryHeaders },
+    ];
+  },
   async rewrites() {
     const backendOrigin = getPublicBackendOrigin();
     return [
