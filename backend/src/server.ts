@@ -543,7 +543,12 @@ async function buildWellKnownX402Document(req: express.Request) {
   };
 }
 
+// The network status page at www.sagitta.systems probes this from the browser.
+// Only this public liveness route is opened cross-origin, and without credentials.
+const STATUS_PAGE_ORIGIN = "https://www.sagitta.systems";
+
 app.get("/health", (_req, res) => {
+  res.setHeader("Access-Control-Allow-Origin", STATUS_PAGE_ORIGIN);
   res.status(200).json({
     success: true,
     executionModelVersion: EXECUTION_MODEL_VERSION,
