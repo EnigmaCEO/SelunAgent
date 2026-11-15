@@ -12,6 +12,7 @@ import { initializeAgentProgramPersistence, isAgentProgramDatabaseConfigured } f
 import { JOB_TOKEN_HEADER, verifyJobAccessToken } from "./services/job-access.service";
 import { getExecutionStatus, getExecutionStatusByWallet } from "./services/phase1-execution.service";
 import { initializeReferralPersistence, isReferralDatabaseConfigured } from "./services/referral.service";
+import { createCachedCheck, runX402SelfCheck } from "./services/x402-self-check";
 
 type JsonRecord = Record<string, unknown>;
 type OpenApiHttpMethod = "get" | "post" | "put" | "delete" | "patch" | "options" | "head" | "trace";
@@ -554,6 +555,26 @@ app.get("/health", (_req, res) => {
     executionModelVersion: EXECUTION_MODEL_VERSION,
     status: "ok",
   });
+});
+
+// Calls every x402 route in the discovery document, unpaid, over loopback, and
+// reports whether each answers with a payment challenge. Cached for five minutes
+// and single-flight, so this public route cannot be used to fan out load.
+const X402_SELF_CHECK_TTL_MS = 5 * 60_000;
+const cachedX402SelfCheck = createCachedCheck(
+  () => runX402SelfCheck({ baseUrl: `http://127.0.0.1:${process.env.PORT ?? "8787"}` }),
+  X402_SELF_CHECK_TTL_MS,
+);
+
+app.get("/health/x402", async (_req, res) => {
+  res.setHeader("Access-Control-Allow-Origin", STATUS_PAGE_ORIGIN);
+  res.setHeader("Cache-Control", "no-store");
+  try {
+    const result = await cachedX402SelfCheck();
+    return res.status(result.status === "ok" ? 200 : 503).json(result);
+  } catch {
+    return res.status(503).json({ status: "degraded", detail: "Self-check failed to run", routes: [] });
+  }
 });
 
 app.get("/.well-known/x402", async (req, res) => {

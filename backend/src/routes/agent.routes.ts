@@ -4984,8 +4984,12 @@ router.post("/x402/asset-scorecard", async (req: Request, res: Response) => {
 });
 
 router.post("/x402/comprehensive-report", async (req: Request, res: Response) => {
-  const riskTolerance = normalizeRiskTolerance(req.body?.riskTolerance);
-  const timeframe = normalizeTimeframe(req.body?.timeframe);
+  // Like the other tool routes, an unpaid probe gets the payment challenge with
+  // default inputs instead of a 400, so agents can always discover the price.
+  const paymentSignatureHeader = req.header("payment-signature")?.trim() || req.header("PAYMENT-SIGNATURE")?.trim();
+  const isProbe = !paymentSignatureHeader;
+  const riskTolerance = normalizeRiskTolerance(req.body?.riskTolerance) ?? (isProbe ? "Balanced" : null);
+  const timeframe = normalizeTimeframe(req.body?.timeframe) ?? (isProbe ? "1-3_years" : null);
   if (!riskTolerance) return failure(res, new Error("riskTolerance must be one of Conservative | Balanced | Growth | Aggressive."), 400);
   if (!timeframe) return failure(res, new Error("timeframe must be one of <1_year | 1-3_years | 3+_years."), 400);
   if (req.body?.portfolioSegment !== undefined && !normalizePortfolioSegment(req.body.portfolioSegment)) {
