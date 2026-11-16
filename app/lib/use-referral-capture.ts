@@ -1,7 +1,7 @@
 "use client";
 
-import { useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useRef } from "react";
+import { useRouter } from "next/navigation";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 import {
   ACTIVE_REFERRAL_CODE_STORAGE_KEY,
   isAgentProgramReferrerId,
@@ -10,11 +10,30 @@ import {
   stripReferralParam,
 } from "@/app/lib/referral";
 
-/** Stores ?ref= locally, records agent-program clicks, and cleans the URL. */
+function subscribeToHistory(onChange: () => void): () => void {
+  window.addEventListener("popstate", onChange);
+  return () => window.removeEventListener("popstate", onChange);
+}
+
+function readReferralFromLocation(): string | null {
+  return normalizeReferralCode(new URLSearchParams(window.location.search).get("ref"));
+}
+
+function noReferralOnServer(): string | null {
+  return null;
+}
+
+/**
+ * Stores ?ref= locally, records agent-program clicks, and cleans the URL.
+ *
+ * Reads window.location rather than useSearchParams: on a statically rendered
+ * page, useSearchParams makes Next skip server rendering for everything under
+ * the nearest Suspense boundary, which left crawlers an empty page. The server
+ * render and hydration see no code; the browser reads it right after.
+ */
 export function useReferralCapture(): string | null {
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const referralCode = normalizeReferralCode(searchParams.get("ref"));
+  const referralCode = useSyncExternalStore(subscribeToHistory, readReferralFromLocation, noReferralOnServer);
   const trackedAgentReferralRef = useRef<string | null>(null);
 
   useEffect(() => {
