@@ -1343,6 +1343,22 @@ function buildRequestScopedPaymentRequirement(params: {
 export const X402_ALLOCATE_EXAMPLE_DECISION_ID = "agent-run-001";
 export const X402_ALLOCATE_WITH_REPORT_EXAMPLE_DECISION_ID = "agent-report-run-001";
 
+// The request body both allocation routes accept. Held once so the discovery
+// extension and the capabilities catalog (and through it /.well-known/x402)
+// publish the same schema; the extension wraps its copy inside `bazaar`, so it
+// cannot be read back from there.
+const ALLOCATE_INPUT_SCHEMA = {
+  type: "object",
+  properties: {
+    decisionId: { type: "string" },
+    riskTolerance: { enum: ["Conservative", "Balanced", "Growth", "Aggressive"] },
+    timeframe: { enum: ["<1_year", "1-3_years", "3+_years"] },
+    portfolioSegment: { enum: [...PORTFOLIO_SEGMENTS] },
+    referralCode: { type: "string", description: "Optional affiliate/referral code. You can also send this as ?ref=CODE." },
+  },
+  required: ["decisionId", "riskTolerance", "timeframe"],
+};
+
 function buildAllocateDiscoveryExtension() {
   return declareDiscoveryExtension({
     description: X402_PUBLIC_DESCRIPTIONS.allocate,
@@ -1354,17 +1370,7 @@ function buildAllocateDiscoveryExtension() {
       portfolioSegment: "Bluechips",
       referralCode: "ASH123",
     },
-    inputSchema: {
-      type: "object",
-      properties: {
-        decisionId: { type: "string" },
-        riskTolerance: { enum: ["Conservative", "Balanced", "Growth", "Aggressive"] },
-        timeframe: { enum: ["<1_year", "1-3_years", "3+_years"] },
-        portfolioSegment: { enum: [...PORTFOLIO_SEGMENTS] },
-        referralCode: { type: "string", description: "Optional affiliate/referral code. You can also send this as ?ref=CODE." },
-      },
-      required: ["decisionId", "riskTolerance", "timeframe"],
-    },
+    inputSchema: ALLOCATE_INPUT_SCHEMA,
     output: {
       example: {
         success: true,
@@ -1391,17 +1397,7 @@ function buildAllocateWithReportDiscoveryExtension() {
       portfolioSegment: "Bluechips",
       referralCode: "ASH123",
     },
-    inputSchema: {
-      type: "object",
-      properties: {
-        decisionId: { type: "string" },
-        riskTolerance: { enum: ["Conservative", "Balanced", "Growth", "Aggressive"] },
-        timeframe: { enum: ["<1_year", "1-3_years", "3+_years"] },
-        portfolioSegment: { enum: [...PORTFOLIO_SEGMENTS] },
-        referralCode: { type: "string", description: "Optional affiliate/referral code. You can also send this as ?ref=CODE." },
-      },
-      required: ["decisionId", "riskTolerance", "timeframe"],
-    },
+    inputSchema: ALLOCATE_INPUT_SCHEMA,
     output: {
       example: {
         success: true,
@@ -2255,7 +2251,7 @@ async function buildX402CapabilitiesData() {
       },
       accepts: [allocationOnlyAccept],
       paymentRequirementsV2: buildPaymentRequirementsV2([allocationOnlyAccept]),
-      inputSchema: buildAllocateDiscoveryExtension().inputSchema,
+      inputSchema: ALLOCATE_INPUT_SCHEMA,
     },
     {
       endpoint: "/agent/x402/allocate-with-report",
@@ -2269,7 +2265,7 @@ async function buildX402CapabilitiesData() {
       },
       accepts: [allocationWithReportAccept],
       paymentRequirementsV2: buildPaymentRequirementsV2([allocationWithReportAccept]),
-      inputSchema: buildAllocateWithReportDiscoveryExtension().inputSchema,
+      inputSchema: ALLOCATE_INPUT_SCHEMA,
     },
     ...toolDefinitions.map((definition) => {
       const requirement = buildToolPreviewRequirement(definition.productId, identity.walletAddress);

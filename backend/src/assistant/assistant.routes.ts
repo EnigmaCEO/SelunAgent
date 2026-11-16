@@ -3,13 +3,13 @@ import type { PaymentRow } from "./paypal-commerce.service";
 import path from "node:path";
 import { resolveAsset } from "./asset-resolver";
 import { sandboxFaultFile, withSandboxFaults } from "./sandbox-faults";
-import { sendCoverageNoticeEmail } from "../services/email.service";
+import { sendAdminPromptEmail, sendCoverageNoticeEmail } from "../services/email.service";
 import { createHash } from "node:crypto";
 import { Router, type NextFunction, type Request, type RequestHandler, type Response } from "express";
 import { getChatCapabilitiesData, getPaidToolResponse, getX402CapabilitiesData, listWalletPaymentRows, requireAdminRequest, runPaidCapability, setWalletRefundListener } from "../routes/agent.routes";
 import { issuePurchaseToken, issueReportToken, readPurchaseToken } from "../services/job-access.service";
 import { legacyClientIp } from "../services/legacy-cooldown";
-import { AssistantError, AssistantService, DEFAULT_LIMITS, STRIPE_META, hostedProvider, type AssistantDeps, type AssistantLimits } from "./assistant.service";
+import { AssistantError, AssistantService, DEFAULT_LIMITS, STRIPE_META, hostedProvider, type AssistantDeps, type AssistantLimits, type Block } from "./assistant.service";
 import { COMPREHENSIVE_REPORT_ID, getPaymentRails } from "./commerce";
 import { OpenAiClient, readOpenAiConfig } from "./openai-client";
 import { PayPalClient, readPayPalConfig } from "./paypal-client";
@@ -365,6 +365,15 @@ export function createAssistantRouter(injected?: AssistantDeps, injectedReports?
       const reply = await getService().chat({ conversationId: conversationId(req), message: req.body?.message, guestToken: req.get(GUEST_HEADER)?.trim() || null, clientKey: clientKey(req), analyses: req.body?.analyses });
       res.set("Cache-Control", "no-store");
       res.json({ success: true, ...reply });
+      // After the reply is sent, so the email never slows the chat or fails it.
+      void sendAdminPromptEmail({
+        conversationId: reply.conversationId,
+        message: String(req.body?.message ?? "").trim(),
+        replyText: reply.text,
+        cards: describePromptCards(reply.blocks),
+        environment: process.env.NODE_ENV?.trim() || "development",
+        at: new Date(),
+      }).catch(() => undefined);
     } catch (error) {
       sendError(res, error);
     }
@@ -545,4 +554,25 @@ export function createAssistantRouter(injected?: AssistantDeps, injectedReports?
   });
 
   return router;
+}
+
+/** One line per card a reply showed, for the prompt email. */
+export function describePromptCards(blocks: readonly Block[]): string[] {
+  return blocks.map((block) => {
+    switch (block.type) {
+      case "action":
+        return `Quote: ${block.action.title} ($${block.action.priceUsdc})`;
+      case "handoff":
+      case "live_feed":
+      case "live_status":
+      case "comparison":
+        return `${block.type}: ${block.title}`;
+      case "notice":
+        return `Notice: ${block.text}`;
+      case "asset_choice":
+        return `Asset choice: ${block.query}`;
+      default:
+        return block.type;
+    }
+  });
 }

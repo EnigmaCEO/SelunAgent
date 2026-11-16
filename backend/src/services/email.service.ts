@@ -174,8 +174,8 @@ async function sendViaResend(params: {
   html: string;
   idempotencyKey: string;
   attachments?: ResendAttachment[];
-}): Promise<{ ok: true; mock?: boolean } | { ok: false; error: string }> {
-  if (process.env.SELUN_EMAIL_PROVIDER?.trim().toLowerCase() === "mock") return recordMockEmail(params);
+}, options: { bypassMock?: boolean } = {}): Promise<{ ok: true; mock?: boolean } | { ok: false; error: string }> {
+  if (!options.bypassMock && process.env.SELUN_EMAIL_PROVIDER?.trim().toLowerCase() === "mock") return recordMockEmail(params);
 
   const apiKey = process.env.RESEND_API_KEY?.trim();
   const from = process.env.SELUN_EMAIL_FROM?.trim();
@@ -404,6 +404,71 @@ export async function sendAdminInterestEmail(endpoint: string, requestBody: unkn
   if (!result.ok) {
     console.error("Failed to send admin interest email:", result.error);
   }
+}
+
+// ── Prompt emails ────────────────────────────────────────────────────────────
+//
+// One email per Selun AI prompt, so an operator can follow what people ask and
+// how Selun answers. On only where SELUN_PROMPT_EMAILS names a recipient, which
+// is set on staging and not on production. It bypasses the mock provider on
+// purpose: staging keeps customer emails mocked, but these go to the operator.
+// Every prompt in a conversation shares one subject, so a mail client threads
+// the conversation. Nothing identifying the person is included: no IP, no
+// email, no wallet; only the conversation id and the words exchanged.
+
+export type PromptEmailInput = {
+  conversationId: string;
+  message: string;
+  replyText: string | null;
+  cards: string[];
+  environment: string;
+  at: Date;
+};
+
+export function promptEmailRecipients(): string[] {
+  return parseCsv(process.env.SELUN_PROMPT_EMAILS).filter((email) => isValidEmail(email));
+}
+
+export function buildPromptEmail(input: PromptEmailInput): { subject: string; text: string; html: string } {
+  const conversation = input.conversationId.slice(0, 8);
+  const subject = `Selun AI ${input.environment} · conversation ${conversation}`;
+  const timestamp = input.at.toISOString();
+  const reply = input.replyText?.trim() || "(no text reply)";
+  const cards = input.cards.length > 0 ? input.cards : ["none"];
+
+  const text = [
+    `Conversation: ${input.conversationId}`,
+    `Time:         ${timestamp}`,
+    "",
+    "Prompt:",
+    input.message,
+    "",
+    "Selun replied:",
+    reply,
+    "",
+    `Cards shown: ${cards.join("; ")}`,
+  ].join("\n");
+
+  const html = `
+    <p style="color:#64748b;font-size:12px;margin:0 0 12px;">Conversation ${escapeHtml(input.conversationId)} · ${escapeHtml(timestamp)}</p>
+    <h3 style="margin:0 0 6px;">Prompt</h3>
+    <pre style="white-space:pre-wrap;word-break:break-word;font-family:inherit;margin:0 0 16px;padding:10px 12px;background:#f1f5f9;border-radius:8px;">${escapeHtml(input.message)}</pre>
+    <h3 style="margin:0 0 6px;">Selun replied</h3>
+    <pre style="white-space:pre-wrap;word-break:break-word;font-family:inherit;margin:0 0 16px;">${escapeHtml(reply)}</pre>
+    <p style="color:#475569;font-size:13px;margin:0;"><strong>Cards shown:</strong> ${escapeHtml(cards.join("; "))}</p>
+  `.trim();
+
+  return { subject, text, html };
+}
+
+export async function sendAdminPromptEmail(input: PromptEmailInput): Promise<void> {
+  const recipients = promptEmailRecipients();
+  if (recipients.length === 0) return;
+
+  const email = buildPromptEmail(input);
+  const key = createHash("sha256").update(`${input.conversationId}|${input.at.toISOString()}|${input.message}`).digest("hex").slice(0, 32);
+  const result = await sendViaResend({ to: recipients, ...email, idempotencyKey: `selun-prompt-${key}` }, { bypassMock: true });
+  if (!result.ok) console.error("Failed to send prompt email:", result.error);
 }
 
 export async function sendAdminUsageEmail(input: AdminUsageEmailInput): Promise<void> {
