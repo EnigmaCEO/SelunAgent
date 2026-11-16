@@ -856,7 +856,7 @@ const X402_PUBLIC_DESCRIPTIONS = {
 const X402_SERVER_METADATA = {
   name: "Selun | Sagitta AAA Portfolio Infrastructure",
   description:
-    "Payment-gated x402 endpoints for Sagitta AAA portfolio intelligence and SCE execution preflight. Includes allocation, market regime, policy envelope, asset scoring, rebalance, continuity mode, case relevance, and doctrine-based risk evaluation for autonomous agents.",
+    "Sagitta AAA portfolio intelligence and SCE execution preflight, for people and agents. People ask Selun AI at selun.sagitta.systems and pay by PayPal, card, or crypto wallet; agents call these payment-gated x402 endpoints directly in USDC. Includes allocation, market regime, policy envelope, asset scoring, rebalance, continuity mode, case relevance, and doctrine-based risk evaluation.",
   provider: {
     name: "Sagitta AAA",
     url: "https://selun.sagitta.systems",

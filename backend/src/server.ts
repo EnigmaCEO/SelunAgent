@@ -531,16 +531,44 @@ async function buildOpenApiDocument(req: express.Request) {
   };
 }
 
+// `version` and `resources` (plain URLs) are the standard well-known shape that
+// crawlers and the /health/x402 self-check read, so they stay exactly as they
+// were. Everything after them is additive: who the service is for, where the
+// full machine-readable catalog lives, and each route's price, network, and
+// input schema, so a reader does not need a second request to see what a call
+// costs.
 async function buildWellKnownX402Document(req: express.Request) {
   const capabilities = await getX402CapabilitiesData();
   const resources = capabilities.resources.map((resource) => buildAbsoluteUrl(req, resource.endpoint));
   const ownershipProofs = parseCsv(process.env.X402_DISCOVERY_OWNERSHIP_PROOFS);
   const instructions = process.env.X402_DISCOVERY_INSTRUCTIONS?.trim();
+  const network = capabilities.discovery.caip2Network;
   return {
     version: 1,
     resources,
     ...(ownershipProofs.length > 0 ? { ownershipProofs } : {}),
     ...(instructions ? { instructions } : {}),
+    name: capabilities.name,
+    description: capabilities.description,
+    provider: capabilities.provider,
+    humanInterface: {
+      url: "https://selun.sagitta.systems",
+      description: "Selun AI: ask in plain language, see the price upfront, and pay by PayPal, card, or crypto wallet. No API needed.",
+    },
+    openapi: buildAbsoluteUrl(req, "/openapi.json"),
+    capabilities: buildAbsoluteUrl(req, "/agent/x402/capabilities"),
+    x402Version: capabilities.x402Version,
+    network,
+    asset: "USDC",
+    endpoints: capabilities.resources.map((resource) => ({
+      url: buildAbsoluteUrl(req, resource.endpoint),
+      method: resource.method,
+      productId: resource.productId,
+      title: resource.title,
+      description: resource.description,
+      price: { amount: resource.pricing.amountUsdc, asset: "USDC", network },
+      inputSchema: resource.inputSchema,
+    })),
   };
 }
 

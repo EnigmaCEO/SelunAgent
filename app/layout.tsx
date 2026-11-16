@@ -16,11 +16,11 @@ const bodyFont = Manrope({
 });
 
 const siteUrl = process.env.NEXT_PUBLIC_SITE_URL?.trim() || "https://selun.sagitta.systems";
-const siteTitle = "Selun | Crypto Portfolio Plan";
+const siteTitle = "Selun AI | Onchain intelligence for people and agents";
 // base.dev domain verification for Builder Codes.
 const baseAppId = "6a7a00df85896ee843331859";
 const siteDescription =
-  "Payment-gated x402 endpoints for Sagitta AAA portfolio intelligence and SCE execution preflight. Includes allocation, market regime, policy envelope, asset scoring, rebalance, continuity mode, case relevance, and doctrine-based risk evaluation for autonomous agents.";
+  "Ask Selun AI about crypto in plain language and get Sagitta's intelligence: risk analysis, market regime, portfolio plans, and downloadable reports, priced upfront and paid by PayPal, card, or crypto wallet. Agents call the same services as pay-per-call x402 endpoints in USDC on Base.";
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
