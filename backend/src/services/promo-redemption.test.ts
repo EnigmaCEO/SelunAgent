@@ -24,7 +24,7 @@ const wallet = (digit: string) => `0x${digit.repeat(40)}`;
 const stored = () => JSON.parse(fs.readFileSync(path.join(root, "data", "free-code-redemptions.json"), "utf8")).redemptions as Array<{ decisionId: string; pendingUntil?: string }>;
 
 test("a discount code counts as used only once its checkout is paid", async () => {
-  const { authorizeWizardPayment, settlePromoCodeRedemption } = await import("./selun-agent.service");
+  const { authorizeWizardPayment, settlePromoCodeRedemption } = await import("./selun-agent.service.js");
 
   // Unpaid checkouts don't use the single use, by the same wallet or another.
   const abandoned = await authorizeWizardPayment({ walletAddress: wallet("1"), promoCode: "ONEUSE" });
@@ -42,7 +42,7 @@ test("a discount code counts as used only once its checkout is paid", async () =
 });
 
 test("a free code is used when the checkout is granted", async () => {
-  const { authorizeWizardPayment } = await import("./selun-agent.service");
+  const { authorizeWizardPayment } = await import("./selun-agent.service.js");
   const granted = await authorizeWizardPayment({ walletAddress: wallet("4"), promoCode: "FREEONE" });
   assert.equal(granted.paymentMethod, "free_code");
   assert.equal(stored().find((entry) => entry.decisionId === granted.decisionId)?.pendingUntil, undefined);
