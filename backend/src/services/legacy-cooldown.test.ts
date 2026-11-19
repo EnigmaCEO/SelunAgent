@@ -168,3 +168,11 @@ test("summary, report, and escalation probes share the email cooldown", () => {
   assert.equal(downstreamCalls, 6);
   assert.equal(status, 429);
 });
+
+test("a request target that isn't a path passes through instead of throwing", () => {
+  const middleware = createLegacyCooldown({ stateFile: false });
+  let downstreamCalls = 0;
+  const res = { set: () => {}, status: () => res, json: () => {} } as unknown as Response;
+  middleware(request(undefined as unknown as string), res, () => { downstreamCalls++; });
+  assert.equal(downstreamCalls, 1);
+});

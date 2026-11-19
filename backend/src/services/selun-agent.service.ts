@@ -88,6 +88,11 @@ type PromoCodeRedemption = {
   includeCertifiedDecisionRecord: boolean;
   amountBeforeDiscountUsdc: string;
   chargedAmountUsdc: string;
+  /**
+   * A discounted checkout stays pending until its payment is verified, so an abandoned checkout doesn't use the
+   * code up. Pending entries count toward no limit and lapse with the checkout. Missing on settled and older records.
+   */
+  pendingUntil?: string;
 };
 
 type PromoCodeRedemptionStore = {
@@ -402,11 +407,39 @@ function readPromoCodeRedemptions(): PromoCodeRedemption[] {
         includeCertifiedDecisionRecord: Boolean(entry.includeCertifiedDecisionRecord),
         amountBeforeDiscountUsdc,
         chargedAmountUsdc,
+        ...(typeof entry.pendingUntil === "string" ? { pendingUntil: entry.pendingUntil } : {}),
       };
     });
   } catch {
     return [];
   }
+}
+
+/** How long a discounted checkout holds its promo price: the decision ticket's lifetime. */
+const PROMO_PENDING_MS = 2 * 60 * 60_000;
+
+function isLapsedPending(entry: PromoCodeRedemption, now = Date.now()): boolean {
+  return entry.pendingUntil !== undefined && !(Date.parse(entry.pendingUntil) > now);
+}
+
+/** Redemptions that use the code: settled ones. */
+function settledRedemptions(redemptions: PromoCodeRedemption[]): PromoCodeRedemption[] {
+  return redemptions.filter((entry) => entry.pendingUntil === undefined);
+}
+
+/**
+ * Counts a discounted checkout's promo use once its payment is verified. Returns the code, or null when the
+ * decision had none. A paid customer keeps the price they were quoted even if the code filled up meanwhile.
+ */
+export function settlePromoCodeRedemption(decisionId: string): string | null {
+  const redemptions = readPromoCodeRedemptions();
+  const entry = redemptions.find((candidate) => candidate.decisionId === decisionId);
+  if (!entry) return null;
+  if (entry.pendingUntil !== undefined) {
+    delete entry.pendingUntil;
+    writePromoCodeRedemptions(redemptions);
+  }
+  return entry.code;
 }
 
 function writePromoCodeRedemptions(redemptions: PromoCodeRedemption[]) {
@@ -568,7 +601,7 @@ function resolvePromoCodeGrant(input: {
     throw new Error("This promo code does not include a certified decision report.");
   }
 
-  const redemptions = readPromoCodeRedemptions();
+  const redemptions = settledRedemptions(readPromoCodeRedemptions());
   const redemptionsForCode = redemptions.filter((entry) => normalizeCode(entry.code) === normalizedCode);
   if (redemptionsForCode.length >= rule.maxUses) {
     throw new Error("Promo code usage limit reached.");
@@ -621,7 +654,8 @@ function redeemPromoCodeGrant(input: {
     ? createFreeCodeTransactionId(resolvedPromo.normalizedCode)
     : buildTransactionId();
 
-  const redemptions = readPromoCodeRedemptions();
+  // Lapsed checkouts are dropped as new ones are recorded.
+  const redemptions = readPromoCodeRedemptions().filter((entry) => !isLapsedPending(entry));
   redemptions.push({
     code: resolvedPromo.normalizedCode,
     promoKind: resolvedPromo.promoKind,
@@ -633,6 +667,8 @@ function redeemPromoCodeGrant(input: {
     includeCertifiedDecisionRecord: includeCert,
     amountBeforeDiscountUsdc: resolvedPromo.amountBeforeDiscountUsdc,
     chargedAmountUsdc: resolvedPromo.chargedAmountUsdc,
+    // A free code is used now; a discount is used when its payment is verified.
+    ...(resolvedPromo.promoKind === "free" ? {} : { pendingUntil: new Date(Date.now() + PROMO_PENDING_MS).toISOString() }),
   });
   writePromoCodeRedemptions(redemptions);
 

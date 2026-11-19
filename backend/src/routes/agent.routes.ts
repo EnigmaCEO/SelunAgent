@@ -58,6 +58,7 @@ import { callSceContinuityMode, callSceCaseRelevance, callSceRiskEvaluate } from
 import { confirmAgentAllocation, isAgentProgramReferrerId, normalizeAgentProgramReferrerId } from "../services/agent-program.service";
 import {
   authorizeWizardPayment,
+  settlePromoCodeRedemption,
   getAgentAddress,
   getAdminFundingWalletSnapshot,
   getAgentWalletSnapshot,
@@ -4096,6 +4097,27 @@ async function verifyTicketedWizardPayment(
   if (!reservation.accepted) {
     return failure(res, new Error("That transaction has already been used for another purchase."), 409);
   }
+
+  // Paid: only now does a promo code count as used, and only now is the purchase reported.
+  const promoCode = settlePromoCodeRedemption(ticket.decisionId);
+  void sendAdminUsageEmail({
+    channel: "legacy_pay",
+    decisionId: ticket.decisionId,
+    walletAddress: input.fromAddress,
+    resultEmail: null,
+    promoCode,
+    chargedAmountUsdc: ticket.chargedAmountUsdc,
+    transactionHash: receipt.transactionHash,
+    paymentMethod: "onchain",
+    paymentNetwork: getConfig().networkId,
+    includeCertifiedDecisionRecord: ticket.includesReport,
+    riskTolerance: ticket.riskMode,
+    timeframe: ticket.horizon,
+    jobId: null,
+  }).catch((error) => {
+    console.error("Failed to send Selun admin usage email (legacy_pay):", error);
+  });
+
   return success(res, {
     ...receipt,
     runGrant: issueRunGrant({
@@ -4315,7 +4337,9 @@ router.post("/pay", async (req: Request, res: Response) => {
       promoCode: req.body?.promoCode,
     });
 
-    void sendAdminUsageEmail({
+    const free = Number.parseFloat(receipt.chargedAmountUsdc) === 0;
+    // A free code completes the purchase here. Anything with a price is reported once its payment is verified.
+    if (free) void sendAdminUsageEmail({
       channel: "legacy_pay",
       decisionId: receipt.decisionId,
       walletAddress,
@@ -4341,7 +4365,7 @@ router.post("/pay", async (req: Request, res: Response) => {
     // Everything else must first prove payment at /verify-payment.
     return success(
       res,
-      Number.parseFloat(receipt.chargedAmountUsdc) === 0
+      free
         ? {
             ...receipt,
             runGrant: issueRunGrant({
@@ -4360,6 +4384,8 @@ router.post("/pay", async (req: Request, res: Response) => {
               walletAddress,
               chargedAmountUsdc: receipt.chargedAmountUsdc,
               includesReport: receipt.certifiedDecisionRecordPurchased,
+              riskMode: typeof req.body?.riskMode === "string" ? req.body.riskMode : null,
+              horizon: typeof req.body?.investmentHorizon === "string" ? req.body.investmentHorizon : null,
             }),
           },
     );

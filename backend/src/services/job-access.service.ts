@@ -23,7 +23,8 @@ export const JOB_TOKEN_HEADER = "x-selun-job-token";
 export const INTERNAL_TIMESTAMP_HEADER = "x-selun-internal-timestamp";
 export const INTERNAL_SIGNATURE_HEADER = "x-selun-internal-signature";
 
-type DecisionTicket = { typ: "ticket"; d: string; w: string; a: string; r: boolean; iat: number; exp: number };
+/** m and h: the risk mode and horizon chosen, for the purchase record once it's paid. */
+type DecisionTicket = { typ: "ticket"; d: string; w: string; a: string; r: boolean; m?: string; h?: string; iat: number; exp: number };
 type RunGrant = { typ: "grant"; d: string; src: string; r: boolean; a: string; tx: string; w: string; exp: number };
 type ReportToken = { typ: "report"; d: string; c: string; exp: number };
 type PurchaseToken = { typ: "purchase"; p: string; k: "one_time" | "subscription"; exp: number };
@@ -81,15 +82,18 @@ function open(token: unknown, now: number): DecisionTicket | RunGrant | ReportTo
 }
 
 export function issueDecisionTicket(
-  input: { decisionId: string; walletAddress: string; chargedAmountUsdc: string; includesReport: boolean },
+  input: { decisionId: string; walletAddress: string; chargedAmountUsdc: string; includesReport: boolean; riskMode?: string | null; horizon?: string | null },
   now = Date.now(),
 ): string {
+  const label = (value: string | null | undefined) => (typeof value === "string" && value.trim() ? value.trim().slice(0, 40) : undefined);
   return seal({
     typ: "ticket",
     d: input.decisionId,
     w: input.walletAddress.toLowerCase(),
     a: input.chargedAmountUsdc,
     r: input.includesReport,
+    m: label(input.riskMode),
+    h: label(input.horizon),
     iat: now,
     exp: now + DECISION_TICKET_TTL_MS,
   });
@@ -98,10 +102,18 @@ export function issueDecisionTicket(
 export function readDecisionTicket(
   token: unknown,
   now = Date.now(),
-): { decisionId: string; walletAddress: string; chargedAmountUsdc: string; includesReport: boolean; issuedAt: number } | null {
+): { decisionId: string; walletAddress: string; chargedAmountUsdc: string; includesReport: boolean; riskMode: string | null; horizon: string | null; issuedAt: number } | null {
   const payload = open(token, now);
   if (payload?.typ !== "ticket") return null;
-  return { decisionId: payload.d, walletAddress: payload.w, chargedAmountUsdc: payload.a, includesReport: payload.r, issuedAt: payload.iat };
+  return {
+    decisionId: payload.d,
+    walletAddress: payload.w,
+    chargedAmountUsdc: payload.a,
+    includesReport: payload.r,
+    riskMode: typeof payload.m === "string" ? payload.m : null,
+    horizon: typeof payload.h === "string" ? payload.h : null,
+    issuedAt: payload.iat,
+  };
 }
 
 export function issueRunGrant(purchase: VerifiedPurchase, now = Date.now()): string {

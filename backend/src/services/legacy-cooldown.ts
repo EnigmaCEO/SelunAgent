@@ -140,8 +140,9 @@ export function createLegacyCooldown(options: { stateFile?: string | false } = {
   // a lock and strike history apply across all protected legacy routes.
   let store: CooldownStore | undefined;
   return (req, res, next) => {
-    // Express accepts case variants and trailing slashes by default.
-    const route = req.path.toLowerCase().replace(/\/+$/, "");
+    // Express accepts case variants and trailing slashes by default. A request target that isn't a path
+    // (scanners send "host:443") leaves req.path undefined; it can't name a protected route.
+    const route = (req.path ?? "").toLowerCase().replace(/\/+$/, "");
     const group = groups[route];
     if (req.method !== "POST" || !group) return next();
     const limit = group === "checkout" ? 3 : group === "email" ? 6 : 10;

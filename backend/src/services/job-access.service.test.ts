@@ -77,7 +77,9 @@ test("a decision ticket can't stand in for a run grant", () => {
 test("a decision ticket keeps the server's price and expires", () => {
   const now = Date.now();
   const ticket = issueDecisionTicket({ decisionId: "D", walletAddress: wallet.toUpperCase().replace("0X", "0x"), chargedAmountUsdc: "19", includesReport: true }, now);
-  assert.deepEqual(readDecisionTicket(ticket, now), { decisionId: "D", walletAddress: wallet, chargedAmountUsdc: "19", includesReport: true, issuedAt: now });
+  assert.deepEqual(readDecisionTicket(ticket, now), { decisionId: "D", walletAddress: wallet, chargedAmountUsdc: "19", includesReport: true, riskMode: null, horizon: null, issuedAt: now });
+  const labelled = issueDecisionTicket({ decisionId: "D", walletAddress: wallet, chargedAmountUsdc: "19", includesReport: false, riskMode: " balanced ", horizon: "1y" }, now);
+  assert.deepEqual([readDecisionTicket(labelled, now)?.riskMode, readDecisionTicket(labelled, now)?.horizon], ["balanced", "1y"]);
   assert.equal(readDecisionTicket(ticket, now + 3 * 60 * 60_000), null);
   assert.equal(readDecisionTicket(issueRunGrant(purchase("D"))), null);
 });
